@@ -1,0 +1,78 @@
+site_name: SMOL-CLS Mother for Machine Learning
+theme:
+  name: "material"
+  palette:
+    primary: navy
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - content.code.select
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+
+repo_url: https://github.com/bayer-int/mother-ml
+repo_name: mother-ml
+
+markdown_extensions:
+  - admonition
+  - pymdownx.highlight:
+      auto_title: true
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - attr_list
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+validation:
+  links:
+    absolute_links: relative_to_docs
+    anchors: warn
+    unrecognized_links: warn
+
+plugins:
+  - search
+  - markdown-exec
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [..]
+  - git-revision-date-localized:
+      fallback_to_build_date: true
+  - git-authors:
+      show_contribution: true
+      sort_authors_by: name
+      show_line_count: true
+      count_empty_lines: true
+      fallback_to_empty: false
+      # exclude:
+      #         - index.md
+      enabled: true
+  - include-markdown
+  - mkdocs-jupyter
+
+nav:
+  - Home: index.md
+  - Development:
+      - General Development: development/dev.md
+      - PR Approval Process: development/pr_approval_guidelines.md
+  - Usage:
+      - Overview: mother/overview.md
+      - Configurator: mother/configurator.md
+      - Specifics:
+          - Models: mother/models.md
+  - Report: report.md
+  - Tutorials: examples.md
+  - Basic Cheminformatics:
+      - Introduction: chemistry.md
+      - Molecule Standardisation: standardization.md
+      - Feature Generation: feature_generation.md
+  - Changelog: Changelog.md
+  # - Pipeline: ../examples/notebooks/ExamplePipeline.ipynb

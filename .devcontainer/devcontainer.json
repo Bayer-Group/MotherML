@@ -1,0 +1,63 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/devcontainers/templates/tree/main/src/python
+{
+	"name": "Python 3",
+	// Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
+	"image": "mcr.microsoft.com/devcontainers/python:3-3.13-trixie",
+    "features": {
+        "ghcr.io/jsburckhardt/devcontainer-features/uv:1": {},
+        "ghcr.io/jsburckhardt/devcontainer-features/ruff:1": {}
+    },
+	// Defining additional environment variable for getting secrets
+	"containerEnv": {
+		"ENV_SECRETS": "${containerWorkspaceFolder}/.env"
+	},
+	// Features to add to the dev container. More info: https://containers.dev/features.
+	// "features": {},
+	// Use 'forwardPorts' to make a list of ports inside the container available locally.
+	// "forwardPorts": [],
+	// Configure tool-specific properties.
+	"customizations": {
+		// Configure properties specific to VS Code.
+		"vscode": {
+			// Set *default* container specific settings.json values on container create.
+			"settings": {
+				"python.testing.pytestEnabled": true,
+				"python.testing.unittestEnabled": false,
+				"python.defaultInterpreterPath": "${workspaceFolder}/.venv",
+				"python.analysis.typeCheckingMode": "basic",
+				"python.terminal.activateEnvironment": true,
+				"python.terminal.activateEnvInCurrentTerminal": true,
+				"[python]": {
+					"editor.formatOnSave": true,
+					"editor.renderWhitespace": "all",
+					"editor.codeActionsOnSave": {
+						"source.organizeImports": "explicit",
+						"source.fixAll.ruff": "explicit"
+					}
+				}
+			},
+			// Add the IDs of extensions you want installed when the container is created.
+			"extensions": [
+				"ms-python.python",
+				"ms-vscode.test-adapter-converter",
+				"magicstack.MagicPython",
+				"ms-python.vscode-pylance",
+				"KevinRose.vsc-python-indent",
+				"njpwerner.autodocstring",
+				"njqdev.vscode-python-typehint",
+				"DavidAnson.vscode-markdownlint",
+				"bierner.github-markdown-preview",
+				"charliermarsh.ruff",
+				"hbenl.vscode-test-explorer"
+			]
+		}
+	},
+	"postCreateCommand": "uv sync --frozen --group test_duration",
+	"postStartCommand": {
+		// Optional: If applicable, add the following lines for installations.
+		"uv-run-pre-commit-install": "uv run pre-commit install"
+	},
+	// Uncomment to connect as root instead. More info: https://aka.ms/dev-containers-non-root.
+	// "remoteUser": "root"
+}

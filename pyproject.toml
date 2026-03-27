@@ -1,0 +1,344 @@
+[project]
+name = "mother-ml"
+version = "2.1.0"
+description = "A ML framework that takes care"
+requires-python = ">=3.10, <3.14"
+authors = [
+  { name = "Thomas Wolf" },
+  { name = "Florian Huber" },
+  { name = "Nicolas Peschke" },
+  { name = "Niklas Toetsch" },
+  { name = "Satya Kanuri" },
+  { name = "Alex Calabrese" },
+  { name = "Agata Zieba" },
+  { name = "Yunhee Jeong" },
+  { name = "Nesma Mousa" },
+  { name = "Lukas Hebing" },
+  { name = "Kai Sommer" },
+  { name = "Nicolas Arning" },
+]
+
+dependencies = [
+  "catboost>=1.2.6,<=1.2.8",
+  "feature-engine>=1.8.0,<2",
+  "numpy>=2.2,<2.3",
+  "optuna>=4.2.0,<5",
+  "pandas>=2.2,<3.0",
+  "pydantic-settings>=2.4.0,<3",
+  "rdkit>=2024.9.1",
+  "scikit-learn<=1.5.0",
+  "single-source>=0.4.0,<0.5",
+  "colorama>=0.4.6,<0.5",
+  "boruta>=0.4.3,<0.5",
+  "quantile-forest>=1.4.0,<2",
+  "setuptools>=76.0.0"
+]
+
+[project.optional-dependencies]
+### Torch
+torch = ["torch>=2.3.0,<3"]
+
+### Report block
+report = [
+  "matplotlib>3.7.0",
+  "seaborn>=0.13.2,<0.14",
+  "umap-learn>=0.5.7,<0.6",
+  "plotly>=6.0.1,<7",
+  "ipywidgets>=8.1.5,<9",
+  "igraph>=0.11.8,<0.12",
+  "leidenalg>=0.10.2,<0.11",
+]
+
+### RNA block
+rna = [
+  "anndata",
+  "scanpy",
+  "rnanorm",
+]
+
+### Clustering block
+clustering = [
+  "hdbscan>=0.8.40,<0.9",
+  "kmedoids>=0.5.3.1,<0.6",
+]
+
+### TabPFN
+tabpfn = [
+  "tabpfn==2.1.0",
+  "torch>=2.3.0,<3",
+]
+
+[dependency-groups]
+dev = [
+  "ipykernel",
+  "isort",
+  "mypy>0.981",
+  "poethepoet",
+  "pre-commit",
+  "pylint",
+  "pytest",
+  "pytest-cov",
+  "ruff>=0.9.2,<1",
+  "types-pyyaml>=6.0.12.20241230",
+  "python-semantic-release>=10.2.0,<11",
+]
+examples = [
+  "polaris-lib>=0.13.0,<0.14",
+  "shap>=0.47.2,<0.48",
+]
+docs = [
+  "mkdocs",
+  "mkdocs-git-revision-date-localized-plugin",
+  "mkdocs-include-markdown-plugin",
+  "mkdocs-material",
+  "mkdocstrings[python]",
+  "markdown-exec[ansi]>=1.7.0,<2",
+  "mkdocs-jupyter>=0.25.1,<0.26",
+  "mkdocs-git-authors-plugin>=0.9.2,<0.10",
+]
+test_duration = [
+  "pytest-html>=4.0.2,<5",
+  "pytest-xdist[psutil]>=3.3.1,<4",
+]
+
+[tool.pytest.ini_options]
+# Ensure modules are not reloaded between tests
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+# Add this to prevent module reloading
+addopts = "--import-mode=importlib"
+
+# Custom markers
+markers = [
+  "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+  "serial: marks tests that should not run in parallel (modifies global state)",
+]
+
+log_cli = true
+log_cli_level = "INFO"
+#log_cli_level = "DEBUG"
+# log_cli_format = "%(asctime)s %(levelname)8s %(message)s (%(filename)s:%(lineno)s)"
+log_cli_date_format = "%Y-%m-%d %H:%M:%S"
+log_cli_format = "%(asctime)s | %(name)30s | %(levelname)8s | %(message)s"
+#testpaths = [
+#    "test/unit",
+#]
+
+[tool.pylint.main]
+
+extension-pkg-allow-list = "rdkit"
+# Specify a score threshold under which the program will exit with error.
+fail-under = 8
+
+[tool.pylint."MESSAGES CONTROL"]
+
+disable = "too-few-public-methods"
+
+[tool.pylint.basic]
+variable-naming-style = "snake_case"
+# Naming style matching correct class attribute names.
+class-attribute-naming-style = "any"
+function-naming-style = "any"
+
+# Naming style matching correct class names.
+class-naming-style = "PascalCase"
+method-naming-style = "any"
+# Naming style matching correct module names.
+module-naming-style = "any"
+
+[tool.pylint.format]
+# Number of spaces of indent required inside a hanging or continued line.
+indent-after-paren = 4
+
+# String used as indentation unit. This is usually "    " (4 spaces) or "\t" (1
+# tab).
+indent-string = "    "
+
+# Maximum number of characters on a single line.
+max-line-length = 100
+
+[tool.pylint.logging]
+# The type of string formatting that logging methods do. `old` means using %
+# formatting, `new` is for `{}` formatting.
+logging-format-style = "new"
+
+# Logging modules to check that the string format arguments are in logging
+# function parameter format.
+logging-modules = ["logging"]
+
+[tool.ruff]
+# Exclude a variety of commonly ignored directories.
+exclude = [
+  ".git",
+  ".ipynb_checkpoints",
+  ".mypy_cache",
+  ".pytest_cache",
+  ".pytype",
+  ".ruff_cache",
+  ".venv",
+  ".vscode",
+  ".scannerwork",
+  "__pypackages__",
+  "_build",
+  "build",
+  "dist",
+  "site-packages",
+  "**qm_transformations.py",
+]
+indent-width = 4
+line-length = 120
+
+# Assume Python 3.11.
+target-version = "py311"
+
+[tool.ruff.lint]
+# Enable Pyflakes `E` and `F` codes by default.
+ignore = []
+select = ["E", "F"]
+
+# Allow unused variables when underscore-prefixed.
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.format]
+# Like Black, use double quotes for strings.
+quote-style = "double"
+
+# Like Black, indent with spaces, rather than tabs.
+indent-style = "space"
+
+# Like Black, respect magic trailing commas.
+skip-magic-trailing-comma = false
+
+# Like Black, automatically detect the appropriate line ending.
+line-ending = "auto"
+
+# Enable auto-formatting of code examples in docstrings. Markdown,
+# reStructuredText code/literal blocks and doctests are all supported.
+#
+# This is currently disabled by default, but it is planned for this
+# to be opt-out in the future.
+docstring-code-format = true
+
+# Set the line length limit used when formatting code snippets in
+# docstrings.
+#
+# This only has an effect when the `docstring-code-format` setting is
+# enabled.
+docstring-code-line-length = "dynamic"
+
+[tool.mypy]
+disallow_untyped_calls = true
+disallow_untyped_defs = true
+follow_imports = "skip"
+no_implicit_optional = true
+show_column_numbers = true
+warn_no_return = true
+
+[tool.isort]
+extend_skip = [".gitignore", ".pylintrc", "sonar-project.properties"]
+
+[tool.semantic_release]
+version_toml = ["pyproject.toml:project.version"] # changelog file
+build_command = "uv build"  # build dists
+upload_to_release = true    # upload to Github
+
+[tool.semantic_release.changelog]
+# Recommended patterns for conventional commits parser that is scope aware
+exclude_commit_patterns = [
+  '''chore(?:\([^)]*?\))?: .+''',
+  '''ci(?:\([^)]*?\))?: .+''',
+  '''refactor(?:\([^)]*?\))?: .+''',
+  '''style(?:\([^)]*?\))?: .+''',
+  '''test(?:\([^)]*?\))?: .+''',
+  '''build\((?!deps\): .+)''',
+  '''Initial [Cc]ommit.*''',
+]
+mode = "update"
+insertion_flag = "..\n    All versions below are listed in reverse chronological order"
+
+[tool.semantic_release.changelog.default_templates]
+changelog_file = "mkdocs/docs/Changelog.md"
+output_format = "md"
+
+[tool.semantic_release.branches.main]
+match = "(main|master)"
+prerelease = false
+
+[tool.semantic_release.commit_parser_options]
+minor_tags = ["feat"]
+patch_tags = [
+  "fix",
+  "perf",
+  "refactor",
+  "docs",
+  "style",
+  "test",
+  "chore",
+  "ci",
+  "build",
+]
+other_allowed_tags = [
+  "build",
+  "chore",
+  "ci",
+  "docs",
+  "style",
+  "refactor",
+  "test",
+]
+allowed_tags = [
+  "feat",
+  "fix",
+  "perf",
+  "build",
+  "chore",
+  "ci",
+  "docs",
+  "style",
+  "refactor",
+  "test",
+]
+default_bump_level = 0
+parse_squash_commits = true
+ignore_merge_commits = true
+
+
+[tool.poe.tasks]
+analyse-coverage = [
+  "coverage",
+  { shell = "coverage xml -o coverage-report.xml", help = "Generate coverage for sonar qube" },
+]
+build = "uv build"
+check-format = { cmd = "ruff format --check mother test examples", help = "Check code format compliance" }
+check-hook = "pre-commit run --all-files"
+check-lint = { cmd = "ruff check mother test ", help = "run static analysis checks" }
+check-sort-imports = { cmd = "isort . --sg=old --check-only --profile black", help = "check imports are sorted" }
+check-static-analysis = ["check-lint", "check-types"]
+check-style = ["check-sort-imports", "check-format"]
+check-types = { cmd = "mypy -p mother --ignore-missing-imports", help = "check type hint annotations" }
+coverage = { shell = "pytest test -m 'not slow and not serial' -n auto --cov-report xml --cov=mother test --junit-xml=xunit-test.xml", help = "Generate coverage report (xml)" }
+dist-test = [
+  "build",
+  { shell = "cd dist && ../test/test-dist.bash `uv run --with tomli python -c \"import tomli; print('mother-' + tomli.load(open('../pyproject.toml','rb'))['project']['version'] + '-py3-none-any.whl')\"`", help = "check build package in its own environment" },
+]
+docs = { shell = "cd mkdocs; mkdocs build", help = "Build documentation" }
+format = { cmd = "ruff format mother test examples", help = "Perform code style format" }
+install-hook = "pre-commit install"
+lint = { cmd = "ruff check mother test --fix", help = "Run linter on mother and test folder" }
+serve-coverage = [
+  "coverage",
+  { shell = "coverage html -d coverage-html && cd coverage-html; python -m http.server --bind 127.0.0.1", help = "Generate coverage html report" },
+]
+serve-docs = { shell = "cd mkdocs; JUPYTER_PLATFORM_DIRS=1 mkdocs serve", help = "Serve project html documentation" }
+sort-imports = { cmd = "isort . --sg=old --profile black", help = "apply import sort ordering" }
+style = ["sort-imports", "format"]
+test-unit = { shell = "pytest test -m 'not slow and not serial' -n auto && pytest test -m 'serial and not slow' -n 0" }
+test-slow = { shell = "pytest test -m 'slow' -n auto" }
+
+[build-system]
+requires = ["uv_build>=0.11.1,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "mother"

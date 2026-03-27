@@ -1,0 +1,51 @@
+iupac,smiles,expt,calc,int_col,cat_col,float_col
+"4-methoxy-N,N-dimethyl-benzamide",CN(C)C(=O)c1ccc(cc1)OC,-11.01,-9.625,1,A,1.01
+methanesulfonyl chloride,CS(=O)(=O)Cl,-4.87,-6.219,2,B,1.02
+3-methylbut-1-ene,CC(C)C=C,1.83,2.452,3,C,
+2-ethylpyrazine,CCc1cnccn1,-5.45,-5.809,4,,1.04
+heptan-1-ol,CCCCCCCO,-4.21,-2.917,5,B,1.05
+"3,5-dimethylphenol",Cc1cc(cc(c1)O)C,-6.27,-5.444,6,C,1.06
+"2,3-dimethylbutane",CC(C)C(C)C,2.34,2.468,7,A,1.07
+2-methylpentan-2-ol,CCCC(C)(C)O,-3.92,-2.779,8,B,1.08
+"1,2-dimethylcyclohexane",C[C@@H]1CCCC[C@@H]1C,1.58,1.685,9,C,1.09
+butan-2-ol,CC[C@H](C)O,-4.62,-3.145,10,A,
+dibromomethane,C(Br)Br,-1.96,-0.405,11,B,1.11
+2-methylpentan-3-ol,CC[C@H](C(C)C)O,-3.88,-2.416,12,,1.12
+2-ethylpyridine,CCc1ccccn1,-4.33,-3.31,13,A,1.13
+ethyl pentanoate,CCCCC(=O)OCC,-2.49,-3.11,14,B,
+benzenethiol,c1ccc(cc1)S,-2.55,-1.501,15,C,1.15
+"(2Z)-3,7-dimethylocta-2,6-dien-1-ol",CC(=CCC/C(=C\CO)/C)C,-4.78,-2.597,16,,1.16
+indane,c1ccc2c(c1)CCC2,-1.46,-1.752,17,B,1.17
+ethoxybenzene,CCOc1ccccc1,-2.22,-2.254,,C,1.18
+4-bromophenol,c1cc(ccc1O)Br,-5.85,-5.833,19,A,1.19
+"2,2-dimethylpentane",CCCC(C)(C)C,2.88,2.686,20,B,1.2
+2-acetoxyethyl acetate,CC(=O)OCCOC(=O)C,-6.34,-8.292,21,C,1.21
+ethion,CCOP(=S)(OCC)SCSP(=S)(OCC)OCC,-6.1,-10.644,22,A,1.22
+cycloheptanol,C1CCCC(CC1)O,-5.48,-4.345,23,B,
+methyl cyclopropanecarboxylate,COC(=O)C1CC1,-4.1,-3.604,24,C,1.24
+benzonitrile,c1ccc(cc1)C#N,-4.1,-3.238,25,A,1.25
+pentanenitrile,CCCCC#N,-3.52,-2.147,26,B,1.26
+2-methylpropan-2-ol,CC(C)(C)O,-4.47,-3.288,27,C,1.27
+"2,4-dimethylpentan-3-one",CC(C)C(=O)C(C)C,-2.74,-2.629,28,A,1.28
+propanal,CCC=O,-3.43,-3.148,29,B,1.29
+"N,N-dimethylformamide",CN(C)C=O,-7.81,-6.932,30,C,1.3
+p-xylene,Cc1ccc(cc1)C,-0.8,-0.658,31,A,1.31
+"penta-1,4-diene",C=CCC=C,0.93,2.357,32,B,1.32
+"2-(2,3-dimethylphenyl)aminobenzoic acid",Cc1cccc(c1C)Nc2ccccc2C(=O)O,-6.78,-7.665,33,C,1.33
+"N,N-dimethylbenzamide",CN(C)C(=O)c1ccccc1,-9.29,-8.113,34,A,1.34
+N-ethylethanamine,CCNCC,-4.07,-2.986,35,B,1.35
+4-tert-butylphenol,CC(C)(C)c1ccc(cc1)O,-5.91,-5.543,36,C,1.36
+isopentyl formate,CC(C)CCOC=O,-2.13,-3.414,37,A,1.37
+decan-1-ol,CCCCCCCCCCO,-3.64,-2.446,38,B,1.38
+ethyl propanoate,CCC(=O)OCC,-2.68,-3.221,39,C,1.39
+nonane,CCCCCCCCC,3.13,3.221,40,A,1.4
+N-methylacetamide,CC(=O)NC,-10,-8.276,41,B,1.41
+non-1-ene,CCCCCCCC=C,2.06,2.995,42,C,1.42
+naphthalen-2-ol,c1ccc2cc(ccc2c1)O,-8.11,-7.849,43,A,1.43
+"1,2,4-trichlorobenzene",c1cc(c(cc1Cl)Cl)Cl,-1.12,-0.117,44,B,1.44
+"(2R,3R,4R,5R)-Hexan-1,2,3,4,5,6-hexol",C([C@H]([C@H]([C@@H]([C@@H](CO)O)O)O)O)O,-23.62,-18.162,45,C,1.45
+methyl butanoate,CCCC(=O)OC,-2.83,-3.552,46,A,1.46
+2-hydroxybenzaldehyde,c1ccc(c(c1)C=O)O,-4.68,-8.809,47,B,1.47
+azetidine,C1CNC1,-5.56,-3.861,48,C,1.48
+N-propylpropan-1-amine,CCCNCCC,-3.65,-2.233,49,A,1.49
+aniline,c1ccc(cc1)N,-5.49,-5.543,50,B,1.5

@@ -1,0 +1,54 @@
+name: "Setup uv Environment"
+description: "Creates a uv environment from the pyproject toml file"
+inputs:
+  python-version: # python version number
+    description: "Python version to be used"
+    required: true
+    default: "3.11"
+  install-args:
+    description: "Additional args for uv sync"
+    required: false
+    default: ""
+  uv-version:
+    description: "uv version to use"
+    required: false
+    default: "latest"
+  artifactory-user:
+    description: "Artifactory user"
+    required: true
+  artifactory-token:
+    description: "Artifactory token"
+    required: true
+runs:
+  using: "composite"
+  steps:
+    - id: setup-python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+      #----------------------------------------------
+      #  -----  install & configure uv  -----
+      #----------------------------------------------
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
+      with:
+        version: ${{ inputs.uv-version }}
+
+    - name: Configure pip access to artifactory via .netrc
+      shell: bash
+      run: |
+        if [[ "${{ inputs.artifactory-user }}" != "" ]]; then
+          echo "Creating .netrc"
+          echo "machine artifactory.bayer.com" >> ~/.netrc
+          echo "login ${{ inputs.artifactory-user }}" >> ~/.netrc
+          echo "password ${{ inputs.artifactory-token }}" >> ~/.netrc
+        else
+          echo "No JFrog username and password. No .netrc created"
+        fi
+    #----------------------------------------------
+    # install your root project, if required
+    #----------------------------------------------
+    - id: install-dependencies
+      run: |
+         uv sync --python ${{ inputs.python-version }} ${{ inputs.install-args }}
+      shell: bash

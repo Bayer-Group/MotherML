@@ -1,0 +1,1389 @@
+"""
+CatBoost Model Wrappers for the Mother Framework
+
+This module provides custom wrappers for CatBoost models (regression, classification, and Gaussian process regression)
+with advanced hyperparameter tuning and uncertainty estimation capabilities, designed for seamless integration with the
+Mother machine learning framework.
+
+Key Features:
+- Unified interfaces for CatBoostRegressor, CatBoostClassifier,
+  CatBoost Gaussian Process Regressor, and CatBoost Ranker.
+- Dynamic Optuna hyperparameter search spaces, including loss-specific
+  and tree structure parameters.
+- Consistent uncertainty estimation and active learning support via
+  standardized prediction methods.
+- Support for multi-quantile regression, RMSEWithUncertainty, Focal loss,
+  and other advanced CatBoost features.
+- Handles model serialization, parameter management, and compatibility
+  with scikit-learn and Mother conventions.
+
+Classes:
+- _CatboostHyperParams: Utility for defining and managing CatBoost hyperparameter spaces.
+- CatboostRegressorMother: Extended CatBoostRegressor with uncertainty estimation and quantile support.
+- CatboostGaussianProcessRegressorMother: CatBoost-based Gaussian Process regressor for epistemic uncertainty.
+- CatboostClassifierMother: Unified classifier for binary and multiclass tasks with loss-specific tuning.
+
+All classes provide methods for Optuna-based hyperparameter optimization, uncertainty-aware prediction, and
+Mother framework compatibility.
+"""
+
+import logging
+from functools import wraps
+from typing import Callable
+
+import catboost
+import numpy as np
+import pandas as pd
+from catboost import CatBoostClassifier, CatBoostRanker, CatBoostRegressor
+from optuna.trial import Trial
+from sklearn import get_config as skl_get_config
+from sklearn import set_config as skl_set_config
+from sklearn.base import BaseEstimator
+from sklearn.utils import check_X_y
+
+import mother.ml.properties as props
+from mother.ml import utils
+from mother.ml.core import AbstractMotherPipeline
+from mother.ml.models import utils as models_utils
+
+module_logger = logging.getLogger(__name__)
+
+
+def ensure_metadata_routing(func: Callable) -> Callable:
+    """
+    Decorator to ensure metadata routing is enabled before executing a function.
+
+    This decorator checks if sklearn's metadata routing is enabled and activates it
+    if necessary. It's particularly useful for initializing ranking models that require
+    metadata routing for passing additional parameters like group_id.
+
+    Parameters
+    ----------
+    func : Callable
+        The function to be decorated (typically __init__ of a ranking model)
+
+    Returns
+    -------
+    Callable
+        The wrapped function with metadata routing ensured
+    """
+
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        use_metadata_routing: bool = bool(skl_get_config().get("enable_metadata_routing", False))
+        if not use_metadata_routing:
+            module_logger.warning(
+                "Metadata routing is not enabled, enabling it now. This may cause issues in passing "
+                "training arguments to other sklearn objects."
+            )
+            skl_set_config(enable_metadata_routing=True)  # NOSONAR
+        return func(*args, **kwargs)
+
+    return wrapper
+
+
+class _CatboostHyperParams(AbstractMotherPipeline):
+    """
+    A utility class for managing and defining hyperparameter spaces for CatBoost models.
+
+    This class provides methods to define hyperparameter spaces for CatBoost models (e.g., CatBoostClassifier,
+    CatBoostRegressor) and to post-process the suggested hyperparameters. It supports dynamic hyperparameter
+    tuning using Optuna and integrates seamlessly with the Mother framework.
+
+    Attributes
+    ----------
+    tune_boosting_type : bool
+        Whether to include the "boosting_type" parameter in the hyperparameter space for tuning.
+    tune_tree_structure_type : bool
+        Whether to include the "grow_policy" parameter in the hyperparameter space for tuning.
+        If False Symmetric Trees are used which allows the use of i.e. object importance or
+        monotonic constraints.
+
+    Methods
+    -------
+    get_hyperparameter_space(X, y, trial, prefix=None) -> dict
+        Defines the hyperparameter search space for CatBoost models based on the input data and trial.
+    suggested_params_loss(trial, suggested_params, y, prefix) -> dict
+        Adds loss-specific hyperparameters to the suggested parameters based on the target type.
+    """
+
+    def __init__(self, tune_boosting_type: bool = False, tune_tree_structure_type: bool = True):
+        """
+        Initialize the _CatboostHyperParams.
+
+        Args:
+            tune_boosting_type : bool, optional
+                Whether to include the "boosting_type" parameter in the hyperparameter space for tuning.
+            tune_tree_structure_type : bool, optional
+                Whether to include the "grow_policy" parameter in the hyperparameter space for tuning.
+                If False Symmetric Trees are used which allows the use of i.e. object importance or
+                monotonic constraints.
+        """
+        self.tune_boosting_type = tune_boosting_type
+        self.tune_tree_structure_type = tune_tree_structure_type
+
+    def get_hyperparameter_space(self, X, y, trial: Trial, prefix: str = "") -> dict:
+        min_depth, max_depth = utils.calc_range_tree_depth(X)
+
+        suggested_params = {
+            prefix + "bootstrap_type": trial.suggest_categorical(
+                prefix + "bootstrap_type", ("Bayesian", "MVS", "Bernoulli")
+            ),
+            prefix + "learning_rate": trial.suggest_float(prefix + "learning_rate", 0.000001, 0.5, log=True),
+            prefix + "random_strength": trial.suggest_float(prefix + "random_strength", 0, 2, log=False),
+        }
+
+        if self.tune_tree_structure_type:
+            suggested_params[prefix + "grow_policy"] = trial.suggest_categorical(
+                prefix + "grow_policy", ("SymmetricTree", "Depthwise", "Lossguide")
+            )
+        else:
+            suggested_params[prefix + "grow_policy"] = "SymmetricTree"
+
+        if suggested_params[prefix + "grow_policy"] != "SymmetricTree":
+            suggested_params[prefix + "boosting_type"] = "Plain"
+        elif self.tune_boosting_type:
+            suggested_params[prefix + "boosting_type"] = trial.suggest_categorical(
+                prefix + "boosting_type", ("Plain", "Ordered")
+            )
+
+        if suggested_params[prefix + "grow_policy"] == "Lossguide":
+            suggested_params[prefix + "max_depth"] = max_depth
+            (
+                min_number_of_leaves,
+                max_number_of_leaves,
+            ) = utils.depth_to_leaves_for_lossguide(min_depth, max_depth)
+            suggested_params[prefix + "max_leaves"] = trial.suggest_int(
+                prefix + "max_leaves", min_number_of_leaves, max_number_of_leaves
+            )
+        else:
+            suggested_params[prefix + "max_depth"] = trial.suggest_int(prefix + "max_depth", min_depth, max_depth)
+
+        suggested_params = self.suggested_params_loss(trial, suggested_params, y, prefix)
+        module_logger.info(f"Suggested parameters in trial {trial.number}: {suggested_params}")
+
+        return suggested_params
+
+    def suggested_params_loss(self, trial: Trial, suggested_params: dict, y: pd.DataFrame, prefix: str) -> dict:
+        """
+        Adds loss-specific hyperparameters to the suggested parameters based on the target type.
+
+        Args:
+            trial : optuna.trial.Trial
+                Optuna trial object.
+            suggested_params : dict
+                Current suggested parameters.
+            y : pd.DataFrame
+                Target data.
+            prefix : str
+                Parameter prefix.
+
+        Returns:
+            dict: Updated suggested parameters.
+        """
+        return suggested_params
+
+
+class CatboostRegressorMother(CatBoostRegressor, _CatboostHyperParams):
+    """
+    A custom implementation of CatBoostRegressor with extended functionality for hyperparameter tuning.
+
+    This class extends the CatBoostRegressor and integrates with the Mother framework to provide
+    dynamic hyperparameter tuning using Optuna. It supports loss-specific hyperparameter suggestions
+    and post-processing for regression tasks.
+
+    Methods
+    -------
+    default_parameters(prefix: str = "") -> dict
+        Returns the default parameters for the CatBoostRegressor.
+    get_params(deep=True) -> dict
+        Returns the current parameters for the CatBoostRegressor.
+    set_params(**params) -> self
+        Sets the given parameters with new values.
+    suggested_params_loss(trial, suggested_params, y, prefix) -> dict
+        Adds loss-specific hyperparameters to the suggested parameters based on the target type.
+    predict_uncertainty(X, n_ensembles=10, n_threads=1, uncertainty_for_opt=False) -> np.ndarray or pd.DataFrame
+        Estimates target values and uncertainty.
+    """
+
+    def __init__(
+        self,
+        target_type: props.TargetType = "single_target",
+        tune_tree_structure_type: bool = True,
+        tune_boosting_type: bool = False,
+        quantiles: list[float] | None = None,
+        data_uncertainty: bool = False,
+        model_type: props.ModelType = "regression",
+        **kwargs,
+    ):
+        """
+        Initialize the CatboostRegressorMother.
+
+        Args:
+            target_type : str, optional
+                Target type ("single_target" or "multi_target").
+            tune_tree_structure_type : bool, optional
+                Whether to include the "grow_policy" parameter in hyperparameter tuning.
+            tune_boosting_type : bool, optional
+                Whether to tune boosting_type.
+            quantiles : list[float] or None, optional
+                Quantiles for multi-quantile regression.
+            data_uncertainty : bool, optional
+                Use RMSEWithUncertainty loss to calculate both
+                data and model uncertainties.
+            model_type : str, optional
+                Model type (should be "regression").
+            **kwargs
+                Additional CatBoostRegressor parameters.
+        """
+        # Initialize hyperparameter tuning configuration
+        _CatboostHyperParams.__init__(self, tune_boosting_type, tune_tree_structure_type)
+
+        # set the correct model_type
+        if model_type != "regression":
+            # model_type is implemented for the consistent design with the classifier
+            raise ValueError("model_type for CatboostRegressorMother must be 'regression'.")
+        self.model_type = model_type
+
+        self.target_type = target_type
+        self.data_uncertainty = data_uncertainty
+
+        if quantiles is not None:
+            if self.data_uncertainty:
+                module_logger.error("data_uncertainty cannot be True when quantiles are given. It'll be reset")
+                self.data_uncertainty = False
+            # multi-quantile regression
+            # Validate quantiles
+            if not all(0 < q < 1 for q in quantiles):
+                raise ValueError("Quantiles must be a non-empty list of floats between 0 and 1.")
+            # Store the original quantiles exactly as passed (for cloning compatibility)
+            self.quantiles = quantiles
+
+            # create a copy to avoid changing the input parameter
+            quantiles_processed = list(quantiles)
+            # sort quantiles
+            if 0.5 not in quantiles_processed:
+                module_logger.info(
+                    "0.5 is not included in the given quantiles. It will be included for the median prediction."
+                )
+                quantiles_processed.append(0.5)
+            quantiles_processed.sort()
+
+            self._quantiles_processed = quantiles_processed
+            if "loss_function" not in kwargs:
+                # Set the loss function to MultiQuantile with the provided quantiles
+                kwargs["loss_function"] = f"MultiQuantile:alpha={', '.join(map(str, quantiles_processed))}"
+        else:
+            self.quantiles = None
+            self._quantiles_processed = None
+
+        if data_uncertainty and quantiles is None:
+            kwargs["loss_function"] = "RMSEWithUncertainty"
+        elif "loss_function" not in list(kwargs):
+            # A specific loss not given. Use the default loss function
+            module_logger.warning("Specified loss does not exist. Using default loss function based on target type.")
+            kwargs["loss_function"] = utils.default_loss_function(self.model_type, self.target_type)
+
+        # handle posterior_sampling for uncertainty
+        if "posterior_sampling" not in kwargs.keys():
+            kwargs["posterior_sampling"] = True
+
+        for key, val in self.default_parameters().items():
+            if key not in list(kwargs):
+                kwargs[key] = val
+
+        CatBoostRegressor.__init__(self, **kwargs)
+
+    def __getstate__(self):
+        state = super(CatBoostRegressor, self).__getstate__()
+        state.update(
+            {
+                "target_type": self.target_type,
+                "tune_boosting_type": self.tune_boosting_type,
+                "model_type": self.model_type,
+                "quantiles": self.quantiles,
+                "_quantiles_processed": getattr(self, "_quantiles_processed", None),
+                "data_uncertainty": self.data_uncertainty,
+                "tune_tree_structure_type": self.tune_tree_structure_type,
+            }
+        )
+        return state
+
+    def __setstate__(self, state):
+        self.target_type = state.pop("target_type", "single_target")
+        self.tune_boosting_type = state.pop("tune_boosting_type", False)
+        self.model_type = state.pop("model_type", "regression")
+        self.quantiles = state.pop("quantiles", None)
+        self._quantiles_processed = state.pop("_quantiles_processed", None)
+        self.data_uncertainty = state.pop("data_uncertainty", False)
+        self.tune_tree_structure_type = state.pop("tune_tree_structure_type", True)
+
+        super(CatBoostRegressor, self).__setstate__(state)
+
+    def get_params(self, deep=True):
+        """
+        Returns the current parameters for the CatBoostRegressor.
+
+        Args:
+            deep : bool, optional
+                Whether to return parameters of subobjects.
+
+        Returns:
+            dict: Parameter names mapped to their values.
+        """
+        params = super().get_params(deep=deep)
+        params.update(
+            {
+                "quantiles": self.quantiles,
+                "target_type": self.target_type,
+                "tune_boosting_type": self.tune_boosting_type,
+                "model_type": self.model_type,
+                "data_uncertainty": self.data_uncertainty,
+                "tune_tree_structure_type": self.tune_tree_structure_type,
+            }
+        )
+
+        return params
+
+    def set_params(self, **params):
+        """
+        Sets the given parameters with new values.
+
+        Args:
+            **params
+                Parameters to set.
+
+        Returns:
+            self
+        """
+        our_params = [
+            "target_type",
+            "tune_boosting_type",
+            "model_type",
+            "quantiles",
+            "data_uncertainty",
+            "tune_tree_structure_type",
+        ]
+
+        for param in our_params:
+            if param in params:
+                setattr(self, param, params[param])
+
+                params.pop(param)
+
+        return super().set_params(**params)
+
+    def default_parameters(self, prefix: str = "") -> dict:
+        """
+        Returns the default recommended parameters for the CatBoostRegressor.
+
+        Args:
+            prefix : str, optional
+                Optional prefix for parameter names.
+
+        Returns:
+            dict: Default parameters.
+        """
+        return models_utils.add_prefix_to_dict_keys(
+            {
+                "learning_rate": 0.03,
+                "bootstrap_type": "Bayesian",
+                "random_strength": 1,
+                "grow_policy": "SymmetricTree",
+                "boosting_type": "Plain",
+                "max_depth": 6,
+                "loss_function": "RMSE" if self.target_type != "multi_target" else "MultiRMSEWithMissingValues",
+            },
+            prefix=prefix,
+        )
+
+    def suggested_params_loss(self, trial: Trial, suggested_params: dict, y: pd.DataFrame, prefix: str) -> dict:
+        """
+        Adds loss-specific hyperparameters to the suggested parameters based on the target type.
+
+        Args:
+            trial : optuna.trial.Trial
+                Optuna trial object.
+            suggested_params : dict
+                Current suggested parameters.
+            y : pd.DataFrame
+                Target data.
+            prefix : str
+                Parameter prefix.
+
+        Returns:
+            dict: Updated suggested parameters.
+        """
+        # loss function other than the three -> don't optimize the type of loss
+        losses_for_optim = ["RMSE", "MAE", "LogCosh"]
+
+        if (self.target_type == "single_target") and (self._init_params["loss_function"] in losses_for_optim):
+            if np.all(y >= 0):
+                module_logger.debug(
+                    "Appending Tweedie loss function to hyperparameter tuning since all values are positive"
+                )
+                losses_for_optim.append("Tweedie")
+
+            suggested_loss_function = trial.suggest_categorical(prefix + "loss_function", losses_for_optim)
+
+            if suggested_loss_function == "Tweedie":
+                variance_power = trial.suggest_float(prefix + "Tweedie:variance_power", 1.000001, 1.999999)
+                suggested_loss_function = "Tweedie:variance_power=" + str(variance_power)
+
+            suggested_params[prefix + "loss_function"] = suggested_loss_function
+
+        return suggested_params
+
+    def predict(self, X: pd.DataFrame, **kwargs) -> np.ndarray:
+        """
+        Predicts target values.
+
+        Args:
+            X : pd.DataFrame
+                Input data.
+
+        Returns:
+            np.ndarray : Predictions
+        """
+
+        if self._init_params["loss_function"] == "RMSEWithUncertainty":
+            return super().predict(data=X, **kwargs)[:, 0]  # first column
+        elif self.quantiles is not None:
+            # for quantile regression - return the median prediction
+            return super().predict(data=X, **kwargs)[:, self._quantiles_processed.index(0.5)]
+        else:
+            return super().predict(data=X, **kwargs)
+
+    def predict_uncertainty(
+        self,
+        X: pd.DataFrame,
+        n_ensembles: int = 10,
+        n_threads: int = 1,
+        uncertainty_for_opt: bool = False,
+    ) -> pd.DataFrame:
+        """
+        Estimate targets and uncertainty for regression.
+
+        Args:
+            X : pd.DataFrame
+                Input data.
+            n_ensembles : int, optional
+                Number of ensembles.
+            n_threads : int, optional
+                Number of threads.
+            uncertainty_for_opt : bool, optional
+                If True, return only uncertainty for optimization.
+
+        Returns:
+            pd.DataFrame: Predictions with uncertainty.
+        """
+        if self.quantiles is not None:
+            # Use the model's predict method to get multi-quantile predictions
+            # return samples-by-quantiles prediction
+            predictions = super().predict(X)
+            module_logger.debug("Shape of predictions: %s", predictions.shape)
+            if predictions.shape[1] != len(self.quantiles):
+                logging.warning("Mismatch between predictions and quantiles. Check model configuration.")
+
+            uncertainty_df = pd.DataFrame(
+                predictions,
+                index=X.index,
+                columns=[f"quantile_{q}" for q in self._quantiles_processed],
+            )
+
+        elif self.target_type == "single_target":
+            uncertainty_df = utils.get_virtual_prediction(
+                X=X,
+                model=self,
+                virtual_ensembles_count=n_ensembles,
+                thread_count=n_threads,
+            )
+            # set the index of data frame
+            uncertainty_df.index = X.index
+
+        elif self.target_type == "multi_target":
+            module_logger.info("Using custom knowledge uncertainty prediction due to multi target regression")
+            eval_period = max(1, self.tree_count_ // n_ensembles)
+            staged_generator = self.staged_predict(
+                X,
+                ntree_start=0,
+                ntree_end=self.tree_count_,
+                eval_period=eval_period,
+                thread_count=n_threads,
+                verbose=True,
+            )
+
+            staged_predictions = list(staged_generator)  # get all results from the generator
+            if len(staged_predictions) != n_ensembles:
+                module_logger.warning(f"Generated {len(staged_predictions)} ensembles, expected {n_ensembles}")
+
+            # Validate the structure of staged_predictions
+            if not staged_predictions or not isinstance(staged_predictions[0], np.ndarray):
+                raise ValueError(
+                    "Unexpected structure in staged_predictions. Ensure the model is trained on multi-target data."
+                )
+
+            # calculate uncertainty and mean predictions from multiple tree results
+            knowledge_uncertainty: pd.DataFrame = pd.DataFrame(
+                np.array(staged_predictions).std(axis=0, ddof=1), index=X.index
+            )  # ddof=1 for the matched result with pandas std
+
+            mean_predictions: pd.DataFrame = pd.DataFrame(np.array(staged_predictions).mean(axis=0), index=X.index)
+
+            # Set the index to match the input DataFrame
+            # knowledge_uncertainty.index = X.index
+            # mean_predictions.index = X.index
+
+            # Assign column names to the DataFrames
+            n_targets = staged_predictions[0].shape[1] if len(staged_predictions[0].shape) > 1 else 1
+            mean_predictions.columns = [f"target_{i}" for i in range(n_targets)]
+            knowledge_uncertainty.columns = [f"target_{i}" for i in range(n_targets)]
+
+            target_names = [str(i) for i in range(mean_predictions.shape[1])]
+
+            module_logger.info(f"Shape of mean_predictions: {mean_predictions.shape}")
+            module_logger.info(f"Target names: {target_names}")
+
+            if len(target_names) != mean_predictions.shape[1]:
+                raise ValueError(
+                    f"Length mismatch: target_names has {len(target_names)} elements, "
+                    f"but mean_predictions has {mean_predictions.shape[1]} columns."
+                )
+
+            mean_predictions.columns = [f"{target}_mean_predictions" for target in target_names]
+            knowledge_uncertainty.columns = [f"{target}_knowledge_uncertainty" for target in target_names]
+
+            uncertainty_df = pd.concat([mean_predictions, knowledge_uncertainty], axis=1)
+        else:
+            raise ValueError(f"Unsupported target type: {self.target_type}")
+
+        if uncertainty_for_opt:
+            # fixed format of output for the optimization
+            if self.quantiles is not None:
+                # use the difference between max and min
+                def min_max_dist(x):
+                    return x.max() - x.min()
+
+                return pd.DataFrame(
+                    {"total_uncertainty": uncertainty_df.apply(lambda x: min_max_dist(x), axis=1)},
+                    index=X.index,
+                )
+            else:
+                return pd.DataFrame(
+                    {"knowledge_uncertainty": uncertainty_df["knowledge_uncertainty"]},
+                    index=X.index,
+                )
+
+        return uncertainty_df
+
+
+class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostHyperParams):
+    """
+    Scikit-learn-compatible CatBoost Gaussian Process Regressor for Uncertainty Estimation.
+
+    This estimator uses CatBoost's `sample_gaussian_process` method to perform
+    Gaussian Process regression using an ensemble of CatBoost models, as described in
+    "Gradient Boosting Performs Gaussian Process Inference" (https://arxiv.org/abs/2206.05608).
+    It provides mean predictions and epistemic (knowledge) uncertainty estimates, and
+    integrates with the Mother framework for hyperparameter optimization and uncertainty-aware workflows.
+
+    Attributes
+    ----------
+    models_ : list
+        List of CatBoost models representing posterior samples (the ensemble).
+    params : dict
+        Dictionary of parameters used for sampling and fitting.
+
+    Methods
+    -------
+    fit(X, y)
+        Fit the ensemble of CatBoost models using Gaussian Process sampling.
+    predict(X)
+        Predict mean.
+    predict_uncertainty(X, uncertainty_for_opt=False)
+        Estimate mean and uncertainty.
+    get_params(deep=True)
+        Get estimator parameters (scikit-learn API).
+    set_params(**params)
+        Set estimator parameters (scikit-learn API).
+    get_hyperparameter_space(X, y, trial, prefix="")
+        Defines the Optuna hyperparameter search space for this estimator.
+    __getstate__()
+        Support for pickling.
+    __setstate__(state)
+        Support for unpickling.
+    """
+
+    def __init__(
+        self,
+        samples: int = 10,
+        prior_iterations: int = 100,
+        learning_rate: float = 0.1,
+        max_depth: int = 6,
+        sigma: float = 0.1,
+        delta: float = 0,
+        random_strength: float = 0.1,
+        random_score_type: str = "Gumbel",
+        eps: float = 1e-4,
+        tune_boosting_type: bool = False,
+        tune_tree_structure_type: bool = True,
+        verbose: bool = False,
+        model_type: str = "regression",
+        **kwargs,
+    ):
+        """
+        Initialize CatboostGaussianProcessRegressorMother.
+
+        Args:
+            samples : int, default=10
+                Number of posterior samples (ensemble size).
+            prior_iterations : int, default=100
+                Number of boosting iterations for prior.
+            learning_rate : float, default=0.1
+                Learning rate for boosting.
+            max_depth : int, default=6
+                Tree depth.
+            sigma : float, default=0.1
+                Kernel variance parameter.
+            delta : float, default=0
+                Noise variance parameter.
+            random_strength : float, default=0.1
+                Randomness strength for splits.
+            random_score_type : str, default="Gumbel"
+                Type of random score for splits.
+            eps : float, default=1e-4
+                Numerical stability parameter.
+            tune_boosting_type : bool, default=False
+                Whether to include boosting type in hyperparameter optimization.
+            tune_tree_structure_type : bool, default=True
+                Whether to include the "grow_policy" parameter in hyperparameter tuning.
+            verbose : bool, default=False
+                Whether to print training logs during fitting.
+            model_type : str, default="regression"
+                The type of model. For compatibility with the Mother framework.
+            **kwargs : dict
+                Additional parameters for CatBoost's `sample_gaussian_process` method.
+        """
+        # Initialize hyperparameter tuning configuration
+        _CatboostHyperParams.__init__(self, tune_boosting_type, tune_tree_structure_type)
+
+        # Check for 'model_type'
+        if model_type != "regression":
+            raise ValueError("model_type for CatboostGaussianProcessRegressorMother must be 'regression'.")
+
+        self.model_type = model_type
+
+        # Store GP-specific parameters as instance attributes
+        self.samples = samples
+        self.prior_iterations = prior_iterations
+        self.sigma = sigma
+        self.delta = delta
+        self.eps = eps
+
+        # Build parameters for CatBoostRegressor initialization
+        catboost_params = {
+            "learning_rate": learning_rate,
+            "max_depth": max_depth,
+            "random_strength": random_strength,
+            "random_score_type": random_score_type,
+            "verbose": verbose,
+        }
+
+        # Add any additional kwargs
+        catboost_params.update(kwargs)
+
+        # Add default parameters that aren't already set
+        for key, val in self.default_parameters().items():
+            if key not in catboost_params:
+                catboost_params[key] = val
+
+        # Initialize CatBoostRegressor properly to ensure _init_params is set
+        CatBoostRegressor.__init__(self, **catboost_params)
+
+        # Store parameters for GP functionality (used in fit method)
+        self.gp_params = {
+            "samples": samples,
+            "prior_iterations": prior_iterations,
+            "learning_rate": learning_rate,
+            "max_depth": max_depth,
+            "sigma": sigma,
+            "delta": delta,
+            "random_strength": random_strength,
+            "random_score_type": random_score_type,
+            "eps": eps,
+            "verbose": verbose,
+        }
+
+        # Initialize empty models list
+        self.models_ = []
+
+    def get_params(self, deep=True):
+        """
+        Get parameters for this estimator.
+
+        Args:
+            deep (bool): Whether to return parameters of subobjects.
+
+        Returns:
+            dict: Parameter names mapped to their values.
+        """
+        # Get base CatBoost parameters
+        base_params = super().get_params(deep=deep)
+
+        # Add our custom parameters
+        custom_params = {
+            "model_type": self.model_type,
+            "tune_boosting_type": self.tune_boosting_type,
+            "tune_tree_structure_type": self.tune_tree_structure_type,
+            "samples": self.samples,
+            "prior_iterations": self.prior_iterations,
+            "sigma": self.sigma,
+            "delta": self.delta,
+            "eps": self.eps,
+        }
+
+        # Merge parameters
+        base_params.update(custom_params)
+        return base_params
+
+    def set_params(self, **params):
+        """
+        Set parameters for this estimator.
+
+        Args:
+            **params: Parameters to set.
+
+        Returns:
+            self
+        """
+        # Handle our custom parameters
+        custom_param_names = {
+            "model_type",
+            "tune_boosting_type",
+            "tune_tree_structure_type",
+            "samples",
+            "prior_iterations",
+            "sigma",
+            "delta",
+            "eps",
+        }
+
+        # Update custom parameters and remove them from params dict
+        params_to_remove = []
+        for key, value in params.items():
+            if key in custom_param_names:
+                setattr(self, key, value)
+                # Also update gp_params if it exists there
+                if hasattr(self, "gp_params") and key in self.gp_params:
+                    self.gp_params[key] = value
+                params_to_remove.append(key)
+
+        # Remove handled parameters
+        for key in params_to_remove:
+            params.pop(key, None)
+
+        # Let parent handle remaining parameters
+        if params:
+            super().set_params(**params)
+
+        return self
+
+    def default_parameters(self, prefix: str = "") -> dict:
+        """
+        Return default hyperparameters for CatboostGaussianProcessRegressorMother.
+
+        Args:
+            prefix : str
+                Optional prefix for parameter names.
+
+        Returns:
+            dict: Default parameters.
+        """
+        # Use the same defaults as CatboostRegressorMother for consistency
+        base_defaults = {
+            "learning_rate": 0.03,
+            "bootstrap_type": "Bayesian",
+            "random_strength": 1,
+            "grow_policy": "SymmetricTree",
+            "boosting_type": "Plain",
+            "max_depth": 6,
+            "loss_function": "RMSE",
+        }
+
+        return models_utils.add_prefix_to_dict_keys(base_defaults, prefix=prefix)
+
+    def fit(self, X: pd.DataFrame, y: pd.Series):
+        """
+        Fit the CatboostGaussianProcessRegressorMother.
+
+        Args:
+            X : pd.DataFrame
+                Training data.
+            y : pd.Series
+                Target values.
+
+        Returns:
+            self
+        """
+        X, y = check_X_y(X, y, accept_sparse=False, ensure_2d=True, dtype=None)
+        posterior_iterations = 1000 - self.prior_iterations
+
+        module_logger.warning(
+            f"Parameter prior_iterations set to: {self.prior_iterations}, "
+            f"automatically updating posterior_iterations to: {posterior_iterations}."
+        )
+
+        self.models_ = catboost.core.sample_gaussian_process(
+            X=X,
+            y=y,
+            samples=self.samples,
+            posterior_iterations=posterior_iterations,
+            prior_iterations=self.prior_iterations,
+            learning_rate=self.gp_params["learning_rate"],
+            depth=self.gp_params["max_depth"],
+            sigma=self.sigma,
+            delta=self.delta,
+            random_strength=self.gp_params["random_strength"],
+            random_score_type=self.gp_params["random_score_type"],
+            eps=self.eps,
+            verbose=self.gp_params["verbose"],
+        )
+        return self
+
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
+        """
+        Predict regression targets.
+
+        Args:
+            X : pd.DataFrame
+                Input data.
+
+        Returns:
+            np.ndarray: Mean predictions.
+        """
+        if not hasattr(self, "models_") or not self.models_:
+            module_logger.error("Prediction requested before model was fitted. Call 'fit' before 'predict'.")
+            raise RuntimeError("Model has not been fitted yet. Call 'fit' before 'predict'.")
+
+        predictions = np.array([model.predict(X) for model in self.models_])
+        mean_predictions = predictions.mean(axis=0)
+        return mean_predictions
+
+    def predict_uncertainty(self, X: pd.DataFrame, uncertainty_for_opt: bool = False) -> pd.DataFrame:
+        """
+        Estimate knowledge uncertainty for regression.
+
+        Args:
+            X : pd.DataFrame
+                Input data.
+            uncertainty_for_opt : bool
+                If True, return only uncertainty for optimization.
+
+        Returns:
+            pd.DataFrame: Predictions with uncertainty.
+        """
+        if not hasattr(self, "models_") or not self.models_:
+            raise RuntimeError("Model has not been fitted yet. Call 'fit' before 'predict_uncertainty'.")
+
+        predictions = np.array([model.predict(X) for model in self.models_])
+
+        mean_predictions = predictions.mean(axis=0)
+        knowledge_uncertainty = predictions.std(axis=0)
+
+        results = pd.DataFrame(
+            {
+                "mean_predictions": mean_predictions,
+                "knowledge_uncertainty": knowledge_uncertainty,
+                "data_uncertainty": None,
+                "total_uncertainty": None,
+            },
+            index=X.index if isinstance(X, pd.DataFrame) else None,
+        )
+
+        if uncertainty_for_opt:
+            return pd.DataFrame(
+                {"knowledge_uncertainty": results["knowledge_uncertainty"]},
+                index=X.index if isinstance(X, pd.DataFrame) else None,
+            )
+
+        return results
+
+    def get_hyperparameter_space(self, X, y, trial, prefix: str = "") -> dict:
+        """
+        Define the Optuna hyperparameter search space for CatBoost Gaussian Process regression.
+
+        Args:
+            X : pd.DataFrame
+                Feature data.
+            y : pd.Series
+                Target data.
+            trial : optuna.trial.Trial
+                Optuna trial object.
+            prefix : str
+                Optional prefix for parameter names.
+
+        Returns:
+            dict: Suggested hyperparameters for the current trial.
+        """
+        # Get the base hyperparameter space from parent class
+        base_params = super().get_hyperparameter_space(X, y, trial, prefix)
+
+        # Add GP-specific parameters
+        gp_params = {
+            "prior_iterations": trial.suggest_int(prefix + "prior_iterations", 50, 500),
+            "samples": trial.suggest_int(prefix + "samples", 5, 50),
+            "sigma": trial.suggest_float(prefix + "sigma", 1e-3, 0.5, log=True),
+            "delta": trial.suggest_float(prefix + "delta", 0.0, 0.1),
+            "eps": trial.suggest_float(prefix + "eps", 1e-6, 1e-3, log=True),
+            "random_score_type": trial.suggest_categorical(
+                prefix + "random_score_type", ["Gumbel", "NormalWithModelSizeDecrease"]
+            ),
+        }
+
+        # Merge with base parameters
+        base_params.update(gp_params)
+
+        module_logger.info(f"Suggested parameters in trial {trial.number}: {base_params}")
+        return base_params
+
+    def __getstate__(self):
+        """Get state for pickling."""
+        # Get state from CatBoostRegressor
+        state = super().__getstate__()
+
+        # Add our custom attributes
+        state.update(
+            {
+                "model_type": self.model_type,
+                "tune_boosting_type": self.tune_boosting_type,
+                "tune_tree_structure_type": self.tune_tree_structure_type,
+                "samples": self.samples,
+                "prior_iterations": self.prior_iterations,
+                "sigma": self.sigma,
+                "delta": self.delta,
+                "eps": self.eps,
+                "gp_params": getattr(self, "gp_params", {}),
+                "models_": getattr(self, "models_", []),
+            }
+        )
+        return state
+
+    def __setstate__(self, state):
+        """Set state for unpickling."""
+        # Extract our custom attributes
+        self.model_type = state.pop("model_type", "regression")
+        self.tune_boosting_type = state.pop("tune_boosting_type", False)
+        self.tune_tree_structure_type = state.pop("tune_tree_structure_type", True)
+        self.samples = state.pop("samples", 10)
+        self.prior_iterations = state.pop("prior_iterations", 100)
+        self.sigma = state.pop("sigma", 0.1)
+        self.delta = state.pop("delta", 0)
+        self.eps = state.pop("eps", 1e-4)
+        self.gp_params = state.pop("gp_params", {})
+        self.models_ = state.pop("models_", [])
+
+        # Let parent handle the rest
+        super().__setstate__(state)
+
+
+class CatboostClassifierMother(CatBoostClassifier, _CatboostHyperParams, AbstractMotherPipeline):
+    """
+    Unified CatBoost classifier for binary and multiclass classification with Optuna hyperparameter tuning,
+    uncertainty estimation, and active learning support, designed for integration with the Mother framework.
+
+    This class extends CatBoostClassifier and provides:
+      - Dynamic hyperparameter search spaces for Optuna, including loss-specific and tree parameters.
+      - Automatic handling of boosting type (Plain/Ordered) and grow policy.
+      - Loss-specific parameter tuning (e.g., Focal loss alpha/gamma for binary classification).
+      - Consistent uncertainty estimation interface for both standard and active learning workflows.
+      - Support for both single-target and multi-target classification.
+
+    Attributes
+    ----------
+    model_type : str
+        Classification mode ("classification_binary" or "classification_multiclass").
+    target_type : props.TargetType
+        Target variable type.
+    tune_boosting_type : bool
+        Whether boosting type tuning is enabled.
+
+    Methods
+    -------
+    default_parameters(prefix: str = "") -> dict
+        Returns default hyperparameters for CatBoostClassifier.
+    get_params(deep=True) -> dict
+        Returns all estimator parameters, including custom Mother framework options.
+    set_params(**params) -> self
+        Sets estimator parameters, handling both CatBoost and Mother-specific options.
+    suggested_params_loss(trial, suggested_params, y, prefix) -> dict
+        Adds loss-specific hyperparameters (e.g., Focal loss alpha/gamma for binary).
+    predict_uncertainty(X, uncertainty_for_opt=False, n_ensembles=10, n_threads=1) -> np.ndarray or pd.DataFrame
+        Predicts class labels and estimates uncertainty.
+
+    Notes
+    -----
+    - For single_target binary classification, supports both "Logloss" and "Focal" loss (with alpha/gamma tuning).
+    - For multi target binary classification, uses standard MultiLogloss.
+    - For multiclass, uses standard MultiClass loss (no loss-specific tuning provided).
+    """
+
+    def __init__(
+        self,
+        target_type: props.TargetType = "single_target",
+        tune_boosting_type: bool = False,
+        model_type: props.ModelType = "classification_binary",
+        tune_tree_structure_type: bool = True,
+        **kwargs,
+    ):
+        """
+        Initialize CatboostClassifierMother.
+
+        Args:
+            target_type (str): Target type ("single_target" or "multi_target").
+            tune_boosting_type (bool): Whether to tune boosting_type.
+            model_type (str): Model type ("classification_binary" or "classification_multiclass").
+            tune_tree_structure_type (bool): Whether to include the "grow_policy" parameter in hyperparameter tuning.
+            **kwargs: Additional CatBoostClassifier parameters.
+        """
+
+        # Initialize hyperparameter tuning configuration
+        _CatboostHyperParams.__init__(self, tune_boosting_type, tune_tree_structure_type)
+
+        self.model_type = model_type
+        self.target_type = target_type
+
+        if "loss_function" not in kwargs:
+            kwargs["loss_function"] = utils.default_loss_function(
+                model_type=self.model_type, target_type=self.target_type
+            )
+
+        # Set auto_class_weights
+        if (
+            self.model_type == "classification_binary"
+            and self.target_type == "single_target"
+            and kwargs["loss_function"] == "Logloss"
+        ):
+            if "auto_class_weights" not in kwargs:
+                kwargs["auto_class_weights"] = "Balanced"
+
+        elif self.model_type == "classification_multiclass" and self.target_type == "single_target":
+            if "auto_class_weights" not in list(kwargs):
+                kwargs["auto_class_weights"] = "Balanced"
+
+        if "posterior_sampling" not in kwargs.keys():
+            kwargs["posterior_sampling"] = True
+
+        # Initialize with default parameters
+        for key, val in self.default_parameters().items():
+            if key not in list(kwargs):
+                kwargs[key] = val
+
+        super().__init__(**kwargs)
+
+    def get_params(self, deep=True):
+        """
+        Get parameters for this estimator, including custom Mother parameters.
+
+        Args:
+            deep (bool): Whether to return parameters of subobjects.
+
+        Returns:
+            dict: Parameter names mapped to their values.
+        """
+        params = super().get_params(deep=deep)
+        params.update(
+            {
+                "target_type": self.target_type,
+                "tune_boosting_type": self.tune_boosting_type,
+                "model_type": self.model_type,
+                "tune_tree_structure_type": self.tune_tree_structure_type,
+            }
+        )
+        return params
+
+    def set_params(self, **params):
+        """
+        Set parameters for this estimator, including custom Mother parameters.
+
+        Args:
+            **params: Parameters to set.
+
+        Returns:
+            self
+        """
+        our_params = [
+            "target_type",
+            "tune_boosting_type",
+            "model_type",
+            "tune_tree_structure_type",
+        ]
+
+        for param in our_params:
+            if param in params:
+                setattr(self, param, params[param])
+                params.pop(param, None)
+
+        return super().set_params(**params)
+
+    def default_parameters(self, prefix: str = "") -> dict:
+        """
+        Return default hyperparameters for CatBoostClassifier.
+
+        Args:
+            prefix : str, optional
+                Optional prefix for parameter names.
+
+        Returns:
+            dict: Default parameters.
+        """
+        loss_function = utils.default_loss_function(model_type=self.model_type, target_type=self.target_type)
+        return models_utils.add_prefix_to_dict_keys(
+            {
+                "learning_rate": 0.03,
+                "bootstrap_type": "Bayesian",
+                "random_strength": 1,
+                "grow_policy": "SymmetricTree",
+                "boosting_type": "Plain",
+                "max_depth": 6,
+                "loss_function": loss_function,
+            },
+            prefix=prefix,
+        )
+
+    def suggested_params_loss(self, trial: Trial, suggested_params: dict, y: pd.DataFrame, prefix: str) -> dict:
+        """
+        Add classification loss-specific hyperparameters to the suggested parameters.
+
+        Args:
+            trial : optuna.trial.Trial
+                Optuna trial object.
+            suggested_params : dict
+                Current suggested parameters.
+            y : pd.DataFrame
+                Target data.
+            prefix : str
+                Parameter prefix.
+
+        Returns:
+            dict: Updated suggested parameters.
+        """
+
+        if self.model_type == "classification_binary":
+            if self.target_type == "multi_target":
+                return suggested_params
+
+            losses = ("Logloss", "Focal")
+            suggested_loss_function = trial.suggest_categorical(prefix + "loss_function", losses)
+
+            if suggested_loss_function == "Focal":
+                suggested_params[prefix + "auto_class_weights"] = "None"
+                focal_alpha = trial.suggest_float(prefix + "alpha", 0.000001, 0.999999)
+                focal_gamma = trial.suggest_float(prefix + "gamma", 0.000001, 7)
+                suggested_params[prefix + "loss_function"] = (
+                    "Focal:focal_alpha=" + str(focal_alpha) + ";focal_gamma=" + str(focal_gamma)
+                )
+            else:
+                suggested_params[prefix + "loss_function"] = suggested_loss_function
+
+        elif self.model_type == "classification_multiclass":
+            if self.target_type == "multi_target":
+                raise NotImplementedError(
+                    "target_type=multi_target cannot be used with model_type==classification_multiclass."
+                )
+            else:
+                suggested_params[prefix + "loss_function"] = "MultiClass"
+
+        return suggested_params
+
+    def __getstate__(self):
+        state = super(CatBoostClassifier, self).__getstate__()
+        state.update(
+            {
+                "target_type": self.target_type,
+                "tune_boosting_type": self.tune_boosting_type,
+                "model_type": self.model_type,
+                "tune_tree_structure_type": self.tune_tree_structure_type,
+            }
+        )
+        return state
+
+    def __setstate__(self, state):
+        self.target_type = state.pop("target_type", "single_target")
+        self.tune_boosting_type = state.pop("tune_boosting_type", False)
+        self.model_type = state.pop("model_type", "classification_binary")
+        self.tune_tree_structure_type = state.pop("tune_tree_structure_type", True)
+        super(CatBoostClassifier, self).__setstate__(state)
+
+    def predict_uncertainty(
+        self,
+        X: pd.DataFrame,
+        n_ensembles: int = 10,
+        n_threads: int = 1,
+        uncertainty_for_opt=False,
+    ) -> pd.DataFrame:
+        """
+        Predicts class labels and estimates uncertainty for classification.
+
+        Args:
+            X : pd.DataFrame
+                Input data.
+            n_ensembles : int, optional
+                Number of ensembles.
+            n_threads : int, optional
+                Number of threads.
+            uncertainty_for_opt : bool, optional
+                If True, return only uncertainty for optimization.
+
+        Returns:
+            pd.DataFrame: Predictions with uncertainty.
+        """
+        if str(self.target_type) == "multi_target" or str(self.model_type) == "classification_multiclass":
+            module_logger.warning(
+                "Uncertainty prediction for MULTICLASS or MULTI-TARGET is a PROTOTYPE; "
+                "check CatBoost docs to ensure compatibility."
+            )
+        uncertainty_df = utils.get_virtual_prediction(
+            X, model=self, virtual_ensembles_count=n_ensembles, thread_count=n_threads
+        )
+
+        if uncertainty_for_opt:
+            return pd.DataFrame(
+                {"knowledge_uncertainty": uncertainty_df["knowledge_uncertainty"]},
+                index=X.index,
+            )
+
+        return uncertainty_df
+
+
+class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
+    """
+    A custom implementation of CatBoostRanker with extended functionality for hyperparameter tuning
+    and automatic metadata routing enablement.
+
+    This class extends the CatBoostRanker and integrates with the Mother framework to provide
+    dynamic hyperparameter tuning using Optuna. It automatically enables sklearn's metadata routing
+    if not already enabled, which is required for passing group_id parameters during training.
+
+    Attributes
+    ----------
+    model_type : str
+        The type of model, set to "ranking".
+    target_type : props.TargetType
+        The type of target variable, typically "single_target" for ranking.
+    tune_boosting_type : bool
+        Whether to include the "boosting_type" parameter in the hyperparameter space for tuning.
+    tune_tree_structure_type : bool
+        Whether to include the "grow_policy" parameter in the hyperparameter space for tuning.
+
+    Methods
+    -------
+    default_parameters(prefix: str = "") -> dict
+        Returns the default parameters for the CatBoostRanker.
+
+    Notes
+    -----
+    The __init__ method is decorated with @ensure_metadata_routing to automatically enable
+    sklearn's metadata routing configuration, which is required for ranking models to accept
+    group_id parameters during training.
+    """
+
+    @ensure_metadata_routing
+    def __init__(
+        self,
+        target_type: props.TargetType = "single_target",
+        tune_boosting_type: bool = False,
+        tune_tree_structure_type: bool = True,
+        **kwargs,
+    ):
+        """
+        Initialize CatboostRankerMother.
+
+        Args:
+            target_type : props.TargetType, optional
+                Target type ("single_target" for ranking).
+            tune_boosting_type : bool, optional
+                Whether to tune boosting_type.
+            tune_tree_structure_type : bool, optional
+                Whether to include the "grow_policy" parameter in hyperparameter tuning.
+            **kwargs
+                Additional CatBoostRanker parameters.
+        """
+        self.model_type: props.ModelType = "ranking"
+        self.target_type: props.TargetType = target_type
+
+        # Initialize hyperparameter tuning configuration
+        _CatboostHyperParams.__init__(self, tune_boosting_type, tune_tree_structure_type)
+
+        if "loss_function" not in list(kwargs):
+            kwargs["loss_function"] = utils.default_loss_function("ranking", target_type)
+
+        for key, val in self.default_parameters().items():
+            if key not in list(kwargs):
+                kwargs[key] = val
+
+        CatBoostRanker.__init__(self, **kwargs)
+
+    # def get_params(self, deep=True):
+    #     """
+    #     Override get_params to include custom parameters like target_type.
+    #     """
+    #     params = super().get_params(deep=deep)
+    #     params.update(
+    #         {
+    #             "target_type": self.target_type,
+    #             "tune_boosting_type": self.tune_boosting_type,
+    #             "tune_tree_structure_type": self.tune_tree_structure_type,
+    #         }
+    #     )
+    #     return params
+
+    # def set_params(self, **params):
+    #     """
+    #     Override set_params to handle custom parameters like target_type.
+    #     """
+    #     for param in ["target_type", "tune_boosting_type", "tune_tree_structure_type"]:
+    #         if param in params:
+    #             setattr(self, param, params[param])
+    #             params.pop(param, None)
+    #     return super().set_params(**params)
+
+    # def __getstate__(self):
+    #     """
+    #     Custom getstate to handle pickling of the model.
+    #     This ensures all necessary attributes are included when the object is pickled.
+
+    #     Returns:
+    #         dict: A dictionary containing the state of the object.
+    #     """
+    #     state = super().__getstate__()
+    #     state.update(
+    #         {
+    #             "target_type": self.target_type,
+    #             "tune_boosting_type": self.tune_boosting_type,
+    #             "tune_tree_structure_type": self.tune_tree_structure_type,
+    #         }
+    #     )
+    #     return state
+
+    # def __setstate__(self, state):
+    #     """
+    #     Custom setstate to handle unpickling of the model.
+    #     This ensures all attributes are properly restored when the object is unpickled.
+
+    #     Args:
+    #         state (dict): A dictionary containing the state of the object.
+    #     """
+    #     self.target_type = state.pop("target_type", "single_target")
+    #     self.tune_boosting_type = state.pop("tune_boosting_type", False)
+    #     self.tune_tree_structure_type = state.pop("tune_tree_structure_type", True)
+    #     super().__setstate__(state)
+
+    def default_parameters(self, prefix: str = "") -> dict:
+        return {
+            prefix + "learning_rate": 0.03,
+            prefix + "bootstrap_type": "MVS",
+            prefix + "random_strength": 1,
+            prefix + "grow_policy": "SymmetricTree",
+            prefix + "boosting_type": "Plain",
+            prefix + "max_depth": 6,
+        }

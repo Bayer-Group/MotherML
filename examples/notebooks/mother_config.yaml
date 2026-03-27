@@ -1,0 +1,172 @@
+cv:
+  cv_type: tanimoto_grouping
+  n_splits: 5
+  parameters:
+    similarity_threshold: 0.4
+feature_generation:
+  chemical_descriptors:
+    descriptor_list: null
+    descriptor_prefix: rdkit_
+    omit_prefixes:
+    - fr_
+    - FpDensity
+  fingerprints:
+  - MorganFP:
+      fpSize: 1024
+      includeChirality: false
+      radius: 2
+  maccs: true
+input:
+  group_col: std_smiles
+  input_file: test/data/freesolv_train.csv
+  input_separator: ','
+  structure_col: smiles
+  target_columns:
+  - expt
+model:
+  algorithm: catboost
+  categorical_features:
+  - cat_col
+  correlation_threshold: 0.9
+  feature_selection_flags:
+  - DROP_CORRELATED
+  - DROP_CONSTANT
+  - DROP_DUPLICATES
+  feature_selection_max_features: null
+  feature_selection_threshold: 0.0
+  feature_selection_type: catboost
+  parameters:
+    allow_const_label: null
+    allow_writing_files: null
+    approx_on_full_history: null
+    bagging_temperature: null
+    best_model_min_trees: null
+    boost_from_average: null
+    boosting_type: Plain
+    bootstrap_type: null
+    border_count: null
+    cat_features: null
+    colsample_bylevel: null
+    combinations_ctr: null
+    counter_calc_method: null
+    ctr_description: null
+    ctr_history_unit: null
+    ctr_leaf_count_limit: null
+    ctr_target_border_count: null
+    custom_metric: null
+    data_partition: null
+    depth: null
+    dev_efb_max_buckets: null
+    dev_score_calc_obj_block_size: null
+    device_config: null
+    devices: null
+    dictionaries: null
+    diffusion_temperature: null
+    early_stopping_rounds: null
+    embedding_features: null
+    eta: null
+    eval_fraction: null
+    eval_metric: null
+    feature_border_type: null
+    feature_calcers: null
+    feature_weights: null
+    final_ctr_computation_mode: null
+    first_feature_use_penalties: null
+    fixed_binary_splits: null
+    fold_len_multiplier: null
+    fold_permutation_block: null
+    gpu_cat_features_storage: null
+    gpu_ram_part: null
+    grow_policy: null
+    has_time: null
+    ignored_features: null
+    input_borders: null
+    iterations: null
+    l2_leaf_reg: null
+    langevin: null
+    leaf_estimation_backtracking: null
+    leaf_estimation_iterations: null
+    leaf_estimation_method: null
+    learning_rate: null
+    logging_level: null
+    loss_function: RMSE
+    max_bin: null
+    max_ctr_complexity: null
+    max_depth: 6
+    max_leaves: null
+    metadata: null
+    metric_period: null
+    min_child_samples: null
+    min_data_in_leaf: null
+    model_shrink_mode: null
+    model_shrink_rate: null
+    model_size_reg: null
+    monotone_constraints: null
+    mvs_reg: null
+    n_estimators: null
+    name: null
+    nan_mode: Forbidden
+    num_boost_round: null
+    num_leaves: null
+    num_trees: null
+    objective: null
+    od_pval: null
+    od_type: null
+    od_wait: null
+    one_hot_max_size: null
+    output_borders: null
+    penalties_coefficient: null
+    per_feature_ctr: null
+    per_float_feature_quantization: null
+    per_object_feature_penalties: null
+    pinned_memory_size: null
+    posterior_sampling: null
+    random_score_type: null
+    random_seed: null
+    random_state: null
+    random_strength: null
+    reg_lambda: null
+    rsm: null
+    sampling_frequency: null
+    sampling_unit: null
+    save_snapshot: null
+    score_function: null
+    silent: null
+    simple_ctr: null
+    snapshot_file: null
+    snapshot_interval: null
+    sparse_features_conflict_fraction: null
+    store_all_simple_ctr: null
+    subsample: null
+    target_border: null
+    task_type: null
+    text_features: null
+    text_processing: null
+    thread_count: 2
+    tokenizers: null
+    train_dir: null
+    use_best_model: null
+    used_ram_limit: null
+    verbose: null
+  target_type: single_target
+  type: regression
+pipeline:
+  memory: null
+  n_jobs: null
+  remainder: passthrough
+  transform: pandas
+  verbose: false
+  verbose_feature_names_out: false
+preprocessing:
+  flags:
+  - STANDARDIZE
+  - NEUTRALIZE
+  - DESALT
+tuning:
+  early_stopping_optuna: false
+  n_startup_trials: 1
+  n_threads_optuna: 2
+  n_trials_optuna: 2
+  sampler: null
+  scorer: null
+  seed: 42

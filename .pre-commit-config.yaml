@@ -1,0 +1,76 @@
+fail_fast: false
+exclude: ^(docs/|examples/|tests/)
+repos:
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: "0.10.3"
+    hooks:
+      - id: uv-lock
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-ast #simply checks whether the files parse as valid python.
+        files: mother
+      - id: check-docstring-first # checks a common error of defining a docstring after code.
+        files: mother
+      - id: check-case-conflict # checks for files that would conflict in case-insensitive filesystems.
+      - id: check-merge-conflict # checks for files that contain merge conflict strings.
+      - id: check-toml # checks toml files for parseable syntax.
+      - id: detect-private-key # detects the presence of private keys.
+      - id: end-of-file-fixer # ensures that a file is either empty, or ends with one newline.
+      - id: fix-byte-order-marker # removes utf-8 byte order marker.
+      - id: mixed-line-ending # replaces or checks mixed line ending.
+      # - id: requirements-txt-fixer # sorts entries in requirements.txt.
+      - id: trailing-whitespace # trims trailing whitespace.
+      # - id: check-json # if you have JSON files in your repo
+  - repo: meta
+    hooks:
+      - id: check-hooks-apply #ensures that the configured hooks apply to at least one file in the repository.
+      - id: check-useless-excludes # ensures that exclude directives apply to any file in the repository.
+      - id: identity #a simple hook which prints all arguments passed to it, useful for debugging.
+  # - repo: https://github.com/pryorda/dockerfilelint-precommit-hooks
+  #   rev: v0.1.0
+  #   hooks:
+  #     - id: dockerfilelint
+  # - repo: https://github.com/sirosen/check-jsonschema
+  #   rev: 0.10.0
+  #   hooks:
+  #     - id: check-github-actions
+  #     - id: check-github-workflows
+  - repo: local
+    hooks:
+      - id: linter
+        name: ruff linter
+        entry: uv run poe check-lint
+        pass_filenames: false
+        language: system
+        types_or: [python, pyi]
+      # - id: mypy
+      #   name: mypy
+      #   description: "Check types of python files"
+      #   entry: uv run poe check-types
+      #   pass_filenames: false
+      #   language: system
+      #   types_or: [python, pyi]
+      - id: isort
+        name: isort
+        description: "Sort imports"
+        entry: uv run poe sort-imports
+        pass_filenames: false
+        language: system
+        types: [python]
+      - id: formatter
+        name: ruff formatter
+        entry: uv run poe format
+        pass_filenames: true
+        language: system
+        types_or: [python, pyi]
+  - repo: https://github.com/nbQA-dev/nbQA
+    rev: 1.9.1
+    hooks:
+      - id: nbqa-ruff-check
+      - id: nbqa-ruff-format
+      - id: nbqa-pyupgrade
+        args: ["--py37-plus"]
+      - id: nbqa-isort
+        args: ["--float-to-top"]
