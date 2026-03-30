@@ -1,0 +1,168 @@
+input:
+  file: examples/notebooks/freesolv_train.csv
+  separator: ","
+  structure_col: "smiles"
+  target_columns: ["expt"]
+  group_col: "cat_col" # e.g.: "validation_date" for time series column
+
+pipeline:
+  memory: ~
+  transform: "pandas"
+  remainder: "passthrough"
+  verbose: False
+  n_jobs: ~
+  verbose_feature_names_out: False
+
+preprocessing:
+  flags:
+  - "STANDARDIZE"
+  - "NEUTRALIZE"
+  - "DESALT"
+
+feature_generation:
+  maccs: True
+  fingerprints:
+    - MorganFP:
+       radius: 2
+       fpSize: 1024
+       includeChirality: False
+
+  chemical_descriptors:
+    descriptor_prefix: "rdkit_"
+    omit_prefixes: ["fr_", "FpDensity"]
+    descriptor_list: ~
+
+cv:
+  cv_type: "tanimoto_grouping"
+  parameters:
+    similarity_threshold: 0.4
+
+tuning:
+  scorer: "r2"
+  early_stopping_optuna: False
+  n_trials_optuna: 2
+  n_threads_optuna: 2
+  n_startup_trials: 1
+  seed: 42
+
+model:
+  categorical_features: ["cat_col"]
+  model_type: "regression"
+  target_type: "single_target"
+  feature_selection_type: "catboost"
+  algorithm: "catboost" # lasso or random_forest, xgboost, lightgbm, etc.
+  feature_selection_flags: ["DROP_CORRELATED", "DROP_CONSTANT", "DROP_DUPLICATES"]
+  feature_selection_threshold: 0
+  correlation_threshold: 0.9
+  parameters:
+    iterations: ~
+    learning_rate: ~
+    max_depth: 6
+    boosting_type: "Plain"
+    loss_function: 'RMSE'
+    nan_mode: "Forbidden"
+    thread_count: 2
+    l2_leaf_reg: ~
+    grow_policy: ~
+    model_size_reg: ~
+    rsm: ~
+    border_count: ~
+    feature_border_type: ~
+    per_float_feature_quantization: ~
+    input_borders: ~
+    output_borders: ~
+    fold_permutation_block: ~
+    od_pval: ~
+    od_wait: ~
+    od_type: ~
+    counter_calc_method: ~
+    leaf_estimation_iterations: ~
+    leaf_estimation_method: ~
+    random_seed: ~
+    use_best_model: ~
+    best_model_min_trees: ~
+    verbose: ~
+    silent: ~
+    logging_level: ~
+    metric_period: ~
+    ctr_leaf_count_limit: ~
+    store_all_simple_ctr: ~
+    max_ctr_complexity: ~
+    has_time: ~
+    allow_const_label: ~
+    target_border: ~
+    one_hot_max_size: ~
+    random_strength: ~
+    random_score_type: ~
+    name: ~
+    ignored_features: ~
+    train_dir: ~
+    custom_metric: ~
+    eval_metric: ~
+    bagging_temperature: ~
+    save_snapshot: ~
+    snapshot_file: ~
+    snapshot_interval: ~
+    fold_len_multiplier: ~
+    used_ram_limit: ~
+    gpu_ram_part: ~
+    pinned_memory_size: ~
+    allow_writing_files: ~
+    final_ctr_computation_mode: ~
+    approx_on_full_history: ~
+    simple_ctr: ~
+    combinations_ctr: ~
+    per_feature_ctr: ~
+    ctr_description: ~
+    ctr_target_border_count: ~
+    task_type: ~
+    device_config: ~
+    devices: ~
+    bootstrap_type: ~
+    subsample: ~
+    mvs_reg: ~
+    sampling_frequency: ~
+    sampling_unit: ~
+    dev_score_calc_obj_block_size: ~
+    dev_efb_max_buckets: ~
+    sparse_features_conflict_fraction: ~
+    n_estimators: ~
+    num_boost_round: ~
+    num_trees: ~
+    colsample_bylevel: ~
+    random_state: ~
+    reg_lambda: ~
+    objective: ~
+    eta: ~
+    max_bin: ~
+    gpu_cat_features_storage: ~
+    data_partition: ~
+    metadata: ~
+    early_stopping_rounds: ~
+    cat_features: ~
+    min_data_in_leaf: ~
+    min_child_samples: ~
+    max_leaves: ~
+    num_leaves: ~
+    score_function: ~
+    leaf_estimation_backtracking: ~
+    ctr_history_unit: ~
+    monotone_constraints: ~
+    feature_weights: ~
+    penalties_coefficient: ~
+    first_feature_use_penalties: ~
+    per_object_feature_penalties: ~
+    model_shrink_rate: ~
+    model_shrink_mode: ~
+    langevin: ~
+    diffusion_temperature: ~
+    posterior_sampling: ~
+    boost_from_average: ~
+    text_features: ~
+    tokenizers: ~
+    dictionaries: ~
+    feature_calcers: ~
+    text_processing: ~
+    embedding_features: ~
+    eval_fraction: ~
+    fixed_binary_splits : ~

@@ -117,6 +117,6 @@ In the following every highlighted subsection represents the settings for a diff
 
 ~~~yaml hl_lines="8 15 18 31 36 45" title="mother/data/mother_config.yaml"
 {%
-    include "../../../mother/data/mother_config.yaml"
+    include "../../../src/mother/data/mother_config.yaml"
 %}
 ~~~

@@ -16,7 +16,7 @@ Mother is a machine-learning framework for predicting properties from chemical m
 
 Mother provides methods for each of these steps in the form of sklearn transformer objects. By that, all methods are designed to be easily accessible and usable in a modular way. The methods can be combined to ML workflows with [sklearn pipelines, column transformers, and feature unions](https://scikit-learn.org/dev/modules/compose.html).
 
-All methods can be used as sklearn `transformer` or `estimator`. Combination with other methods, or own methods and models (e.g. using mother preprocessing with other model) is therefore straightforward. To be as compatible as possible, every transformer can be constructed using a dictionary containing the required parameters. However, to provide some convenience to the users, a settings class [MotherSettings](../../mother/settings.py). This class can be used to store all relevant settings for your ML project.
+All methods can be used as sklearn `transformer` or `estimator`. Combination with other methods, or own methods and models (e.g. using mother preprocessing with other model) is therefore straightforward. To be as compatible as possible, every transformer can be constructed using a dictionary containing the required parameters. However, to provide some convenience to the users, a settings class [MotherSettings](../../src/mother/settings.py). This class can be used to store all relevant settings for your ML project.
 
 ## Usage
 

@@ -1,4 +1,4 @@
-site_name: SMOL-CLS Mother for Machine Learning
+site_name: Mother for Machine Learning
 theme:
   name: "material"
   palette:
@@ -75,4 +75,3 @@ nav:
       - Molecule Standardisation: standardization.md
       - Feature Generation: feature_generation.md
   - Changelog: Changelog.md
-  # - Pipeline: ../examples/notebooks/ExamplePipeline.ipynb

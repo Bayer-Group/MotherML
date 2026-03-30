@@ -14,7 +14,6 @@ from sklearn.base import BaseEstimator
 from sklearn.compose import ColumnTransformer
 from sklearn.model_selection import GroupKFold, KFold, RepeatedKFold
 from sklearn.pipeline import FeatureUnion, Pipeline
-import yaml
 
 import mother.cv as cv_module
 import mother.feature_generation as fg

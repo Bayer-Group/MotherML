@@ -310,22 +310,22 @@ analyse-coverage = [
   { shell = "coverage xml -o coverage-report.xml", help = "Generate coverage for sonar qube" },
 ]
 build = "uv build"
-check-format = { cmd = "ruff format --check mother test examples", help = "Check code format compliance" }
+check-format = { cmd = "ruff format --check src test examples", help = "Check code format compliance" }
 check-hook = "pre-commit run --all-files"
-check-lint = { cmd = "ruff check mother test ", help = "run static analysis checks" }
+check-lint = { cmd = "ruff check src test ", help = "run static analysis checks" }
 check-sort-imports = { cmd = "isort . --sg=old --check-only --profile black", help = "check imports are sorted" }
 check-static-analysis = ["check-lint", "check-types"]
 check-style = ["check-sort-imports", "check-format"]
-check-types = { cmd = "mypy -p mother --ignore-missing-imports", help = "check type hint annotations" }
+check-types = { cmd = "mypy -p src --ignore-missing-imports", help = "check type hint annotations" }
 coverage = { shell = "pytest test -m 'not slow and not serial' -n auto --cov-report xml --cov=mother test --junit-xml=xunit-test.xml", help = "Generate coverage report (xml)" }
 dist-test = [
   "build",
   { shell = "cd dist && ../test/test-dist.bash `uv run --with tomli python -c \"import tomli; print('mother-' + tomli.load(open('../pyproject.toml','rb'))['project']['version'] + '-py3-none-any.whl')\"`", help = "check build package in its own environment" },
 ]
 docs = { shell = "cd mkdocs; mkdocs build", help = "Build documentation" }
-format = { cmd = "ruff format mother test examples", help = "Perform code style format" }
+format = { cmd = "ruff format src test examples", help = "Perform code style format" }
 install-hook = "pre-commit install"
-lint = { cmd = "ruff check mother test --fix", help = "Run linter on mother and test folder" }
+lint = { cmd = "ruff check src test --fix", help = "Run linter on src and test folder" }
 serve-coverage = [
   "coverage",
   { shell = "coverage html -d coverage-html && cd coverage-html; python -m http.server --bind 127.0.0.1", help = "Generate coverage html report" },

@@ -37,7 +37,7 @@ Your own model just has to inherit from that class and implement the required fu
 
 ~~~python title="Lasso with Hyperparameter Tuning"
 {%
-    include "../../../mother/ml/models/m_lasso.py"
+    include "../../../src/mother/ml/models/m_lasso.py"
 %}
 ~~~
 

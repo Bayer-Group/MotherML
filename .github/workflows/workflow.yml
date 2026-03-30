@@ -42,7 +42,7 @@ jobs:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
       # When set to true, GitHub cancels all in-progress jobs if any matrix job fails.
       fail-fast: true
-    name: Test 🧪 using 🐍 ${{ matrix.python-version }}
+    name: Test 🧪 using 🐍
     env:
       CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
       JF_API_KEY: ${{ secrets.JF_PASSWORD }}
