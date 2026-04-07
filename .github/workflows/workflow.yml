@@ -37,7 +37,7 @@ jobs:
     if: ${{ success() && (github.ref == 'refs/heads/main' || github.event_name == 'pull_request') }}
     strategy:
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
       # When set to true, GitHub cancels all in-progress jobs if any matrix job fails.
       fail-fast: true
     name: Test 🧪 using 🐍
