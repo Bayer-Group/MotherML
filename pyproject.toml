@@ -1,6 +1,6 @@
 [project]
 name = "mother-ml"
-version = "2.1.0"
+version = "1.0.0"
 description = "A ML framework that takes care"
 requires-python = ">=3.10, <3.14"
 authors = [
