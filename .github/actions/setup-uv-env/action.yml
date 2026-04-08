@@ -13,38 +13,21 @@ inputs:
     description: "uv version to use"
     required: false
     default: "latest"
-  artifactory-user:
-    description: "Artifactory user"
-    required: true
-  artifactory-token:
-    description: "Artifactory token"
-    required: true
 runs:
   using: "composite"
   steps:
     - id: setup-python
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v6
       with:
         python-version: ${{ inputs.python-version }}
       #----------------------------------------------
       #  -----  install & configure uv  -----
       #----------------------------------------------
-    - name: Install uv
-      uses: astral-sh/setup-uv@v5
+    - name: Install the latest version of uv
+      uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
       with:
         version: ${{ inputs.uv-version }}
 
-    - name: Configure pip access to artifactory via .netrc
-      shell: bash
-      run: |
-        if [[ "${{ inputs.artifactory-user }}" != "" ]]; then
-          echo "Creating .netrc"
-          echo "machine artifactory.bayer.com" >> ~/.netrc
-          echo "login ${{ inputs.artifactory-user }}" >> ~/.netrc
-          echo "password ${{ inputs.artifactory-token }}" >> ~/.netrc
-        else
-          echo "No JFrog username and password. No .netrc created"
-        fi
     #----------------------------------------------
     # install your root project, if required
     #----------------------------------------------

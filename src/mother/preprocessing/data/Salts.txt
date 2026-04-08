@@ -1,0 +1,19 @@
+// Inspired from rdkit Salts.txt by Greg landrum
+//
+//  Version history:
+//     05 Jul, 2022:     created (KS)
+
+// Notes:
+//  1) don't include charges
+//  2) The search for salts is a substructure search where the substructure
+//     must match the entire fragment, so we don't need to be picky about bond
+//     types
+//  3) The matching is done in order, so if you put the more complex stuff at the
+//     bottom the "don't remove the last fragment" algorithm has a chance of
+//     of returning something sensible
+
+// complex organics
+CCCCCCCCCCCCCCCCCC[N](CCCCCCCCCCCCCCCCCC)(CCCCCCCCCCCCCCCCCC)CCCCCCCCCCCCCCCCCC
+
+//other salts
+CCCCCCCCCCCCN(C)CCCCCCCCCC

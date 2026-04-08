@@ -1,0 +1,11 @@
+//	Name	SMIRKS
+// fix 5-member ring localization issues
+aromatic triazol	[*:1]c1nnc([*:4])[nH0:5]1>>[*:1]c1nnc([*:4])[nH1:5]1
+aromatic triazol 2	[*:1]c1nnc[nH0:5]1>>[*:1]c1nnc[nH1:5]1
+aromatic pyrazole	[*:1]c1nc[nH0:5]c1>>[*:1]c1nc[nH1:5]c1
+aromatic indole (part)	c1[nH0:5]ccc1>>c1[nH1:5]ccc1
+aromatic imidazole (part 1)	[*:1]c1[nH0:5]ccn1>>[*:1]c1[nH1:5]ccn1
+
+//the following SMARTS do not work yet
+//aromatic indazole (part 1)	[*:1]c1[nH0:5]c([a:2])c([a:3])n1>>[*:1]c1[nH1:5]c([a:2])c([a:3])n1
+//generic aromatic nitrogen 5-membered ring	a1[nH0:5]aaa1>>a1[nH1:5]aaa1

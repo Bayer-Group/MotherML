@@ -3,7 +3,7 @@ name: Workflow for model testing and release
 on:
   workflow_dispatch:
   pull_request:
-    branches: [master]
+    branches: [main]
   push:
 env:
   PYTHON_VERSION: "3.12"
@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout 🛎
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup uv environment 📚
         id: setup-uv-env
@@ -20,8 +20,6 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           install-args: "--extra report --extra rna --extra tabpfn"
-          artifactory-user: ${{ vars.artifactory_user }}
-          artifactory-token: ${{ secrets.artifactory_token }}
 
       # - name: Run type checks #needs a lot of type fixing
       #   run: |
@@ -36,19 +34,16 @@ jobs:
   test:
     needs: style
     runs-on: ubuntu-latest
-    if: ${{ success() && (github.ref == 'refs/heads/master' || github.event_name == 'pull_request') }}
+    if: ${{ success() && (github.ref == 'refs/heads/main' || github.event_name == 'pull_request') }}
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
       # When set to true, GitHub cancels all in-progress jobs if any matrix job fails.
       fail-fast: true
     name: Test 🧪 using 🐍
-    env:
-      CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
-      JF_API_KEY: ${{ secrets.JF_PASSWORD }}
     steps:
       - name: Checkout 🛎
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
         # needed for report dependencies
       - name: Prepare environment
@@ -62,8 +57,6 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           install-args: "--extra rna --extra report --extra tabpfn --extra clustering --group test_duration"
-          artifactory-user: ${{ vars.artifactory_user }}
-          artifactory-token: ${{ secrets.artifactory_token }}
 
       #----------------------------------------------
       #              run test suite
@@ -85,14 +78,11 @@ jobs:
   test-slow:
     needs: test
     runs-on: ubuntu-latest
-    if: ${{ success() && (github.ref == 'refs/heads/master' || github.event_name == 'pull_request') }}
+    if: ${{ success() && (github.ref == 'refs/heads/main' || github.event_name == 'pull_request') }}
     name: Test Slow 🐢 using 🐍 3.12
-    env:
-      CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
-      JF_API_KEY: ${{ secrets.JF_PASSWORD }}
     steps:
       - name: Checkout 🛎
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
         # needed for report dependencies
       - name: Prepare environment
@@ -106,8 +96,6 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           install-args: "--extra rna --extra report --extra tabpfn --extra clustering --group test_duration"
-          artifactory-user: ${{ vars.artifactory_user }}
-          artifactory-token: ${{ secrets.artifactory_token }}
 
       - name: Download TabPFN checkpoint
         run: |
@@ -120,50 +108,13 @@ jobs:
         run: |
           uv run poe test-slow
 
-  sonarqube:
-    name: SonarQube
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: coverage-py3.10
-
-      # https://community.sonarsource.com/t/sonar-on-github-actions-with-python-coverage-source-issue/36057
-      - name: Override Coverage Source Path for Sonar
-        run: sed -i "s/<source>\/home\/runner\/work\/mother-ml\/mother-ml\/mother<\/source>/<source>\/github\/workspace\/mother<\/source>/g" coverage.xml
-      - uses: sonarsource/sonarqube-scan-action@master
-        env:
-          SONAR_TOKEN: ${{ secrets.sonar_token }}
-          SONAR_HOST_URL: https://sonar.cloud.bayer.com
-
-      - name: Check 🔎
-        if: ${{ github.event_name == 'pull_request' }}
-        id: sonarqube-quality-gate-check
-        uses: sonarsource/sonarqube-quality-gate-action@master
-        env:
-          SONAR_TOKEN: ${{ secrets.sonar_token }}
-          SONAR_HOST_URL: https://sonar.cloud.bayer.com
-
-        # The possible outputs of the `quality-gate-status` variable are `PASSED`, `WARN` or `FAILED`.
-      - name: "Example show SonarQube Quality Gate Status value"
-        if: ${{ github.event_name == 'pull_request' }}
-        shell: bash
-        run: echo "The Quality Gate status is ${{ steps.sonarqube-quality-gate-check.outputs.quality-gate-status }}"
-
   release:
-    name: Create Release package and Publish to Artifactory
-    needs:
-      - sonarqube
-    if: success() && github.ref == 'refs/heads/master' && !contains(github.event.head_commit.message, '[skip release]')
+    name: Create Release package and Publish to Github
+    if: success() && github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, '[skip release]')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout 🛎
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -176,22 +127,21 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           install-args: "--extra report --extra rna --extra tabpfn"
-          artifactory-user: ${{ vars.artifactory_user }}
-          artifactory-token: ${{ secrets.artifactory_token }}
 
       - name: Python Semantic Release
         uses: python-semantic-release/python-semantic-release@v10.2.0
         id: release
         with:
-          # package is build here
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
       #----------------------------------------------
       #              run publish
       #----------------------------------------------
-      - name: Publish build
+      - name: Build package
+        if: steps.release.outputs.released == 'true'
+        shell: bash
         run: |
-          uv publish --publish-url https://artifactory.bayer.com/artifactory/api/pypi/smol-pypi-prod-cls --username ${{ vars.artifactory_user }} --password ${{ secrets.artifactory_token }}
+          uv build
 
       - name: Get current version
         run: echo "version=$(uv run --with tomli python -c "import tomli; print(tomli.load(open('pyproject.toml','rb'))['project']['version'])"  )" >> $GITHUB_OUTPUT
@@ -215,7 +165,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout 🛎
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -230,8 +180,6 @@ jobs:
         with:
           python-version: "3.10"
           install-args: "--group docs"
-          artifactory-user: ${{ vars.artifactory_user }}
-          artifactory-token: ${{ secrets.artifactory_token }}
 
       - name: Build docs
         working-directory: mkdocs

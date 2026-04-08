@@ -14,7 +14,7 @@ set -o pipefail
 set -u
 
 if [ -z "$1" ]; then
-  echo "usage: $0 mother-YY.MM.MICRO-py3-none-any.whl"
+  echo "usage: $0 mother_ml-YY.MM.MICRO-py3-none-any.whl"
   exit
 fi
 
@@ -35,7 +35,7 @@ echo "Upgrading pip"
 pip install pip --upgrade && pip install pytest
 
 echo "Installing $RELEASE_ARCHIVE"
-pip install "$RELEASE_ARCHIVE" --extra-index-url https://artifactory.bayer.com/artifactory/api/pypi/smol-pypi-prod-cls/simple
+pip install "$RELEASE_ARCHIVE"
 
 echo "Checking installed extras..."
 python -c "

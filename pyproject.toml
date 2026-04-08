@@ -30,8 +30,7 @@ dependencies = [
   "single-source>=0.4.0,<0.5",
   "colorama>=0.4.6,<0.5",
   "boruta>=0.4.3,<0.5",
-  "quantile-forest>=1.4.0,<2",
-  "setuptools>=76.0.0"
+  "quantile-forest>=1.4.0,<2"
 ]
 
 [project.optional-dependencies]
@@ -240,8 +239,8 @@ extend_skip = [".gitignore", ".pylintrc", "sonar-project.properties"]
 
 [tool.semantic_release]
 version_toml = ["pyproject.toml:project.version"] # changelog file
-build_command = "uv build"  # build dists
-upload_to_release = true    # upload to Github
+tag_format = "v{version}"
+upload_to_vcs_release = true
 
 [tool.semantic_release.changelog]
 # Recommended patterns for conventional commits parser that is scope aware
@@ -320,7 +319,7 @@ check-types = { cmd = "mypy -p src --ignore-missing-imports", help = "check type
 coverage = { shell = "pytest test -m 'not slow and not serial' -n auto --cov-report xml --cov=mother test --junit-xml=xunit-test.xml", help = "Generate coverage report (xml)" }
 dist-test = [
   "build",
-  { shell = "cd dist && ../test/test-dist.bash `uv run --with tomli python -c \"import tomli; print('mother-' + tomli.load(open('../pyproject.toml','rb'))['project']['version'] + '-py3-none-any.whl')\"`", help = "check build package in its own environment" },
+  { shell = "cd dist && ../test/test-dist.bash `uv run --with tomli python -c \"import tomli; print('mother_ml-' + tomli.load(open('../pyproject.toml','rb'))['project']['version'] + '-py3-none-any.whl')\"`", help = "check build package in its own environment" },
 ]
 docs = { shell = "cd mkdocs; mkdocs build", help = "Build documentation" }
 format = { cmd = "ruff format src test examples", help = "Perform code style format" }
@@ -337,7 +336,7 @@ test-unit = { shell = "pytest test -m 'not slow and not serial' -n auto && pytes
 test-slow = { shell = "pytest test -m 'slow' -n auto" }
 
 [build-system]
-requires = ["uv_build>=0.11.1,<0.12.0"]
+requires = ["uv_build>=0.11.1,<0.12.0","setuptools>=76.0.0"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]

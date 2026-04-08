@@ -80,7 +80,7 @@ uv sync --all-extras --all-groups
 - Do not forget to use semantic versioning commands in your commit message (version is bumped by semantic-versioning)
 - create a pull request on GitHub
 
-## Publishing a new package version to Artifactory
+## Publishing a new package version
 
 A new package will be pushed via the mother CI/CD pipeline. No manual steps required.
 
