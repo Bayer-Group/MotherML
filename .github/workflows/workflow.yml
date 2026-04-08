@@ -198,5 +198,5 @@ jobs:
       artifact: site
       dir: site
       invalidate: true
-      preview: ${{ github.ref != 'refs/heads/master' && github.run_id || '' }}
+      preview: ${{ github.ref != 'refs/heads/main' && github.run_id || '' }}
       namespace: ${{ github.event.repository.name }}
