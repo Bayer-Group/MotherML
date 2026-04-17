@@ -45,7 +45,7 @@ Changelog = "https://bayer-group.github.io/MotherML/Changelog/"
 
 [project.optional-dependencies]
 ### Torch
-torch = ["torch>=2.3.0,<3"]
+torch = ["torch>=2.11.0,<3"]
 
 ### Report block
 report = [
@@ -74,7 +74,7 @@ clustering = [
 ### TabPFN
 tabpfn = [
   "tabpfn==2.1.0",
-  "torch>=2.3.0,<3",
+  "torch>=2.11.0,<3",
 ]
 
 [dependency-groups]
