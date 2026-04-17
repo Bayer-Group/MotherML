@@ -3,10 +3,15 @@ name: Workflow for model testing and release
 on:
   workflow_dispatch:
   pull_request:
-    branches: [main]
+    branches: [ main ]
   push:
+
+permissions:
+  contents: read
+
 env:
   PYTHON_VERSION: "3.12"
+
 jobs:
   style:
     runs-on: ubuntu-latest
@@ -34,17 +39,17 @@ jobs:
   test:
     needs: style
     runs-on: ubuntu-latest
-    if: ${{ success() && (github.ref == 'refs/heads/main' || github.event_name == 'pull_request') }}
+    if: ${{ success() && (github.ref == 'refs/heads/main' || github.event_name ==
+      'pull_request') }}
     strategy:
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        python-version: [ "3.10", "3.11", "3.12", "3.13" ]
       # When set to true, GitHub cancels all in-progress jobs if any matrix job fails.
       fail-fast: true
     name: Test 🧪 using 🐍
     steps:
       - name: Checkout 🛎
         uses: actions/checkout@v6
-
         # needed for report dependencies
       - name: Prepare environment
         run: |
@@ -56,7 +61,8 @@ jobs:
         uses: ./.github/actions/setup-uv-env
         with:
           python-version: ${{ matrix.python-version }}
-          install-args: "--extra rna --extra report --extra tabpfn --extra clustering --group test_duration"
+          install-args: "--extra rna --extra report --extra tabpfn --extra clustering
+            --group test_duration"
 
       #----------------------------------------------
       #              run test suite
@@ -78,12 +84,12 @@ jobs:
   test-slow:
     needs: test
     runs-on: ubuntu-latest
-    if: ${{ success() && (github.ref == 'refs/heads/main' || github.event_name == 'pull_request') }}
+    if: ${{ success() && (github.ref == 'refs/heads/main' || github.event_name ==
+      'pull_request') }}
     name: Test Slow 🐢 using 🐍 3.12
     steps:
       - name: Checkout 🛎
         uses: actions/checkout@v6
-
         # needed for report dependencies
       - name: Prepare environment
         run: |
@@ -95,7 +101,8 @@ jobs:
         uses: ./.github/actions/setup-uv-env
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          install-args: "--extra rna --extra report --extra tabpfn --extra clustering --group test_duration"
+          install-args: "--extra rna --extra report --extra tabpfn --extra clustering
+            --group test_duration"
 
       - name: Download TabPFN checkpoint
         run: |
@@ -109,9 +116,16 @@ jobs:
           uv run poe test-slow
 
   release:
-    name: Create Release package and Publish to Github
-    if: success() && github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, '[skip release]')
+    name: Create Release package
+    needs: test-slow
+    if: success() && github.ref == 'refs/heads/main' &&
+      !contains(github.event.head_commit.message, '[skip release]')
     runs-on: ubuntu-latest
+    outputs:
+      released: ${{ steps.release.outputs.released }}
+      version: ${{ steps.release.outputs.version }}
+    permissions:
+      contents: write
     steps:
       - name: Checkout 🛎
         uses: actions/checkout@v6
@@ -143,31 +157,45 @@ jobs:
         run: |
           uv build
 
-      - name: Get current version
-        run: echo "version=$(uv run --with tomli python -c "import tomli; print(tomli.load(open('pyproject.toml','rb'))['project']['version'])"  )" >> $GITHUB_OUTPUT
-        id: version
-
-      - name: Get Repo Name
-        id: repo-name
-        run: echo "value=$(uv run --with tomli python -c "import tomli; print(tomli.load(open('pyproject.toml','rb'))['project']['name'].replace('-','_'))"  )" >> $GITHUB_OUTPUT
-
-      - name: Create Release
-        uses: mikepenz/action-gh-release@v1 #softprops/action-gh-release
+      - name: Upload distribution artifacts
+        if: steps.release.outputs.released == 'true'
+        uses: actions/upload-artifact@v4
         with:
-          body: ${{steps.github_release.outputs.changelog}}
-          prerelease: false
-          files: "./dist/${{ steps.repo-name.outputs.value }}-${{ steps.version.outputs.version }}*"
-          token: ${{ github.token }}
-          tag_name: "v${{ steps.version.outputs.version }}"
+          name: dist
+          path: dist/
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: release
+    if: needs.release.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - name: Download distribution artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish package distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
 
   build-mkdocs:
     name: Build MkDocs
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout 🛎
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
 
       - name: Install dependencies
         run: |
@@ -185,18 +213,23 @@ jobs:
         working-directory: mkdocs
         run: uv run mkdocs build
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v4
         with:
-          name: site
           path: mkdocs/site/
 
   deploy-mkdocs:
-    name: "Publish Docs"
+    name: Publish Docs
     needs: build-mkdocs
-    uses: bayer-int/actions-workflows/.github/workflows/publish-docs.yml@main
-    with:
-      artifact: site
-      dir: site
-      invalidate: true
-      preview: ${{ github.ref != 'refs/heads/main' && github.run_id || '' }}
-      namespace: ${{ github.event.repository.name }}
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    concurrency:
+      group: github-pages
+      cancel-in-progress: true
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

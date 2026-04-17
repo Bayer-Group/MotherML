@@ -1,4 +1,5 @@
 site_name: Mother for Machine Learning
+site_url: https://bayer-group.github.io/MotherML/
 theme:
   name: "material"
   palette:
@@ -11,8 +12,8 @@ theme:
     - content.code.annotate
     - content.tabs.link
 
-repo_url: https://github.com/bayer-int/mother-ml
-repo_name: mother-ml
+repo_url: https://github.com/Bayer-Group/MotherML
+repo_name: MotherML
 
 markdown_extensions:
   - admonition

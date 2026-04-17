@@ -3,6 +3,7 @@ name = "mother-ml"
 version = "1.0.0"
 description = "A ML framework that takes care"
 requires-python = ">=3.10, <3.14"
+license = { file = "LICENSE" }
 authors = [
   { name = "Thomas Wolf" },
   { name = "Florian Huber" },
@@ -34,6 +35,13 @@ dependencies = [
   "boruta>=0.4.3,<0.5",
   "quantile-forest>=1.4.0,<2"
 ]
+
+[project.urls]
+Homepage = "https://github.com/Bayer-Group/MotherML"
+Documentation = "https://bayer-group.github.io/MotherML/"
+Repository = "https://github.com/Bayer-Group/MotherML"
+Issues = "https://github.com/Bayer-Group/MotherML/issues"
+Changelog = "https://bayer-group.github.io/MotherML/Changelog/"
 
 [project.optional-dependencies]
 ### Torch
