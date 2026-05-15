@@ -40,6 +40,25 @@ def test_classifier_mother_init_and_fit_predict(clf_sample_data):
     assert set(preds).issubset({0, 1})
 
 
+def test_classifier_mother_predict_uncertainty_includes_probabilities(clf_sample_data):
+    X, y = clf_sample_data
+    clf = RandomForestClassifierMother(n_estimators=10)
+    clf.fit(X, y)
+
+    preds = clf.predict(X)
+    preds_with_uncertainty = clf.predict_uncertainty(X)
+
+    assert isinstance(preds_with_uncertainty, pd.DataFrame)
+    assert preds_with_uncertainty.shape[0] == X.shape[0]
+    assert "pred" in preds_with_uncertainty.columns
+    assert "mean_predictions" in preds_with_uncertainty.columns
+    assert "proba_0" in preds_with_uncertainty.columns
+    assert "proba_1" in preds_with_uncertainty.columns
+    assert preds_with_uncertainty["mean_predictions"].isna().all()
+    assert np.allclose(preds_with_uncertainty["proba_0"] + preds_with_uncertainty["proba_1"], 1.0)
+    np.testing.assert_array_equal(preds_with_uncertainty["pred"].to_numpy(), preds)
+
+
 def test_regressor_mother_init_and_fit_predict(reg_sample_data):
     X, y = reg_sample_data
     reg = RandomForestRegressorMother(n_estimators=10)
@@ -55,10 +74,11 @@ def test_regressor_mother_init_and_fit_predict_uncertainty(reg_sample_data):
     reg.fit(X, y)
     preds = reg.predict_uncertainty(X)
     assert isinstance(preds, pd.DataFrame)
-    assert preds.shape == (20, 4)
-    assert preds.columns.equals(
-        pd.Index(["mean_predictions", "knowledge_uncertainty", "data_uncertainty", "total_uncertainty"])
+    assert preds.shape == (20, 5)
+    required_columns = pd.Index(
+        ["pred", "mean_predictions", "knowledge_uncertainty", "data_uncertainty", "total_uncertainty"]
     )
+    assert required_columns.isin(preds.columns).all()
 
 
 def test_regressor_mother_init_and_fit_predict_uncertainty_for_opt(reg_sample_data):
@@ -83,6 +103,42 @@ def test_regressor_mother_init_and_fit_predict_return_quantiles(reg_sample_data)
     assert quantiles.shape == (20, 5)
     expected_quantile_columns = ["quantile_0.1", "quantile_0.25", "quantile_0.5", "quantile_0.75", "quantile_0.9"]
     assert list(quantiles.columns) == expected_quantile_columns
+
+
+def test_regressor_mother_predict_uncertainty_multitarget():
+    generator = np.random.default_rng(SEED)
+    X = pd.DataFrame(generator.random((20, 4)), index=[f"sample_{idx}" for idx in range(20)])
+    y = pd.DataFrame(generator.random((20, 3)), columns=["a", "b", "c"], index=X.index)
+
+    reg = RandomForestRegressorMother(n_estimators=10)
+    reg.fit(X, y)
+
+    preds = reg.predict_uncertainty(X)
+    expected_columns = pd.Index(
+        [
+            "target_0_pred",
+            "target_1_pred",
+            "target_2_pred",
+            "target_0_mean_predictions",
+            "target_1_mean_predictions",
+            "target_2_mean_predictions",
+            "target_0_total_uncertainty",
+            "target_1_total_uncertainty",
+            "target_2_total_uncertainty",
+        ]
+    )
+
+    assert isinstance(preds, pd.DataFrame)
+    assert preds.columns.equals(expected_columns)
+    assert preds.index.equals(X.index)
+
+    pred_values = reg.predict(X)
+    np.testing.assert_allclose(preds[["target_0_pred", "target_1_pred", "target_2_pred"]].to_numpy(), pred_values)
+
+    preds_opt = reg.predict_uncertainty(X, uncertainty_for_opt=True)
+    assert preds_opt.columns.equals(pd.Index(["total_uncertainty"]))
+    assert len(preds_opt) == len(X)
+    assert preds_opt.index.equals(X.index)
 
 
 def test_classifier_mother_default_parameters():
@@ -178,9 +234,8 @@ def test_uncertainty_for_opt_multitask_regression(multitask_sample_data):
     model.fit(X, y)
     output = model.predict_uncertainty(X, uncertainty_for_opt=True)
     assert isinstance(output, pd.DataFrame)
-    assert output.shape == (X.shape[0], y.shape[1])
-    expected_columns = [f"target_{i}" for i in range(y.shape[1])]
-    assert list(output.columns) == expected_columns
+    assert output.shape == (X.shape[0], 1)
+    assert list(output.columns) == ["total_uncertainty"]
     assert all(output.index == X.index)
     assert (output >= 0).all().all()
 
@@ -215,7 +270,8 @@ def test_classifier_pickle_clone(clf_sample_data):
 
     assert getattr(model, "n_estimators", None) == 500
     assert getattr(model, "bootstrap", None) is True
-    assert getattr(model, "max_features", None) == "sqrt"  # default for scikit-learn's implementation
+    # default for scikit-learn's implementation
+    assert getattr(model, "max_features", None) == "sqrt"
 
     cloned_model = clone(model)
     assert getattr(cloned_model, "n_estimators", None) == 500
@@ -423,3 +479,29 @@ def test_regressor_optuna_optimization_with_cv(reg_sample_data):
     final_model.fit(X, y)
     predictions = final_model.predict(X)
     assert len(predictions) == len(y)
+
+
+# ---------------------------------------------------------------------------
+# Issue #444 — point 2: uncertainty_for_opt logs a warning for multi-task
+# ---------------------------------------------------------------------------
+
+
+def test_rf_regressor_uncertainty_for_opt_multitarget_warns(caplog):
+    """RandomForestRegressorMother logs a warning and returns total_uncertainty for multi-target uncertainty_for_opt."""
+    rng = np.random.default_rng(42)
+    X = pd.DataFrame(rng.random((60, 5)), columns=[f"f_{i}" for i in range(5)])
+    y = pd.DataFrame(rng.random((60, 2)), columns=["t0", "t1"])
+    X_train, X_test = X.iloc[:50], X.iloc[50:]
+
+    model = RandomForestRegressorMother(n_estimators=20)
+    model.fit(X_train, y.iloc[:50])
+
+    with caplog.at_level(logging.WARNING, logger="mother.ml.models.m_randomForest"):
+        result = model.predict_uncertainty(X_test, uncertainty_for_opt=True)
+
+    assert any("max of per-target" in m for m in caplog.messages), (
+        f"Expected a 'max of per-target' warning; got: {caplog.messages}"
+    )
+    assert isinstance(result, pd.DataFrame)
+    assert list(result.columns) == ["total_uncertainty"]
+    assert len(result) == len(X_test)

@@ -4,6 +4,7 @@ from typing import List
 
 import numpy as np
 import pandas as pd
+import pytest
 from sklearn.base import clone, is_regressor
 from sklearn.datasets import make_regression
 from sklearn.metrics import make_scorer, root_mean_squared_error
@@ -16,6 +17,7 @@ from mother.ml.models.m_catboost import (
 )
 
 
+@pytest.mark.slow
 class TestCatboostModels(unittest.TestCase):
     def setUp(self) -> None:
         # Create synthetic data using make_blobs
@@ -62,9 +64,11 @@ class TestCatboostModels(unittest.TestCase):
         result: pd.DataFrame = model.predict_uncertainty(self.X)
         self.assertIsInstance(result, pd.DataFrame)
 
+        self.assertIn("pred", result.columns)
         self.assertIn("mean_predictions", result.columns)
         self.assertIn("knowledge_uncertainty", result.columns)
 
+        self.assertTrue(np.issubdtype(result["pred"].dtype, np.number))
         self.assertTrue(np.issubdtype(result["mean_predictions"].dtype, np.number))
         self.assertTrue(np.issubdtype(result["knowledge_uncertainty"].dtype, np.number))
 
@@ -101,14 +105,13 @@ class TestCatboostModels(unittest.TestCase):
         result: pd.DataFrame = model.predict_uncertainty(self.X)
         self.assertIsInstance(result, pd.DataFrame)
 
-        # Dynamically check required columns for each target
-        for target in self.y_multitarget_regression.columns:
-            self.assertIn(f"{target}_mean_predictions", result.columns)
-            self.assertIn(f"{target}_knowledge_uncertainty", result.columns)
-
-        for target in self.y_multitarget_regression.columns:
-            self.assertTrue(np.issubdtype(result[f"{target}_mean_predictions"].dtype, np.number))
-            self.assertTrue(np.issubdtype(result[f"{target}_knowledge_uncertainty"].dtype, np.number))
+        n_targets = self.y_multitarget_regression.shape[1]
+        for idx in range(n_targets):
+            self.assertIn(f"target_{idx}_mean_predictions", result.columns)
+            self.assertIn(f"target_{idx}_knowledge_uncertainty", result.columns)
+            self.assertTrue(np.issubdtype(result[f"target_{idx}_mean_predictions"].dtype, np.number))
+            self.assertTrue(np.issubdtype(result[f"target_{idx}_knowledge_uncertainty"].dtype, np.number))
+            self.assertIn(f"target_{idx}_pred", result.columns)
 
         # Check if the shape matches the input
         self.assertEqual(result.shape[0], self.X.shape[0])
@@ -163,22 +166,39 @@ class TestCatboostModels(unittest.TestCase):
         )
 
     def test_CatboostMultiQuantileRegression_predict(self) -> None:
-        model: CatboostRegressorMother = CatboostRegressorMother(
-            quantiles=self.quantiles.copy(), loss_function=f"MultiQuantile:alpha={', '.join(map(str, self.quantiles))}"
-        )
+        model: CatboostRegressorMother = CatboostRegressorMother(quantiles=self.quantiles.copy())
         model.fit(self.X, self.y_regression, verbose=False)
-        median: np.ndarray = model.predict(self.X)
-        self.assertIsInstance(median, np.ndarray, "Predict function did not return a NumPy array.")
-        self.assertEqual(median.shape, (self.X.shape[0],), "Median predictions do not have the correct shape.")
+        preds: np.ndarray = model.predict(self.X)
+        self.assertIsInstance(preds, np.ndarray, "Predict function did not return a NumPy array.")
+        self.assertEqual(preds.shape, (self.X.shape[0],), "Median predictions do not have the correct shape.")
 
-        pred_uncertainty: pd.DataFrame = model.predict_uncertainty(self.X)
-        self.assertEqual(pred_uncertainty.shape, (self.X.shape[0], len(self.quantiles)))
+        # Standard output with new interface
+        pred_uncertainty, quantile_array = model.predict_uncertainty(self.X, return_quantiles=True)
+        self.assertIsInstance(quantile_array, np.ndarray, "Quantile array should be numpy array")
+        # model._quantiles_processed includes DEFAULT_QUANTILES (0.25, 0.5, 0.75) merged with user-provided quantiles
+        self.assertEqual(quantile_array.shape, (self.X.shape[0], len(model._quantiles_processed)))
         self.assertIsInstance(pred_uncertainty, pd.DataFrame)
-        np.testing.assert_array_equal(
-            pred_uncertainty["quantile_0.5"].to_numpy(),
-            median,
-            err_msg="Median predictions do not have the correct value.",
+
+        # Check shape: (n_samples, 5) for standard columns
+        self.assertEqual(pred_uncertainty.shape[1], 5, "Should have 5 standard columns")
+
+        # Check standard columns exist
+        expected_columns = {
+            "pred",
+            "mean_predictions",
+            "knowledge_uncertainty",
+            "data_uncertainty",
+            "total_uncertainty",
+        }
+        self.assertTrue(expected_columns.issubset(pred_uncertainty.columns), "Missing required columns")
+
+        # Verify median prediction matches
+        np.testing.assert_array_almost_equal(
+            pred_uncertainty["pred"].values,
+            preds,
+            err_msg="Median predictions in 'pred' column do not match predict() output.",
         )
+
         self._test_optim(model)
 
     def test_CatboostMultiQuantileRegression_predict_with_uncertainty_for_opt(self) -> None:
@@ -271,6 +291,7 @@ class TestCatboostModels(unittest.TestCase):
         # Test predict_uncertainty
         results = model.predict_uncertainty(self.X)
         self.assertIsInstance(results, pd.DataFrame)
+        self.assertIn("pred", results.columns)
         self.assertIn("mean_predictions", results.columns)
         self.assertIn("knowledge_uncertainty", results.columns)
         self.assertFalse(np.any(results["knowledge_uncertainty"] < 0))
