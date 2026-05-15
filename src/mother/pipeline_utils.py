@@ -6,6 +6,7 @@ from typing import (
     Dict,
     Iterable,
     List,
+    Literal,
     NoReturn,
     Optional,
     Sequence,
@@ -604,19 +605,20 @@ def get_feature_importance(
 
 @overload
 def mother_cv(
-    estimator: Union[Pipeline, ml.PipelineWithHyperparameterRooting, ml.AbstractMotherPipeline],
+    estimator: Union[ml.PipelineWithHyperparameterRooting, ml.AbstractMotherPipeline],
     *,
     X: pd.DataFrame,
     y: Union[pd.Series, pd.DataFrame],
     cv: skl_model_sel.BaseCrossValidator,
     groups: Optional[pd.DataFrame] = None,
     prediction_prefix: str = "pred_",
-) -> pd.DataFrame: ...
+    return_estimators: Literal[True],
+) -> tuple[pd.DataFrame, dict[str, Any]]: ...
 
 
 @overload
 def mother_cv(
-    estimator: Union[Pipeline, ml.PipelineWithHyperparameterRooting, ml.AbstractMotherPipeline],
+    estimator: Union[ml.PipelineWithHyperparameterRooting, ml.AbstractMotherPipeline],
     *,
     X: pd.DataFrame,
     y: Union[pd.Series, pd.DataFrame],
@@ -627,11 +629,12 @@ def mother_cv(
     default_parameters: Optional[dict] = None,
     groups: Optional[pd.DataFrame] = None,
     prediction_prefix: str = "pred_",
-) -> pd.DataFrame: ...
+    return_estimators: Literal[True],
+) -> tuple[pd.DataFrame, dict[str, Any]]: ...
 
 
 def mother_cv(
-    estimator: Union[Pipeline, ml.PipelineWithHyperparameterRooting, ml.AbstractMotherPipeline],
+    estimator: Union[ml.PipelineWithHyperparameterRooting, ml.AbstractMotherPipeline],
     *,
     cv: skl_model_sel.BaseCrossValidator,
     inner_cv: Optional[skl_model_sel.BaseCrossValidator] = None,
@@ -642,7 +645,8 @@ def mother_cv(
     hyperparameter_space_function: Optional[Callable] = None,
     default_parameters: Optional[dict] = None,
     prediction_prefix: str = "pred_",
-) -> pd.DataFrame:
+    return_estimators: bool = False,
+) -> Union[pd.DataFrame, tuple[pd.DataFrame, dict[str, Any]]]:
     """
     Runs nested cross validation if a tuner is provided, otherwise
     runs standard cross validation
@@ -650,8 +654,10 @@ def mother_cv(
     Parameters
     ----------
     estimator
-        An sklearn pipeline to be used during the cv and for tuning
-        if a Mother tuner object is being provided
+        Must be a PipelineWithHyperparameterRooting or AbstractMotherPipeline.
+        sklearn.pipeline.Pipeline is not supported. If you want to use a sklearn pipeline,
+        please wrap it in a PipelineWithHyperparameterRooting
+        and provide the hyperparameter space function.
     inner_cv
         the cross validation generator used during the inner cv loop,
         the folds are generated automatically
@@ -673,18 +679,32 @@ def mother_cv(
         the default parameters to be passed to the tuner
     prediction_prefix
         the prefix added to the column names of the model predictions
-
+    return_estimators:
+        If True, return a tuple (performance_data, estimators_dict) containing
+        fitted/optimized estimators for each fold. If False, return only the DataFrame.
     Returns
     -------
-    a data frame with the information from the cross validation
-    in the case of classification this also includes the class probabilities
+    If return_estimators=False: A dataframe containing the results of cross-validation.
+    If return_estimators=True: A tuple (dataframe, estimators_dict) where estimators_dict contains:
+        - "estimators": list of fitted estimators for each fold
+        - "prediction_prefix": the prefix used for prediction columns
+        - "target_columns": names of target columns
+
+    The dataframe contains:
+    For AbstractMotherPipeline and PipelineWithHyperparameterRooting: mean predictions
+    and uncertainty estimates if the model supports it.
 
     """
+
+    # Validate estimator type early
+    if not isinstance(estimator, (ml.PipelineWithHyperparameterRooting, ml.AbstractMotherPipeline)):
+        raise ValueError("Estimator must be a PipelineWithHyperparameterRooting or AbstractMotherPipeline")
 
     prediction_columns: List[str] = mother_utils.get_names(data=y)
 
     module_logger.info("Starting cross validation...")
     performance_data_list: List[pd.DataFrame] = []
+    fold_estimators: List[Any] = []
     intermediate_performance_data: pd.DataFrame
 
     # make sure group is given as np.ndarray
@@ -716,50 +736,74 @@ def mother_cv(
             module_logger.debug("Start estimator training in CV")
             val_estimator = estimator.fit(X=X.iloc[train_idx], y=mother_utils.convert_input(y.iloc[train_idx]))
 
+        fold_estimators.append(val_estimator)
+
         module_logger.debug("The target values are being predicted")
 
-        intermediate_performance_data = val_estimator.predict_uncertainty(X.iloc[test_idx, :])
+        intermediate_performance_data: pd.DataFrame = val_estimator.predict_uncertainty(X.iloc[test_idx, :])
 
         if not isinstance(intermediate_performance_data, pd.DataFrame):
             # model returns non-pd.Data Frame
             intermediate_performance_data = pd.DataFrame(
                 data=intermediate_performance_data, columns=prediction_columns, index=X.iloc[test_idx].index
             )
-        elif "mean_predictions" in intermediate_performance_data.columns:
-            # uncertainty returned
-            assert len(prediction_columns) > 0, "Uncertainty is currently supported only for single-target tasks"
-            intermediate_performance_data.rename(columns={"mean_predictions": prediction_columns[0]}, inplace=True)
-        else:
-            # make sure the columns have the same name when uncertainty is not given
+
+        elif "pred" in intermediate_performance_data.columns:
+            intermediate_performance_data.rename(columns={"pred": prediction_columns[0]}, inplace=True)
+
+        elif intermediate_performance_data.shape[1] == len(prediction_columns):
             intermediate_performance_data.columns = prediction_columns
+        else:
+            module_logger.debug(
+                "Keeping predict_uncertainty output columns as returned: got %s columns for %s targets.",
+                intermediate_performance_data.shape[1],
+                len(prediction_columns),
+            )
 
         module_logger.debug("The prefix is being added to the column names for the prediction columns")
         intermediate_performance_data = intermediate_performance_data.add_prefix(prediction_prefix)
 
-        if estimator._estimator_type == "classifier":
-            module_logger.debug("The model is a classification model so class probabilities will be predicted")
-            prediction_columns_proba: List[str] = prediction_columns
-            if len(prediction_columns) > 1:
-                module_logger.debug("For multitarget binary classification the prediction_column names will be used")
+        if hasattr(val_estimator, "_estimator_type") and val_estimator._estimator_type == "classifier":
+            existing_proba_columns = [
+                str(col) for col in intermediate_performance_data.columns if "_proba_" in str(col)
+            ]
+
+            if existing_proba_columns:
+                module_logger.debug(
+                    "Skipping predict_proba generation because proba columns already exist: %s",
+                    existing_proba_columns,
+                )
             else:
-                module_logger.debug("For single target classification the class labels are used as prediction columns")
-                prediction_columns_proba = val_estimator.classes_
+                module_logger.debug("The model is a classification model so class probabilities will be predicted")
+                prediction_columns_proba: List[str] = prediction_columns
+                if len(prediction_columns) > 1:
+                    module_logger.debug(
+                        "For multitarget binary classification the prediction_column names will be used"
+                    )
+                else:
+                    module_logger.debug(
+                        "For single target classification the class labels are used as prediction columns"
+                    )
+                    prediction_columns_proba = val_estimator.classes_
 
-            test_predicted_proba = pd.DataFrame(
-                data=val_estimator.predict_proba(X.iloc[test_idx, :]),
-                index=X.iloc[test_idx].index,
-                columns=prediction_columns_proba,
-            )
+                test_predicted_proba = pd.DataFrame(
+                    data=val_estimator.predict_proba(X.iloc[test_idx, :]),
+                    index=X.iloc[test_idx].index,
+                    columns=prediction_columns_proba,
+                )
 
-            module_logger.debug("The prefix is being added to the column names for the proba columns")
-            test_predicted_proba = test_predicted_proba.add_prefix(prediction_prefix + "_proba_")
+                module_logger.debug("The prefix is being added to the column names for the proba columns")
+                proba_prefix = prediction_prefix.rstrip("_") + "_proba_"
+                test_predicted_proba = test_predicted_proba.add_prefix(proba_prefix)
 
-            module_logger.debug("The probabilities are added to the predictions in addition to the class predictions")
-            intermediate_performance_data = intermediate_performance_data.merge(
-                test_predicted_proba,
-                left_index=True,
-                right_index=True,
-            )
+                module_logger.debug(
+                    "The probabilities are added to the predictions in addition to the class predictions"
+                )
+                intermediate_performance_data = intermediate_performance_data.merge(
+                    test_predicted_proba,
+                    left_index=True,
+                    right_index=True,
+                )
 
         module_logger.debug("Add the original target values to the predictions")
         intermediate_performance_data = pd.concat(
@@ -772,7 +816,6 @@ def mother_cv(
         )
 
         assert all(intermediate_performance_data.index == X.iloc[test_idx].index)
-
         module_logger.debug("Add the cv metainformation to the predictions")
         intermediate_performance_data["cv_group"] = (
             cv_groups_test.values.ravel() if cv_groups_test is not None else None
@@ -794,6 +837,15 @@ def mother_cv(
     performance_data = performance_data.sort_values("test_index")
 
     module_logger.info("Cross validation completed")
+
+    if return_estimators:
+        estimator_output: dict[str, Any] = {
+            "estimators": fold_estimators,
+            "prediction_prefix": prediction_prefix,
+            "target_columns": prediction_columns,
+        }
+        module_logger.info("Returning performance_data with estimators as tuple")
+        return performance_data, estimator_output
 
     return performance_data
 
