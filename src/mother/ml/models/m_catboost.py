@@ -489,6 +489,7 @@ class CatboostRegressorMother(CatBoostRegressor, _CatboostHyperParams):
                 Returns a tuple (uncertainty_df, quantile_array) only when
                 return_quantiles=True and quantile regression is used; otherwise returns pd.DataFrame.
         """
+        quantile_array = None
         # Get predictions from the model's predict method
         model_predictions = self.predict(X)
 
