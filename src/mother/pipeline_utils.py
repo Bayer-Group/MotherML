@@ -612,8 +612,38 @@ def mother_cv(
     cv: skl_model_sel.BaseCrossValidator,
     groups: Optional[pd.DataFrame] = None,
     prediction_prefix: str = "pred_",
+    return_estimators: Literal[False] = False,
+) -> pd.DataFrame: ...
+
+
+@overload
+def mother_cv(
+    estimator: Union[ml.PipelineWithHyperparameterRooting, ml.AbstractMotherPipeline],
+    *,
+    X: pd.DataFrame,
+    y: Union[pd.Series, pd.DataFrame],
+    cv: skl_model_sel.BaseCrossValidator,
+    groups: Optional[pd.DataFrame] = None,
+    prediction_prefix: str = "pred_",
     return_estimators: Literal[True],
 ) -> tuple[pd.DataFrame, dict[str, Any]]: ...
+
+
+@overload
+def mother_cv(
+    estimator: Union[ml.PipelineWithHyperparameterRooting, ml.AbstractMotherPipeline],
+    *,
+    X: pd.DataFrame,
+    y: Union[pd.Series, pd.DataFrame],
+    cv: skl_model_sel.BaseCrossValidator,
+    inner_cv: skl_model_sel.BaseCrossValidator,
+    tuner: MotherTuner,
+    hyperparameter_space_function: Optional[Callable] = None,
+    default_parameters: Optional[dict] = None,
+    groups: Optional[pd.DataFrame] = None,
+    prediction_prefix: str = "pred_",
+    return_estimators: Literal[False] = False,
+) -> pd.DataFrame: ...
 
 
 @overload
