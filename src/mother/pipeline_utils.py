@@ -766,7 +766,8 @@ def mother_cv(
             module_logger.debug("Start estimator training in CV")
             val_estimator = estimator.fit(X=X.iloc[train_idx], y=mother_utils.convert_input(y.iloc[train_idx]))
 
-        fold_estimators.append(val_estimator)
+        if return_estimators:
+            fold_estimators.append(val_estimator)
 
         module_logger.debug("The target values are being predicted")
 
