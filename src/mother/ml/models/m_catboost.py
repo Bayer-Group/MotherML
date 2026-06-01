@@ -587,8 +587,30 @@ class CatboostRegressorMother(CatBoostRegressor, _CatboostHyperParams):
             y_pred_df = pd.DataFrame(model_predictions, index=X.index)
             y_pred_df.columns = [f"target_{idx}_pred" for idx in target_indices]
 
+            # Keep the multi-target output schema aligned with single-target output.
+            # Data and total uncertainty are currently unavailable in this path.
+            data_uncertainty = pd.DataFrame(
+                np.nan,
+                index=X.index,
+                columns=[f"target_{idx}_data_uncertainty" for idx in target_indices],
+            )
+            total_uncertainty = pd.DataFrame(
+                np.nan,
+                index=X.index,
+                columns=[f"target_{idx}_total_uncertainty" for idx in target_indices],
+            )
+
             # Concat in order: predictions, then means, then uncertainties
-            uncertainty_df = pd.concat([y_pred_df, mean_predictions, knowledge_uncertainty], axis=1)
+            uncertainty_df = pd.concat(
+                [
+                    y_pred_df,
+                    mean_predictions,
+                    knowledge_uncertainty,
+                    data_uncertainty,
+                    total_uncertainty,
+                ],
+                axis=1,
+            )
         else:
             raise ValueError(f"Unsupported target type: {self.target_type}")
 

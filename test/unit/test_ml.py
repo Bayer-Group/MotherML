@@ -222,6 +222,12 @@ def test_predict_uncertainty_multitarget_with_dataframe():
         "target_0_knowledge_uncertainty",
         "target_1_knowledge_uncertainty",
         "target_2_knowledge_uncertainty",
+        "target_0_data_uncertainty",
+        "target_1_data_uncertainty",
+        "target_2_data_uncertainty",
+        "target_0_total_uncertainty",
+        "target_1_total_uncertainty",
+        "target_2_total_uncertainty",
     }
     assert expected_cols == set(result.columns)
     assert result.shape == (len(X_test), len(expected_cols))
@@ -249,6 +255,10 @@ def test_predict_uncertainty_multitarget_preserves_index():
         "target_1_mean_predictions",
         "target_0_knowledge_uncertainty",
         "target_1_knowledge_uncertainty",
+        "target_0_data_uncertainty",
+        "target_1_data_uncertainty",
+        "target_0_total_uncertainty",
+        "target_1_total_uncertainty",
     }
     assert expected_cols == set(result.columns)
     assert result.shape[1] == len(expected_cols)
