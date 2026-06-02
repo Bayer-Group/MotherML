@@ -256,7 +256,7 @@ class CatboostRegressorMother(CatBoostRegressor, _CatboostHyperParams):
             # multi-quantile regression
             # Validate quantiles
             if not all(0 < q < 1 for q in quantiles):
-                raise ValueError("Quantiles must be a non-empty list of floats between 0 and 1.")
+                raise ValueError("Quantiles must be a list of floats between 0 and 1.")
             # Store original quantiles for sklearn clone compatibility (get_params/set_params round-trip).
             # Store the original quantiles exactly as passed (for cloning compatibility).
             self.quantiles = quantiles
