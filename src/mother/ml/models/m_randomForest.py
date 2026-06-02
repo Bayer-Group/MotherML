@@ -396,6 +396,8 @@ class RandomForestRegressorMother(RandomForestQuantileRegressor, _RandomForestMo
                 output_sections={
                     "pred": point_predictions,
                     "mean_predictions": point_predictions,
+                    "knowledge_uncertainty": None,
+                    "data_uncertainty": None,
                     "total_uncertainty": total_uncertainty,
                 },
             )

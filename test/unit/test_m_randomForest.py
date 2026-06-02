@@ -122,6 +122,12 @@ def test_regressor_mother_predict_uncertainty_multitarget():
             "target_0_mean_predictions",
             "target_1_mean_predictions",
             "target_2_mean_predictions",
+            "target_0_knowledge_uncertainty",
+            "target_1_knowledge_uncertainty",
+            "target_2_knowledge_uncertainty",
+            "target_0_data_uncertainty",
+            "target_1_data_uncertainty",
+            "target_2_data_uncertainty",
             "target_0_total_uncertainty",
             "target_1_total_uncertainty",
             "target_2_total_uncertainty",
@@ -134,6 +140,18 @@ def test_regressor_mother_predict_uncertainty_multitarget():
 
     pred_values = reg.predict(X)
     np.testing.assert_allclose(preds[["target_0_pred", "target_1_pred", "target_2_pred"]].to_numpy(), pred_values)
+    assert (
+        preds[["target_0_knowledge_uncertainty", "target_1_knowledge_uncertainty", "target_2_knowledge_uncertainty"]]
+        .isna()
+        .all()
+        .all()
+    )
+    assert (
+        preds[["target_0_data_uncertainty", "target_1_data_uncertainty", "target_2_data_uncertainty"]]
+        .isna()
+        .all()
+        .all()
+    )
 
     preds_opt = reg.predict_uncertainty(X, uncertainty_for_opt=True)
     assert preds_opt.columns.equals(pd.Index(["total_uncertainty"]))
