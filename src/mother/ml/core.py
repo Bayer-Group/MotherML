@@ -93,13 +93,13 @@ class AbstractMotherPipeline(ABC):
 
         elif (len(pred_res.shape) == 2) and (pred_res.shape[-1] > 1):
             # Multi-target output: one column per (target, field) pair, same field order as single-target.
-            # Uncertainty fields are None — this is a generic fallback with no real uncertainty estimate.
+            # Only point predictions are available in this generic fallback.
+            # Ensemble means and uncertainty fields remain unset to match the single-target contract.
             pred_array = np.asarray(pred_res)
             n_targets = pred_array.shape[1]
-            _value_fields = {"pred", "mean_predictions"}
             pred_res = pd.DataFrame(
                 {
-                    f"target_{i}_{field}": (pred_array[:, i] if field in _value_fields else None)
+                    f"target_{i}_{field}": (pred_array[:, i] if field == "pred" else None)
                     for i in range(n_targets)
                     for field in _UNCERTAINTY_SCHEMA
                 }
@@ -108,7 +108,7 @@ class AbstractMotherPipeline(ABC):
         if isinstance(pred_res, pd.DataFrame) and hasattr(self, "predict_proba") and "pred" in pred_res.columns:
             module_logger.warning(
                 f"Uncertainty quantification is not implemented for {self.__class__.__name__}. "
-                f"predict() predict_proba() will be used as a fallback"
+                f"predict() predict_proba() will be used as a fallback "
                 f"with entropy-based uncertainty for classification tasks."
             )
             model_predictions_proba = self.predict_proba(X)  # type: ignore[attr-defined]

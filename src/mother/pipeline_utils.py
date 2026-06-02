@@ -795,9 +795,7 @@ def mother_cv(
         intermediate_performance_data = intermediate_performance_data.add_prefix(prediction_prefix)
 
         if hasattr(val_estimator, "_estimator_type") and val_estimator._estimator_type == "classifier":
-            existing_proba_columns = [
-                str(col) for col in intermediate_performance_data.columns if "_proba_" in str(col)
-            ]
+            existing_proba_columns = [str(col) for col in intermediate_performance_data.columns if "proba_" in str(col)]
 
             if existing_proba_columns:
                 module_logger.debug(

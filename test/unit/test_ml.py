@@ -322,6 +322,8 @@ def test_predict_uncertainty_fallback_multitarget_schema():
         "target_2_total_uncertainty",
     }
     assert expected_cols == set(result.columns), f"Unexpected columns: {set(result.columns) ^ expected_cols}"
+    mean_prediction_cols = [f"target_{idx}_mean_predictions" for idx in range(3)]
+    assert result[mean_prediction_cols].isna().all().all()
 
 
 def test_predict_uncertainty_fallback_multitarget_preserves_index():
