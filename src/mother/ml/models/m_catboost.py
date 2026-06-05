@@ -695,6 +695,7 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostHyperPa
         tune_tree_structure_type: bool = True,
         verbose: bool = False,
         model_type: str = "regression",
+        target_type: props.TargetType = "single_target",
         **kwargs,
     ):
         """
@@ -727,6 +728,8 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostHyperPa
                 Whether to print training logs during fitting.
             model_type : str, default="regression"
                 The type of model. For compatibility with the Mother framework.
+            target_type : str, default="single_target"
+                Target type (must be "single_target").
             **kwargs : dict
                 Additional parameters for CatBoost's `sample_gaussian_process` method.
         """
@@ -737,7 +740,14 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostHyperPa
         if model_type != "regression":
             raise ValueError("model_type for CatboostGaussianProcessRegressorMother must be 'regression'.")
 
+        if target_type != "single_target":
+            raise ValueError(
+                "target_type for CatboostGaussianProcessRegressorMother must be 'single_target'. "
+                "Multi-target regression is not supported."
+            )
+
         self.model_type = model_type
+        self.target_type = target_type
 
         # Store GP-specific parameters as instance attributes
         self.samples = samples
@@ -799,6 +809,7 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostHyperPa
         # Add our custom parameters
         custom_params = {
             "model_type": self.model_type,
+            "target_type": self.target_type,
             "tune_boosting_type": self.tune_boosting_type,
             "tune_tree_structure_type": self.tune_tree_structure_type,
             "samples": self.samples,
@@ -825,6 +836,7 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostHyperPa
         # Handle our custom parameters
         custom_param_names = {
             "model_type",
+            "target_type",
             "tune_boosting_type",
             "tune_tree_structure_type",
             "samples",
@@ -891,6 +903,12 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostHyperPa
         Returns:
             self
         """
+        if self.target_type != "single_target":
+            raise ValueError(
+                "target_type for CatboostGaussianProcessRegressorMother must be 'single_target'. "
+                "Multi-target regression is not supported."
+            )
+
         X, y = check_X_y(X, y, accept_sparse=False, ensure_2d=True, dtype=None)
         posterior_iterations = 1000 - self.prior_iterations
 
@@ -916,26 +934,29 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostHyperPa
         )
         return self
 
-    def predict(self, X: pd.DataFrame) -> np.ndarray:
+    def predict(self, X: pd.DataFrame, **kwargs) -> np.ndarray:
         """
         Predict regression targets.
 
         Args:
             X : pd.DataFrame
                 Input data.
+            **kwargs
+                Additional keyword arguments passed to CatBoostRegressor.predict().
+                Examples: prediction_type, ntree_start, ntree_end, thread_count, etc.
 
         Returns:
-            np.ndarray: Mean predictions.
+            np.ndarray: Mean predictions averaged over all ensemble models.
         """
         if not hasattr(self, "models_") or not self.models_:
             module_logger.error("Prediction requested before model was fitted. Call 'fit' before 'predict'.")
             raise RuntimeError("Model has not been fitted yet. Call 'fit' before 'predict'.")
 
-        predictions = np.array([model.predict(X) for model in self.models_])
+        predictions = np.array([model.predict(X, **kwargs) for model in self.models_])
         mean_predictions = predictions.mean(axis=0)
         return mean_predictions
 
-    def predict_uncertainty(self, X: pd.DataFrame, uncertainty_for_opt: bool = False) -> pd.DataFrame:
+    def predict_uncertainty(self, X: pd.DataFrame, uncertainty_for_opt: bool = False, **kwargs) -> pd.DataFrame:
         """
         Estimate knowledge uncertainty for regression.
 
@@ -944,14 +965,17 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostHyperPa
                 Input data.
             uncertainty_for_opt : bool
                 If True, return only uncertainty for optimization.
+            **kwargs
+                Additional keyword arguments passed to CatBoostRegressor.predict().
+                Examples: prediction_type, ntree_start, ntree_end, thread_count, etc.
 
         Returns:
-            pd.DataFrame: Predictions with uncertainty.
+            pd.DataFrame: Predictions with uncertainty (knowledge_uncertainty computed as std across models).
         """
         if not hasattr(self, "models_") or not self.models_:
             raise RuntimeError("Model has not been fitted yet. Call 'fit' before 'predict_uncertainty'.")
 
-        predictions = np.array([model.predict(X) for model in self.models_])
+        predictions = np.array([model.predict(X, **kwargs) for model in self.models_])
 
         mean_predictions = predictions.mean(axis=0)
         knowledge_uncertainty = predictions.std(axis=0)
@@ -959,7 +983,7 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostHyperPa
         results = pd.DataFrame(
             {
                 "pred": mean_predictions,
-                "mean_predictions": mean_predictions,
+                "mean_predictions": None,
                 "knowledge_uncertainty": knowledge_uncertainty,
                 "data_uncertainty": None,
                 "total_uncertainty": None,
@@ -1022,6 +1046,7 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostHyperPa
         state.update(
             {
                 "model_type": self.model_type,
+                "target_type": self.target_type,
                 "tune_boosting_type": self.tune_boosting_type,
                 "tune_tree_structure_type": self.tune_tree_structure_type,
                 "samples": self.samples,
@@ -1039,6 +1064,7 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostHyperPa
         """Set state for unpickling."""
         # Extract our custom attributes
         self.model_type = state.pop("model_type", "regression")
+        self.target_type = state.pop("target_type", "single_target")
         self.tune_boosting_type = state.pop("tune_boosting_type", False)
         self.tune_tree_structure_type = state.pop("tune_tree_structure_type", True)
         self.samples = state.pop("samples", 10)
