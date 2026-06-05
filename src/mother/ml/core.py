@@ -118,7 +118,9 @@ class AbstractMotherPipeline(ABC):
 
                 n_classes = model_predictions_proba.shape[1]
                 prediction_columns_proba = [f"proba_{i}" for i in range(n_classes)]
-                proba_df = pd.DataFrame(data=model_predictions_proba, columns=prediction_columns_proba)
+                proba_df = pd.DataFrame(
+                    data=model_predictions_proba, index=pred_res.index, columns=prediction_columns_proba
+                )
 
                 # Entropy (nats) as a default total uncertainty estimate for classifiers.
                 model_predictions_proba = np.clip(model_predictions_proba, 1e-10, 1.0)

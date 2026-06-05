@@ -581,7 +581,6 @@ class CatboostRegressorMother(CatBoostRegressor, _CatboostHyperParams):
                     f"but mean_predictions has {mean_predictions.shape[1]} columns."
                 )
 
-                # Create ordered DataFrames
             if isinstance(model_predictions, np.ndarray) and model_predictions.ndim == 1:
                 model_predictions = model_predictions.reshape(-1, 1)
             y_pred_df = pd.DataFrame(model_predictions, index=X.index)
