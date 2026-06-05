@@ -1,10 +1,12 @@
 import pickle
 import unittest
 from typing import List
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
 import pytest
+from catboost import CatBoostRegressor
 from sklearn.base import clone, is_regressor
 from sklearn.datasets import make_regression
 from sklearn.metrics import make_scorer, root_mean_squared_error
@@ -67,10 +69,14 @@ class TestCatboostModels(unittest.TestCase):
         self.assertIn("pred", result.columns)
         self.assertIn("mean_predictions", result.columns)
         self.assertIn("knowledge_uncertainty", result.columns)
+        self.assertIn("data_uncertainty", result.columns)
+        self.assertIn("total_uncertainty", result.columns)
 
         self.assertTrue(np.issubdtype(result["pred"].dtype, np.number))
         self.assertTrue(np.issubdtype(result["mean_predictions"].dtype, np.number))
         self.assertTrue(np.issubdtype(result["knowledge_uncertainty"].dtype, np.number))
+        self.assertTrue(result["data_uncertainty"].isna().all())
+        self.assertTrue(result["total_uncertainty"].isna().all())
 
         correlation = result["mean_predictions"].corr(self.y_regression)
         self.assertGreater(correlation, 0.8, "Mean predictions are not sufficiently correlated with actual values.")
@@ -90,7 +96,6 @@ class TestCatboostModels(unittest.TestCase):
         self.assertIn("knowledge_uncertainty", result.columns)
         self.assertTrue(np.issubdtype(result["knowledge_uncertainty"].dtype, np.number))
         self.assertTrue((result["knowledge_uncertainty"] >= 0).all(), "model uncertainty contains negative values.")
-        print(result, result_with_uncertainty)
         # Check if the values of "knowledge_uncertainty" are equal
         pd.testing.assert_series_equal(
             result["knowledge_uncertainty"],
@@ -98,6 +103,46 @@ class TestCatboostModels(unittest.TestCase):
             check_exact=True,
             obj="Model Uncertainty",
         )
+
+    def test_CatboostRegressorMother_single_target_predict_uncertainty_passes_new_parameters(self) -> None:
+        model: CatboostRegressorMother = CatboostRegressorMother(target_type="single_target")
+        model.fit(self.X, self.y_regression, verbose=False)
+
+        stub = pd.DataFrame(
+            {
+                "mean_predictions": np.zeros(len(self.X)),
+                "knowledge_uncertainty": np.ones(len(self.X)),
+                "data_uncertainty": np.nan,
+                "total_uncertainty": np.nan,
+            },
+            index=self.X.index,
+        )
+
+        with patch("mother.ml.models.m_catboost.utils.get_virtual_prediction", return_value=stub) as mocked_predict:
+            result = model.predict_uncertainty(self.X, n_ensembles=7, n_threads=3)
+
+        self.assertIsInstance(result, pd.DataFrame)
+        self.assertEqual(len(result), len(self.X))
+        self.assertIn("pred", result.columns)
+        self.assertIn("knowledge_uncertainty", result.columns)
+        mocked_predict.assert_called_once()
+        self.assertEqual(mocked_predict.call_args.kwargs["virtual_ensembles_count"], 7)
+        self.assertEqual(mocked_predict.call_args.kwargs["thread_count"], 3)
+
+    def test_CatboostRegressorMother_predict_forwards_kwargs(self) -> None:
+        model: CatboostRegressorMother = CatboostRegressorMother(target_type="single_target")
+        model.fit(self.X, self.y_regression, verbose=False)
+
+        mocked_output = np.ones(len(self.X))
+        with patch.object(CatBoostRegressor, "predict", return_value=mocked_output) as mocked_predict:
+            predictions = model.predict(self.X, thread_count=2, prediction_type="RawFormulaVal")
+
+        self.assertIsInstance(predictions, np.ndarray)
+        np.testing.assert_array_equal(predictions, mocked_output)
+        mocked_predict.assert_called_once()
+        self.assertIs(mocked_predict.call_args.kwargs["data"], self.X)
+        self.assertEqual(mocked_predict.call_args.kwargs["thread_count"], 2)
+        self.assertEqual(mocked_predict.call_args.kwargs["prediction_type"], "RawFormulaVal")
 
     def test_CatboostRegressorMother_multi_target_predict_with_uncertainty(self) -> None:
         model: CatboostRegressorMother = CatboostRegressorMother(target_type="multi_target")
@@ -109,13 +154,39 @@ class TestCatboostModels(unittest.TestCase):
         for idx in range(n_targets):
             self.assertIn(f"target_{idx}_mean_predictions", result.columns)
             self.assertIn(f"target_{idx}_knowledge_uncertainty", result.columns)
+            self.assertIn(f"target_{idx}_data_uncertainty", result.columns)
+            self.assertIn(f"target_{idx}_total_uncertainty", result.columns)
             self.assertTrue(np.issubdtype(result[f"target_{idx}_mean_predictions"].dtype, np.number))
             self.assertTrue(np.issubdtype(result[f"target_{idx}_knowledge_uncertainty"].dtype, np.number))
             self.assertIn(f"target_{idx}_pred", result.columns)
+            self.assertTrue(result[f"target_{idx}_data_uncertainty"].isna().all())
+            self.assertTrue(result[f"target_{idx}_total_uncertainty"].isna().all())
 
         # Check if the shape matches the input
         self.assertEqual(result.shape[0], self.X.shape[0])
         self._test_optim(model)
+
+    def test_CatboostRegressorMother_multi_target_predict_with_uncertainty_for_opt(self) -> None:
+        model: CatboostRegressorMother = CatboostRegressorMother(target_type="multi_target")
+        model.fit(self.X, self.y_multitarget_regression, verbose=False)
+
+        full_result: pd.DataFrame = model.predict_uncertainty(self.X)
+        result_for_opt: pd.DataFrame = model.predict_uncertainty(self.X, uncertainty_for_opt=True)
+
+        ku_columns = [
+            column
+            for column in full_result.columns
+            if column.startswith("target_") and column.endswith("_knowledge_uncertainty")
+        ]
+        expected_total = full_result[ku_columns].astype(float).max(axis=1)
+
+        self.assertEqual(list(result_for_opt.columns), ["total_uncertainty"])
+        self.assertEqual(len(result_for_opt), len(self.X))
+        pd.testing.assert_series_equal(
+            result_for_opt["total_uncertainty"],
+            expected_total,
+            check_names=False,
+        )
 
     def test_CatboostRMSEWithUncertaintyRegression_predict(self):
         model: CatboostRegressorMother = CatboostRegressorMother(
@@ -258,6 +329,11 @@ class TestCatboostModels(unittest.TestCase):
         with self.assertRaises(ValueError):
             CatboostGaussianProcessRegressorMother(model_type="classification")
 
+    def test_CatboostGaussianProcessRegressorMother_invalid_target_type(self) -> None:
+        """Test that multi_target is rejected for GaussianProcess regressor wrapper."""
+        with self.assertRaisesRegex(ValueError, "single_target"):
+            CatboostGaussianProcessRegressorMother(target_type="multi_target")
+
     def test_CatboostGaussianProcessRegressorMother_fit_predict(self) -> None:
         """Test basic fit and predict functionality."""
         model = CatboostGaussianProcessRegressorMother(prior_iterations=50, samples=5, verbose=False)
@@ -294,7 +370,12 @@ class TestCatboostModels(unittest.TestCase):
         self.assertIn("pred", results.columns)
         self.assertIn("mean_predictions", results.columns)
         self.assertIn("knowledge_uncertainty", results.columns)
+        self.assertIn("data_uncertainty", results.columns)
+        self.assertIn("total_uncertainty", results.columns)
         self.assertFalse(np.any(results["knowledge_uncertainty"] < 0))
+        self.assertTrue(results["mean_predictions"].isna().all())
+        self.assertTrue(results["data_uncertainty"].isna().all())
+        self.assertTrue(results["total_uncertainty"].isna().all())
         self.assertEqual(len(results), len(self.X))
 
         # Test uncertainty_for_opt=True
@@ -310,6 +391,51 @@ class TestCatboostModels(unittest.TestCase):
             check_exact=True,
             obj="Knowledge Uncertainty",
         )
+
+    def test_CatboostGaussianProcessRegressorMother_predict_uncertainty_forwards_new_predict_parameters(self) -> None:
+        """Test forwarding kwargs from predict_uncertainty into underlying sampled models."""
+        model = CatboostGaussianProcessRegressorMother(samples=2, prior_iterations=10, verbose=False)
+
+        mock_model_a = MagicMock()
+        mock_model_b = MagicMock()
+        mock_model_a.predict.return_value = np.array([1.0, 2.0, 3.0])
+        mock_model_b.predict.return_value = np.array([2.0, 3.0, 4.0])
+        model.models_ = [mock_model_a, mock_model_b]
+
+        X_small = self.X.iloc[:3]
+        results = model.predict_uncertainty(X_small, thread_count=2, prediction_type="RawFormulaVal")
+
+        self.assertIsInstance(results, pd.DataFrame)
+        self.assertIn("knowledge_uncertainty", results.columns)
+        self.assertEqual(len(results), len(X_small))
+        mock_model_a.predict.assert_called_once_with(X_small, thread_count=2, prediction_type="RawFormulaVal")
+        mock_model_b.predict.assert_called_once_with(X_small, thread_count=2, prediction_type="RawFormulaVal")
+
+    def test_CatboostGaussianProcessRegressorMother_predict_forwards_new_predict_parameters(self) -> None:
+        """Test forwarding kwargs from predict into underlying sampled models."""
+        model = CatboostGaussianProcessRegressorMother(samples=2, prior_iterations=10, verbose=False)
+
+        mock_model_a = MagicMock()
+        mock_model_b = MagicMock()
+        mock_model_a.predict.return_value = np.array([1.0, 2.0, 3.0])
+        mock_model_b.predict.return_value = np.array([3.0, 4.0, 5.0])
+        model.models_ = [mock_model_a, mock_model_b]
+
+        X_small = self.X.iloc[:3]
+        predictions = model.predict(X_small, thread_count=2, prediction_type="RawFormulaVal")
+
+        self.assertIsInstance(predictions, np.ndarray)
+        self.assertEqual(len(predictions), len(X_small))
+        mock_model_a.predict.assert_called_once_with(X_small, thread_count=2, prediction_type="RawFormulaVal")
+        mock_model_b.predict.assert_called_once_with(X_small, thread_count=2, prediction_type="RawFormulaVal")
+
+    def test_CatboostGaussianProcessRegressorMother_fit_rejects_multi_target_after_set_params(self) -> None:
+        """Test fail-fast in fit when target_type is changed to unsupported value via set_params."""
+        model = CatboostGaussianProcessRegressorMother(samples=2, prior_iterations=10, verbose=False)
+        model.set_params(target_type="multi_target")
+
+        with self.assertRaisesRegex(ValueError, "single_target"):
+            model.fit(self.X, self.y_regression)
 
     def test_CatboostGaussianProcessRegressorMother_hyperparameter_optimization(self) -> None:
         """Test hyperparameter optimization using optuna."""
@@ -339,7 +465,9 @@ class TestCatboostModels(unittest.TestCase):
 
         # Test that predictions are the same
         results_after = unpickled_model.predict_uncertainty(self.X)
-        np.testing.assert_array_almost_equal(results_before["mean_predictions"], results_after["mean_predictions"])
+        np.testing.assert_array_almost_equal(results_before["pred"], results_after["pred"])
+        self.assertTrue(results_before["mean_predictions"].isna().all())
+        self.assertTrue(results_after["mean_predictions"].isna().all())
         np.testing.assert_array_almost_equal(
             results_before["knowledge_uncertainty"], results_after["knowledge_uncertainty"]
         )
