@@ -89,7 +89,7 @@ class _TabICLHyperParams(AbstractMotherPipeline):
         ``super().__init__(**kwargs)`` has run, so that all hyperparameters
         assigned by the parent TabICL constructor (via ``self.xxx = ...``)
         are captured.
-        """
+        #"""
         non_optimised_params = {"_init_params", "_is_fitted"}
         self._init_params = {key: value for key, value in self.__dict__.items() if key not in non_optimised_params}
 
@@ -692,7 +692,6 @@ class TabICLRegressorMother(TabICLRegressor, _TabICLHyperParams):
         return output
 
 
-# TODO: Test and confirm the good functioning of this class
 class TabICLEmbeddingTransformer(BaseEstimator, TransformerMixin):
     """Transformer that extracts TabICL row-interaction representations as embeddings.
 
