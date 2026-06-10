@@ -36,9 +36,10 @@ from typing import Any, Dict, Iterator, List, Literal, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
-from optuna.trial import Trial
+from optuna.trial import FixedTrial, Trial
 from six import iteritems
 from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.exceptions import NotFittedError
 from sklearn.model_selection import GroupKFold, KFold, StratifiedGroupKFold, StratifiedKFold
 from sklearn.utils import check_X_y
 from sklearn.utils.validation import check_is_fitted
@@ -92,7 +93,7 @@ class _TabICLHyperParams(AbstractMotherPipeline):
         non_optimised_params = {"_init_params", "_is_fitted"}
         self._init_params = {key: value for key, value in self.__dict__.items() if key not in non_optimised_params}
 
-    def get_hyperparameter_space(self, X, y, trial: Trial, prefix: str = "") -> dict:
+    def get_hyperparameter_space(self, X, y, trial: Union[Trial, FixedTrial], prefix: str = "") -> dict:
         """Suggest hyperparameters for an Optuna trial.
 
         The set of suggested parameters depends on which keys are present in
@@ -131,18 +132,22 @@ class _TabICLHyperParams(AbstractMotherPipeline):
             "n_estimators": trial.suggest_int(prefix + "n_estimators", 1, 12, log=False),
         }
 
-        if "softmax_temperature" in self._init_params:
+        # Conditionally suggest parameters based on the model type, inferred from the presence of keys in _init_params
+        is_classifier = isinstance(self, TabICLClassifier)
+        is_regressor = isinstance(self, TabICLRegressor)
+
+        if is_classifier and "softmax_temperature" in self._init_params:
             suggested_params["softmax_temperature"] = trial.suggest_float(
                 prefix + "softmax_temperature", 0.5, 2.0, log=False
             )
 
-        if "average_logits" in self._init_params:
+        if is_classifier and "average_logits" in self._init_params:
             if suggested_params["n_estimators"] == 1:
                 suggested_params["average_logits"] = False
             else:
                 suggested_params["average_logits"] = trial.suggest_categorical(prefix + "average_logits", (True, False))
 
-        if "outlier_threshold" in self._init_params:
+        if is_regressor and "outlier_threshold" in self._init_params:
             suggested_params["outlier_threshold"] = trial.suggest_float(
                 prefix + "outlier_threshold", 2.0, 8.0, log=False
             )
@@ -400,8 +405,8 @@ class TabICLClassifierMother(TabICLClassifier, _TabICLHyperParams):
 
     def fit(
         self,
-        X: np.ndarray,
-        y: np.ndarray,
+        X: Union[np.ndarray, pd.DataFrame],
+        y: Union[np.ndarray, pd.Series],
     ) -> "TabICLClassifierMother":
         """Fit the TabICL classifier on labelled data.
 
@@ -411,10 +416,10 @@ class TabICLClassifierMother(TabICLClassifier, _TabICLHyperParams):
 
         Parameters
         ----------
-        X : np.ndarray of shape (n_samples, n_features)
+        X : Union[np.ndarray, pd.DataFrame] of shape (n_samples, n_features)
             Feature matrix.  Lists are accepted and automatically converted
             to a column vector with a warning.
-        y : np.ndarray of shape (n_samples,)
+        y : Union[np.ndarray, pd.Series] of shape (n_samples,)
             Class labels (integer or string).  Lists are accepted and
             automatically converted.
 
@@ -447,7 +452,7 @@ class TabICLClassifierMother(TabICLClassifier, _TabICLHyperParams):
 
         self._is_fitted = True
         # Fit the TabICLClassifier on the data
-        super().fit(X, y)
+        super().fit(np.array(X), np.array(y))
         return self
 
 
@@ -575,16 +580,16 @@ class TabICLRegressorMother(TabICLRegressor, _TabICLHyperParams):
 
     def fit(
         self,
-        X: np.ndarray,
-        y: np.ndarray,
+        X: Union[np.ndarray, pd.DataFrame],
+        y: Union[np.ndarray, pd.Series],
     ) -> "TabICLRegressorMother":
         """Fit the TabICL regressor on labeled data.
 
         Parameters
         ----------
-        X : np.ndarray of shape (n_samples, n_features)
+        X : Union[np.ndarray, pd.DataFrame] of shape (n_samples, n_features)
             Feature matrix. Lists are accepted and converted to arrays.
-        y : np.ndarray of shape (n_samples,)
+        y : Union[np.ndarray, pd.Series] of shape (n_samples,)
             Continuous target values. Lists are accepted and converted.
 
         Returns
@@ -609,13 +614,14 @@ class TabICLRegressorMother(TabICLRegressor, _TabICLHyperParams):
 
         self._is_fitted = True
 
-        # fit the original tabicl regressor class on the data
-        super().fit(X, y)
+        # fit the original tabicl regressor class on the data as array type
+        # to be consistent with the sklearn input type
+        super().fit(np.array(X), np.array(y))
         return self
 
     def predict_uncertainty(
         self,
-        X: pd.DataFrame,
+        X: Union[np.ndarray, pd.DataFrame],
         return_quantiles: bool = False,
         quantiles: list = DEFAULT_QUANTILES,
         uncertainty_for_opt: bool = False,
@@ -626,10 +632,10 @@ class TabICLRegressorMother(TabICLRegressor, _TabICLHyperParams):
         The uncertainty is measured by interquartile range for each sample.
 
         Args:
-            X : ArrayLike
-                input to predict and estimate the uncertainty.
+            X : Union[np.ndarray, pd.DataFrame]
+                Input to predict and estimate the uncertainty.
             quantiles : list = [.25, .5, .75]
-                list of quantiles to calculate the uncertainty.
+                List of quantiles to calculate the uncertainty.
             return_quantiles : bool
                 If True, return quantile values (default is False).
 
@@ -1087,9 +1093,10 @@ class TabICLEmbeddingTransformer(BaseEstimator, TransformerMixin):
             * ``False`` → ``(n_samples, 1)`` with a single column
               ``tabiclembedding`` whose values are 1-D arrays.
         """
-        check_is_fitted(self, "model")
         if self.model is None:
-            raise RuntimeError("Internal error: model is None after fitting.")
+            raise NotFittedError("The model must be fitted before calling transform. Call fit() first.")
+
+        check_is_fitted(self, "model")
 
         is_df: bool = isinstance(X, pd.DataFrame)
         index = X.index if is_df else None
@@ -1141,9 +1148,9 @@ class TabICLEmbeddingTransformer(BaseEstimator, TransformerMixin):
         ndarray of str
             Column names matching the output of :meth:`transform`.
         """
-        check_is_fitted(self, "model")
         if self._embedding_dim is None:
-            raise ValueError("Transformer has not been fitted yet.")
+            raise NotFittedError("Transformer has not been fitted yet.")
+        check_is_fitted(self, "model")
 
         if self.return_separate_columns:
             return np.array([f"{self.embedding_column_name}_{i}" for i in range(self._embedding_dim)])
