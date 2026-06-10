@@ -28,6 +28,10 @@ def all_classification_algorithms(request):
         from mother.ml.models.m_tabpfn import TabPFNClassifierMother
 
         model = TabPFNClassifierMother()
+    elif algorithm == "tabicl":
+        from mother.ml.models.m_tabicl import TabICLClassifierMother
+
+        model = TabICLClassifierMother()
     elif algorithm == "lasso":
         from mother.ml.models.m_lasso import LassoClassifierBinaryMother
 
@@ -50,6 +54,10 @@ def all_regression_algorithms(request):
         from mother.ml.models.m_tabpfn import TabPFNRegressorMother
 
         model = TabPFNRegressorMother()
+    elif algorithm == "tabicl":
+        from mother.ml.models.m_tabicl import TabICLRegressorMother
+
+        model = TabICLRegressorMother()
     elif algorithm == "lasso":
         from mother.ml.models.m_lasso import LassoRegressorMother
 
