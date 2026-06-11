@@ -157,11 +157,15 @@ class _TabICLHyperParams(AbstractMotherPipeline):
                 prefix + "outlier_threshold", 2.0, 8.0, log=False
             )
 
-        module_logger.info(
-            "Suggested TabICL parameters in trial %s: %s",
-            trial.number,
-            suggested_params,
-        )
+        if isinstance(trial, Trial):
+            module_logger.info(
+                "Suggested TabICL parameters in trial %s: %s",
+                trial.number,
+                suggested_params,
+            )
+        else:
+            module_logger.info("Fixed Trial TabICL parameters: %s", suggested_params)
+
         return utils.add_prefix_to_dict_keys(suggested_params, prefix=prefix)
 
     def get_params(self, deep=True) -> dict:
@@ -384,7 +388,7 @@ class TabICLClassifierMother(TabICLClassifier, _TabICLHyperParams):
         Used during ``__init__`` to fill in any parameters not explicitly
         provided by the caller, and by the MotherML tuning infrastructure
         to know which parameters exist for this model. Default parameters
-        seleted based on TabICl github's repository.
+        selected based on TabICL github's repository.
 
         Parameters
         ----------
@@ -455,9 +459,9 @@ class TabICLClassifierMother(TabICLClassifier, _TabICLHyperParams):
 
         self._check_input_type(X, y)
 
-        self._is_fitted = True
         # Fit the TabICLClassifier on the data
         super().fit(np.array(X), np.array(y))
+        self._is_fitted = True
         return self
 
 
@@ -617,18 +621,17 @@ class TabICLRegressorMother(TabICLRegressor, _TabICLHyperParams):
 
         self._check_input_type(X, y)
 
-        self._is_fitted = True
-
         # fit the original tabicl regressor class on the data as array type
         # to be consistent with the sklearn input type
         super().fit(np.array(X), np.array(y))
+        self._is_fitted = True
         return self
 
     def predict_uncertainty(
         self,
         X: Union[np.ndarray, pd.DataFrame],
         return_quantiles: bool = False,
-        quantiles: list = DEFAULT_QUANTILES,
+        quantiles: Optional[List] = None,
         uncertainty_for_opt: bool = False,
         **kwargs,
     ) -> Union[pd.DataFrame, pd.Series, tuple[pd.DataFrame, np.ndarray]]:
@@ -660,6 +663,8 @@ class TabICLRegressorMother(TabICLRegressor, _TabICLHyperParams):
         check_is_fitted(self)
 
         # Update the quantiles list with default quantiles
+        if quantiles is None:
+            quantiles = list()
         for q in DEFAULT_QUANTILES:
             if q not in quantiles:
                 quantiles.append(q)
@@ -889,7 +894,7 @@ class TabICLEmbeddingTransformer(BaseEstimator, TransformerMixin):
 
         def _hook(module, input, output):  # noqa: ANN001
 
-            # Get the ouput (tensor), detach from calculation graph, move the tensor on the CPU to convert it to numpy
+            # Get the output (tensor), detach from calculation graph, move the tensor on the CPU to convert it to numpy
             # array and append it to the representations list
             representations_list.append(output.detach().cpu().float().numpy())
 
@@ -1078,9 +1083,8 @@ class TabICLEmbeddingTransformer(BaseEstimator, TransformerMixin):
     ) -> pd.DataFrame:
         """Transform samples into TabICL row-interaction representations.
 
-        For training samples (identified by index), cached out-of-fold embeddings
-        are returned directly.  For new samples, the fitted main model generates
-        representations via a single forward pass.
+        Generates embeddings for samples using the fitted model through a single forward pass with
+        hook on the ``row_interactor``.
 
         Parameters
         ----------
