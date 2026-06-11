@@ -237,6 +237,12 @@ def all_classification_algorithms(request) -> BaseEstimator:
         from mother.ml.models.m_lasso import LassoClassifierBinaryMother
 
         model = LassoClassifierBinaryMother()
+
+    elif algorithm == "tabicl":
+        from mother.ml.models.m_tabicl import TabICLClassifierMother
+
+        model = TabICLClassifierMother()
+
     return model
 
 
@@ -254,6 +260,10 @@ def all_regression_algorithms(request) -> BaseEstimator:
         model = TabPFNRegressorMother()
     elif algorithm == "lasso":
         model = LassoRegressorMother()
+    elif algorithm == "tabicl":
+        from mother.ml.models.m_tabicl import TabICLRegressorMother
+
+        model = TabICLRegressorMother()
     return model
 
 
