@@ -40,7 +40,12 @@ from optuna.trial import FixedTrial, Trial
 from six import iteritems
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.exceptions import NotFittedError
-from sklearn.model_selection import GroupKFold, KFold, StratifiedGroupKFold, StratifiedKFold
+from sklearn.model_selection import (
+    GroupKFold,
+    KFold,
+    StratifiedGroupKFold,
+    StratifiedKFold,
+)
 from sklearn.utils import check_X_y
 from sklearn.utils.validation import check_is_fitted
 from tabicl import TabICLClassifier, TabICLRegressor
@@ -78,7 +83,7 @@ class _TabICLHyperParams(AbstractMotherPipeline):
         modification after the model has been trained.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._init_params: dict = {}
         self._is_fitted: bool = False
 
