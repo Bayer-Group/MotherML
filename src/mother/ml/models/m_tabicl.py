@@ -94,7 +94,7 @@ class _TabICLHyperParams(AbstractMotherPipeline):
         ``super().__init__(**kwargs)`` has run, so that all hyperparameters
         assigned by the parent TabICL constructor (via ``self.xxx = ...``)
         are captured.
-        #"""
+        """
         non_optimised_params = {"_init_params", "_is_fitted"}
         self._init_params = {key: value for key, value in self.__dict__.items() if key not in non_optimised_params}
 
@@ -185,7 +185,7 @@ class _TabICLHyperParams(AbstractMotherPipeline):
         dict
             Current hyperparameter names and values.
         """
-        return self._init_params
+        return dict(self._init_params)
 
     def set_params(self, **params):
         """Update hyperparameter values before the model is fitted.
@@ -252,8 +252,8 @@ class _TabICLHyperParams(AbstractMotherPipeline):
             raise ValueError("X and y must not be empty.")
 
         # Allow nan values since TabICL can handle them
-        # Ensure_2d is False to allow 1D input for regression targets
-        check_X_y(X, y, ensure_2d=False, force_all_finite="allow-nan")
+        # Ensure_2d is True to enforce 2D X (n_samples, n_features), y remains 1D
+        check_X_y(X, y, ensure_2d=True, force_all_finite="allow-nan")
 
 
 # =========================================================== Classifier model
@@ -351,7 +351,7 @@ class TabICLClassifierMother(TabICLClassifier, _TabICLHyperParams):
         dict
             Current hyperparameter names and values.
         """
-        return self._init_params
+        return dict(self._init_params)
 
     def set_params(self, **params):
         """Update classifier hyperparameters before fitting.
@@ -407,6 +407,7 @@ class TabICLClassifierMother(TabICLClassifier, _TabICLHyperParams):
                 "softmax_temperature": 0.9,
                 "average_logits": True,
                 "allow_auto_download": True,
+                "checkpoint_version": "tabicl-classifier-v2-20260212.ckpt",
                 "kv_cache": False,
             },
             prefix=prefix,
@@ -445,7 +446,9 @@ class TabICLClassifierMother(TabICLClassifier, _TabICLHyperParams):
             If ``X`` or ``y`` is empty.
         """
         if isinstance(X, list):
-            X = np.array(X).reshape(-1, 1)
+            X = np.asarray(X)
+            if X.ndim == 1:
+                X = X.reshape(-1, 1)
             module_logger.warning(
                 "X is given as list type. It is converted into np.array with shape %s.",
                 X.shape,
@@ -607,7 +610,9 @@ class TabICLRegressorMother(TabICLRegressor, _TabICLHyperParams):
             The fitted regressor instance.
         """
         if isinstance(X, list):
-            X = np.array(X).reshape(-1, 1)
+            X = np.asarray(X)
+            if X.ndim == 1:
+                X = X.reshape(-1, 1)
             module_logger.warning(
                 "X is given as list type. It is converted into np.array with shape %s.",
                 X.shape,
@@ -1063,6 +1068,11 @@ class TabICLEmbeddingTransformer(BaseEstimator, TransformerMixin):
         if self.model_type == "classification":
             if groups is not None:
                 n_splits = min(self.n_folds, len(np.unique(groups)))
+                if n_splits < 2:
+                    raise ValueError(
+                        f"At least 2 groups are required for group-aware k-fold splitting. "
+                        f"Found {len(np.unique(groups))} unique group(s)."
+                    )
                 kf = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=self.random_state)
                 return kf.split(X, y, groups=groups)
             else:
@@ -1071,6 +1081,11 @@ class TabICLEmbeddingTransformer(BaseEstimator, TransformerMixin):
         else:
             if groups is not None:
                 n_splits = min(self.n_folds, len(np.unique(groups)))
+                if n_splits < 2:
+                    raise ValueError(
+                        f"At least 2 groups are required for group-aware k-fold splitting. "
+                        f"Found {len(np.unique(groups))} unique group(s)."
+                    )
                 kf = GroupKFold(n_splits=n_splits)
                 return kf.split(X, y, groups=groups)
             else:
