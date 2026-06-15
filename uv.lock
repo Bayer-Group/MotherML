@@ -2939,7 +2939,7 @@ dev = [
     { name = "types-pyyaml", specifier = ">=6.0.12.20241230" },
 ]
 docs = [
-    { name = "markdown-exec", extras = ["ansi"], specifier = ">=1.7.0,<2" },
+    { name = "markdown-exec", extras = ["ansi"], specifier = ">=1.12.1,<2" },
     { name = "mkdocs" },
     { name = "mkdocs-git-authors-plugin", specifier = ">=0.9.2,<0.10" },
     { name = "mkdocs-git-revision-date-localized-plugin" },
