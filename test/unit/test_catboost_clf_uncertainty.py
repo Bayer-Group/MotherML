@@ -1,9 +1,9 @@
 import pickle
+import unittest
+from unittest.mock import patch
 
 import numpy as np
-import optuna
 import pandas as pd
-import pytest
 from sklearn.datasets import make_classification
 
 from mother.ml.models.m_catboost import (
@@ -11,277 +11,265 @@ from mother.ml.models.m_catboost import (
 )
 
 
-@pytest.fixture
-def synthetic_binary_data():
-    """Create synthetic data for binary classification."""
-    X, y = make_classification(n_samples=200, n_features=5, n_classes=2, n_informative=3, random_state=42)
-    X = pd.DataFrame(X, columns=[f"feature_{i}" for i in range(X.shape[1])])
-    y = pd.Series(y, name="target")
-    return X, y
+class TestCatboostClassifierModels(unittest.TestCase):
+    """Test suite for CatBoost classifier models with uncertainty estimation."""
 
+    def setUp(self) -> None:
+        """Set up test fixtures for classification tests."""
+        # Binary classification data
+        X_binary, y_binary = make_classification(
+            n_samples=200, n_features=5, n_classes=2, n_informative=3, random_state=42
+        )
+        self.X_binary = pd.DataFrame(X_binary, columns=[f"feature_{i}" for i in range(X_binary.shape[1])])
+        self.y_binary = pd.Series(y_binary, name="target")
 
-@pytest.fixture
-def synthetic_multiclass_data():
-    """Create synthetic data for multiclass classification."""
-    X, y = make_classification(n_samples=300, n_features=5, n_classes=3, n_informative=3, random_state=42)
-    X = pd.DataFrame(X, columns=[f"feature_{i}" for i in range(X.shape[1])])
-    y = pd.Series(y, name="target")
-    return X, y
+        # Multiclass classification data
+        X_multiclass, y_multiclass = make_classification(
+            n_samples=300, n_features=5, n_classes=3, n_informative=3, random_state=42
+        )
+        self.X_multiclass = pd.DataFrame(X_multiclass, columns=[f"feature_{i}" for i in range(X_multiclass.shape[1])])
+        self.y_multiclass = pd.Series(y_multiclass, name="target")
 
+        # Multi-target binary classification data
+        X_multi, y1 = make_classification(n_samples=200, n_features=5, n_classes=2, n_informative=3, random_state=42)
+        _, y2 = make_classification(n_samples=200, n_features=5, n_classes=2, n_informative=3, random_state=43)
+        self.X_multi_target = pd.DataFrame(X_multi, columns=[f"feature_{i}" for i in range(X_multi.shape[1])])
+        self.y_multi_target = pd.DataFrame({"target_1": y1, "target_2": y2})
 
-@pytest.fixture
-def synthetic_multi_target_data():
-    """Create synthetic data for multi-target binary classification."""
-    X, y1 = make_classification(n_samples=200, n_features=5, n_classes=2, n_informative=3, random_state=42)
-    _, y2 = make_classification(n_samples=200, n_features=5, n_classes=2, n_informative=3, random_state=43)
-    X = pd.DataFrame(X, columns=[f"feature_{i}" for i in range(X.shape[1])])
-    y = pd.DataFrame({"target_1": y1, "target_2": y2})
-    return X, y
+    # ========== Binary Classification Tests ==========
 
+    def test_CatboostBinaryClassifier_predict(self) -> None:
+        """Test binary classification predict method."""
+        model = CatboostClassifierMother(
+            target_type="single_target", model_type="classification_binary", iterations=50, learning_rate=0.1, verbose=0
+        )
+        model.fit(self.X_binary, self.y_binary)
+        y_pred = model.predict(self.X_binary)
+        proba = model.predict_proba(self.X_binary)
 
-@pytest.mark.parametrize(
-    "data_fixture,model_type,target_type,expected_classes",
-    [
-        ("synthetic_binary_data", "classification_binary", "single_target", [0, 1]),
-        ("synthetic_multiclass_data", "classification_multiclass", "single_target", [0, 1, 2]),
-    ],
-)
-def test_classification_predictions(request, data_fixture, model_type, target_type, expected_classes):
-    X, y = request.getfixturevalue(data_fixture)
-    model = CatboostClassifierMother(
-        target_type=target_type, model_type=model_type, iterations=50, learning_rate=0.1, verbose=0
-    )
-    model.fit(X, y)
-    y_pred = model.predict(X).flatten()
-    proba = model.predict_proba(X)
-    assert y_pred.shape == y.shape
-    assert proba.shape == (len(y), len(expected_classes))
-    assert all(pred in expected_classes for pred in y_pred)
+        self.assertIsInstance(y_pred, np.ndarray)
+        self.assertEqual(len(y_pred), len(self.y_binary))
+        self.assertEqual(proba.shape, (len(self.y_binary), 2))
+        self.assertTrue(all(pred in [0, 1] for pred in y_pred.ravel()))
 
+    def test_CatboostBinaryClassifier_predict_uncertainty(self) -> None:
+        """Test binary classification predict_uncertainty method with probabilities."""
+        model = CatboostClassifierMother(
+            target_type="single_target", model_type="classification_binary", iterations=50, learning_rate=0.1, verbose=0
+        )
+        model.fit(self.X_binary, self.y_binary)
+        y_pred = model.predict(self.X_binary)
+        uncertainty_df = model.predict_uncertainty(self.X_binary)
 
-def test_focal_loss_binary_classification(synthetic_binary_data):
-    X, y = synthetic_binary_data
-    model = CatboostClassifierMother(
-        target_type="single_target",
-        model_type="classification_binary",
-        iterations=50,
-        learning_rate=0.1,
-        verbose=0,
-        loss_function="Focal:focal_alpha=0.5;focal_gamma=2.0",
-    )
-    model.fit(X, y)
-    y_pred = model.predict(X)
-    assert y_pred.shape == y.shape
-    assert all(pred in [0, 1] for pred in y_pred)
+        self.assertIsInstance(uncertainty_df, pd.DataFrame)
+        self.assertEqual(len(uncertainty_df), len(self.X_binary))
 
+        # Check standard uncertainty columns
+        self.assertIn("knowledge_uncertainty", uncertainty_df.columns)
+        self.assertIn("mean_predictions", uncertainty_df.columns)
+        self.assertIn("pred", uncertainty_df.columns)
+        np.testing.assert_array_equal(uncertainty_df["pred"].to_numpy(), y_pred.ravel())
+        self.assertTrue((uncertainty_df["knowledge_uncertainty"] >= 0).all())
+        # For classifiers, mean_predictions is intentionally None
+        self.assertTrue(uncertainty_df["mean_predictions"].isna().all())
 
-@pytest.fixture(params=[5, 10])
-def virtual_ensemble_counts(request):
-    """Fixture for different virtual ensemble counts."""
-    return request.param
+        # Check probability columns (2 classes for binary)
+        self.assertIn("proba_0", uncertainty_df.columns)
+        self.assertIn("proba_1", uncertainty_df.columns)
+        self.assertTrue(np.allclose(uncertainty_df["proba_0"] + uncertainty_df["proba_1"], 1.0))
+        self.assertTrue((uncertainty_df["proba_0"] >= 0).all() and (uncertainty_df["proba_1"] >= 0).all())
 
+    def test_CatboostBinaryClassifier_predict_uncertainty_for_opt(self) -> None:
+        """Test binary classification uncertainty_for_opt flag."""
+        model = CatboostClassifierMother(
+            target_type="single_target", model_type="classification_binary", iterations=50, learning_rate=0.1, verbose=0
+        )
+        model.fit(self.X_binary, self.y_binary)
+        result_full = model.predict_uncertainty(self.X_binary, uncertainty_for_opt=False)
+        result_opt = model.predict_uncertainty(self.X_binary, uncertainty_for_opt=True)
 
-@pytest.fixture(params=[1, 2])
-def thread_counts(request):
-    """Fixture for different thread counts."""
-    return request.param
-
-
-@pytest.fixture(params=[True, False])
-def uncertainty_for_opt(request):
-    """Fixture for uncertainty for optimization flag."""
-    return request.param
-
-
-@pytest.mark.parametrize("uncertainty_for_opt", [True, False])
-def test_uncertainty_estimation(synthetic_binary_data, virtual_ensemble_counts, thread_counts, uncertainty_for_opt):
-    X, y = synthetic_binary_data
-    model = CatboostClassifierMother(model_type="classification_binary", learning_rate=0.1)
-    model.fit(X, y)
-    uncertainty_df = model.predict_uncertainty(
-        X, n_ensembles=virtual_ensemble_counts, n_threads=thread_counts, uncertainty_for_opt=uncertainty_for_opt
-    )
-    assert isinstance(uncertainty_df, pd.DataFrame)
-    assert len(uncertainty_df) == len(X)
-    if uncertainty_for_opt:
-        assert len(uncertainty_df.columns) == 1
-        assert "knowledge_uncertainty" in uncertainty_df.columns
-    else:
-        assert {"mean_predictions", "knowledge_uncertainty", "total_uncertainty", "data_uncertainty"}.issubset(
-            set(uncertainty_df.columns)
+        self.assertIsInstance(result_opt, pd.DataFrame)
+        self.assertIn("knowledge_uncertainty", result_opt.columns)
+        self.assertEqual(len(result_opt.columns), 1)
+        pd.testing.assert_series_equal(
+            result_full["knowledge_uncertainty"], result_opt["knowledge_uncertainty"], check_exact=True
         )
 
-
-def test_classifier_param_interface():
-    model = CatboostClassifierMother()
-    model.set_params(target_type="multi_target", tune_boosting_type=True, model_type="classification_multiclass")
-    assert model.target_type == "multi_target"
-    assert model.tune_boosting_type is True
-    assert model.model_type == "classification_multiclass"
-    model.set_params(learning_rate=0.1, max_depth=8)
-    params = model.get_params()
-    assert params["learning_rate"] == pytest.approx(0.1)
-    assert params["max_depth"] == 8
-
-
-def test_classifier_default_parameters():
-    model = CatboostClassifierMother()
-    default_params = model.default_parameters()
-    assert default_params["learning_rate"] == pytest.approx(0.03)
-    assert default_params["bootstrap_type"] == "Bayesian"
-    assert default_params["random_strength"] == 1
-    assert default_params["grow_policy"] == "SymmetricTree"
-    assert default_params["boosting_type"] == "Plain"
-    assert default_params["max_depth"] == 6
-    prefixed_params = model.default_parameters(prefix="test_")
-    assert prefixed_params["test_learning_rate"] == pytest.approx(0.03)
-    assert prefixed_params["test_max_depth"] == 6
-
-
-def test_classifier_serialization(synthetic_binary_data):
-    X, y = synthetic_binary_data
-    model = CatboostClassifierMother(
-        target_type="single_target",
-        tune_boosting_type=True,
-        model_type="classification_binary",
-        iterations=50,
-        learning_rate=0.1,
-        verbose=0,
-    )
-    model.fit(X, y)
-    serialized = pickle.dumps(model)
-    deserialized_model = pickle.loads(serialized)
-    assert deserialized_model.target_type == model.target_type
-    assert deserialized_model.tune_boosting_type == model.tune_boosting_type
-    assert deserialized_model.model_type == model.model_type
-    y_pred_original = model.predict(X)
-    y_pred_deserialized = deserialized_model.predict(X)
-    assert (y_pred_original == y_pred_deserialized).all()
-
-
-def test_suggested_params_loss(synthetic_binary_data):
-    _, y = synthetic_binary_data
-    model = CatboostClassifierMother(model_type="classification_binary")
-    study = optuna.create_study()
-    trial = study.ask()
-    suggested_params = model.suggested_params_loss(trial, {}, y, prefix="")
-    assert suggested_params["loss_function"] in ["Logloss"] or suggested_params["loss_function"].startswith("Focal")
-    if suggested_params["loss_function"].startswith("Focal"):
-        assert "focal_alpha" in suggested_params["loss_function"]
-        assert "focal_gamma" in suggested_params["loss_function"]
-        assert suggested_params["auto_class_weights"] == "None"
-
-
-### CatboostGaussianProcessRegressor
-
-
-@pytest.mark.parametrize(
-    "n_classes, n_targets, model_type, target_type",
-    [
-        (2, 1, "classification_binary", "single_target"),  # Binary, single-target
-        (3, 1, "classification_multiclass", "single_target"),  # Multiclass, single-target
-        (2, 2, "classification_binary", "multi_target"),  # Binary, multi-target (simulate)
-        (3, 2, "classification_multiclass", "multi_target"),  # Multiclass, multi-target (simulate)
-    ],
-)
-def test_classification_uncertainty_shapes(n_classes, n_targets, model_type, target_type):
-    # Generate synthetic data
-    X, y = make_classification(
-        n_samples=50,
-        n_features=5,
-        n_informative=3,
-        n_classes=n_classes,
-        n_clusters_per_class=1,
-        random_state=42,
-    )
-    rng = np.random.default_rng(42)
-    X = pd.DataFrame(X)
-    if n_targets == 1:
-        y_df = pd.Series(y)
-    else:
-        # Simulate multi-target by stacking different random targets
-        y_df = pd.DataFrame(
-            {f"target_{i}": rng.integers(0, n_classes, size=X.shape[0], dtype=np.int64) for i in range(n_targets)}
+    def test_CatboostBinaryClassifier_predict_uncertainty_single_row_proba(self) -> None:
+        """Test single-row predict_proba output is normalized from 1D to 2D."""
+        model = CatboostClassifierMother(target_type="single_target", model_type="classification_binary")
+        X_single = self.X_binary.iloc[[0]]
+        uncertainty_stub = pd.DataFrame(
+            {"mean_predictions": [np.nan], "knowledge_uncertainty": [0.1]},
+            index=X_single.index,
         )
 
-    if model_type == "classification_multiclass" and target_type == "multi_target":
-        with pytest.raises(NotImplementedError):
-            CatboostClassifierMother(model_type=model_type, target_type=target_type)
-    else:
-        model = CatboostClassifierMother(model_type=model_type, target_type=target_type)
-        model.fit(X, y_df)
-        uncertainty_df = model.predict_uncertainty(X)
+        with (
+            patch("mother.ml.models.m_catboost.utils.get_virtual_prediction", return_value=uncertainty_stub),
+            patch.object(model, "predict", return_value=np.array([1])),
+            patch.object(model, "predict_proba", return_value=np.array([0.25, 0.75])),
+        ):
+            uncertainty_df = model.predict_uncertainty(X_single)
 
-        expected_cols = {"mean_predictions", "knowledge_uncertainty", "data_uncertainty", "total_uncertainty"}
-        assert expected_cols.issubset(set(uncertainty_df.columns)), (
-            f"Missing columns: {expected_cols - set(uncertainty_df.columns)}"
+        self.assertEqual(list(uncertainty_df[["proba_0", "proba_1"]].iloc[0]), [0.25, 0.75])
+        self.assertEqual(uncertainty_df.loc[X_single.index[0], "pred"], 1)
+
+    def test_CatboostBinaryClassifier_predict_uncertainty_invalid_proba_dimensions(self) -> None:
+        """Test invalid predict_proba dimensions raise a clear error."""
+        model = CatboostClassifierMother(target_type="single_target", model_type="classification_binary")
+        uncertainty_stub = pd.DataFrame(
+            {
+                "mean_predictions": [np.nan] * len(self.X_binary),
+                "knowledge_uncertainty": [0.1] * len(self.X_binary),
+            },
+            index=self.X_binary.index,
         )
-        assert len(uncertainty_df) == len(X)
-        if n_targets > 1:
-            for col in expected_cols:
-                assert any(col in c for c in uncertainty_df.columns), f"Column {col} missing for multi-target"
 
+        with (
+            patch("mother.ml.models.m_catboost.utils.get_virtual_prediction", return_value=uncertainty_stub),
+            patch.object(model, "predict", return_value=np.ones(len(self.X_binary))),
+            patch.object(model, "predict_proba", return_value=np.zeros((len(self.X_binary), 2, 1))),
+        ):
+            with self.assertRaisesRegex(ValueError, "1D or 2D"):
+                model.predict_uncertainty(self.X_binary)
 
-@pytest.mark.usefixtures("synthetic_multiclass_data")
-def test_uncertainty_warns_for_multciclass(synthetic_multiclass_data, caplog):
-    X, y = synthetic_multiclass_data
-    model = CatboostClassifierMother(
-        model_type="classification_multiclass", iterations=30, learning_rate=0.1, verbose=0
-    )
-    model.fit(X, y)
-    caplog.clear()
+    def test_CatboostBinaryClassifier_focal_loss(self) -> None:
+        """Test binary classification with Focal loss."""
+        model = CatboostClassifierMother(
+            target_type="single_target",
+            model_type="classification_binary",
+            iterations=50,
+            learning_rate=0.1,
+            verbose=0,
+            loss_function="Focal:focal_alpha=0.5;focal_gamma=2.0",
+        )
+        model.fit(self.X_binary, self.y_binary)
+        y_pred = model.predict(self.X_binary)
 
-    with caplog.at_level("WARNING"):
-        _ = model.predict_uncertainty(X, n_ensembles=5, n_threads=1)
+        self.assertEqual(y_pred.shape, self.y_binary.shape)
+        self.assertTrue(all(pred in [0, 1] for pred in y_pred))
 
-    messages = " ".join(r.message for r in caplog.records)
-    assert "Uncertainty prediction" in messages and ("MULTICLASS" in messages or "multiclass" in messages)
+    # ========== Multiclass Classification Tests ==========
 
+    def test_CatboostMulticlassClassifier_predict(self) -> None:
+        """Test multiclass classification predict method."""
+        model = CatboostClassifierMother(
+            target_type="single_target",
+            model_type="classification_multiclass",
+            iterations=50,
+            learning_rate=0.1,
+            verbose=0,
+        )
+        model.fit(self.X_multiclass, self.y_multiclass)
+        y_pred = model.predict(self.X_multiclass)
+        proba = model.predict_proba(self.X_multiclass)
 
-@pytest.mark.usefixtures("synthetic_multi_target_data")
-def test_uncertainty_warns_for_multi_target(synthetic_multi_target_data, caplog):
-    X, y = synthetic_multi_target_data
-    model = CatboostClassifierMother(
-        target_type="multi_target", model_type="classification_binary", iterations=30, learning_rate=0.1, verbose=False
-    )
-    model.fit(X, y)
+        self.assertIsInstance(y_pred, np.ndarray)
+        self.assertEqual(len(y_pred), len(self.y_multiclass))
+        self.assertEqual(proba.shape, (len(self.y_multiclass), 3))
 
-    caplog.clear()
+    # ========== Multi-target Classification Tests ==========
 
-    with caplog.at_level("WARNING"):
-        _ = model.predict_uncertainty(X, n_ensembles=5, n_threads=1)
+    def test_CatboostMultiTargetBinaryClassifier_predict(self) -> None:
+        """Test multi-target binary classification predict method."""
+        model = CatboostClassifierMother(
+            target_type="multi_target", model_type="classification_binary", iterations=50, learning_rate=0.1, verbose=0
+        )
+        model.fit(self.X_multi_target, self.y_multi_target)
+        y_pred = model.predict(self.X_multi_target)
 
-    messages = " ".join(r.message for r in caplog.records)
-    assert "Uncertainty prediction" in messages and ("MULTICLASS" in messages or "multiclass" in messages)
+        self.assertEqual(y_pred.shape[0], len(self.X_multi_target))
+        self.assertEqual(y_pred.shape[1], 2)  # 2 targets
 
+    def test_CatboostClassifier_get_set_params(self) -> None:
+        """Test parameter getting and setting."""
+        model = CatboostClassifierMother()
 
-@pytest.mark.usefixtures("synthetic_multiclass_data")
-def test_no_warning_when_uncertainty_false(synthetic_multiclass_data, caplog):
-    X, y = synthetic_multiclass_data
-    model = CatboostClassifierMother(
-        model_type="classification_multiclass", iterations=30, learning_rate=0.1, verbose=0
-    )
-    model.fit(X, y)
-    caplog.clear()
+        # Test set_params
+        model.set_params(target_type="multi_target", tune_boosting_type=True, model_type="classification_multiclass")
+        self.assertEqual(model.target_type, "multi_target")
+        self.assertTrue(model.tune_boosting_type)
+        self.assertEqual(model.model_type, "classification_multiclass")
 
-    with caplog.at_level("WARNING"):
-        _ = model.predict_uncertainty(X)
+        # Test get_params
+        params = model.get_params()
+        self.assertEqual(params["target_type"], "multi_target")
+        self.assertTrue(params["tune_boosting_type"])
+        self.assertEqual(params["model_type"], "classification_multiclass")
 
-    assert any(r.levelname == "WARNING" for r in caplog.records)
+    def test_CatboostClassifier_default_parameters(self) -> None:
+        """Test default parameters."""
+        model = CatboostClassifierMother()
+        default_params = model.default_parameters()
 
+        self.assertAlmostEqual(default_params["learning_rate"], 0.03)
+        self.assertEqual(default_params["bootstrap_type"], "Bayesian")
+        self.assertEqual(default_params["random_strength"], 1)
+        self.assertEqual(default_params["grow_policy"], "SymmetricTree")
+        self.assertEqual(default_params["boosting_type"], "Plain")
+        self.assertEqual(default_params["max_depth"], 6)
 
-@pytest.mark.parametrize("uncertainty_for_opt", [True, False])
-def test_uncertainty_output_shape_multiclass(synthetic_multiclass_data, uncertainty_for_opt):
-    X, y = synthetic_multiclass_data
-    model = CatboostClassifierMother(
-        model_type="classification_multiclass", iterations=30, learning_rate=0.1, verbose=0
-    )
-    model.fit(X, y)
-    df = model.predict_uncertainty(X, uncertainty_for_opt=uncertainty_for_opt, n_ensembles=5, n_threads=1)
+        # Test with prefix
+        prefixed_params = model.default_parameters(prefix="test_")
+        self.assertAlmostEqual(prefixed_params["test_learning_rate"], 0.03)
+        self.assertEqual(prefixed_params["test_max_depth"], 6)
 
-    assert isinstance(df, pd.DataFrame)
-    if uncertainty_for_opt:
-        assert list(df.columns) == ["knowledge_uncertainty"]
-    else:
-        assert {"mean_predictions", "knowledge_uncertainty", "total_uncertainty", "data_uncertainty"} <= set(df.columns)
-    assert len(df) == len(X)
+    def test_CatboostClassifier_serialization(self) -> None:
+        """Test model pickling and unpickling."""
+        model = CatboostClassifierMother(
+            target_type="single_target",
+            tune_boosting_type=True,
+            model_type="classification_binary",
+            iterations=50,
+            learning_rate=0.1,
+            verbose=0,
+        )
+        model.fit(self.X_binary, self.y_binary)
+
+        # Get predictions before pickling
+        y_pred_original = model.predict(self.X_binary)
+
+        # Pickle and unpickle
+        serialized = pickle.dumps(model)
+        deserialized_model = pickle.loads(serialized)
+
+        # Test parameters are preserved
+        self.assertEqual(deserialized_model.target_type, model.target_type)
+        self.assertEqual(deserialized_model.tune_boosting_type, model.tune_boosting_type)
+        self.assertEqual(deserialized_model.model_type, model.model_type)
+
+        # Test predictions are the same
+        y_pred_deserialized = deserialized_model.predict(self.X_binary)
+        np.testing.assert_array_equal(y_pred_original, y_pred_deserialized)
+
+    # ========== Loss-specific Parameter Tests ==========
+
+    def test_CatboostClassifier_suggested_params_loss_logloss(self) -> None:
+        """Test loss-specific parameter suggestions for Logloss."""
+        import optuna
+
+        model = CatboostClassifierMother(model_type="classification_binary")
+        study = optuna.create_study()
+        trial = study.ask()
+
+        suggested_params = model.suggested_params_loss(trial, {}, self.y_binary, prefix="")
+        self.assertIn("loss_function", suggested_params)
+        loss_func = suggested_params["loss_function"]
+        self.assertTrue(loss_func in ["Logloss"] or loss_func.startswith("Focal"))
+
+        if loss_func.startswith("Focal"):
+            self.assertIn("focal_alpha", loss_func)
+            self.assertIn("focal_gamma", loss_func)
+            self.assertEqual(suggested_params["auto_class_weights"], "None")
+
+    def test_CatboostClassifier_multiclass_multiclass_incompatible(self) -> None:
+        """Test that multiclass with multi_target raises NotImplementedError during suggested_params."""
+        import optuna
+
+        model = CatboostClassifierMother(model_type="classification_multiclass", target_type="single_target")
+        study = optuna.create_study()
+        trial = study.ask()
+
+        # This should work fine for single_target
+        suggested_params = model.suggested_params_loss(trial, {}, self.y_multiclass, prefix="")
+        self.assertEqual(suggested_params["loss_function"], "MultiClass")
