@@ -22,7 +22,7 @@ authors = [
 ]
 
 dependencies = [
-  "catboost>=1.2.8,<=1.2.8",
+  "catboost>=1.2.9,<=1.2.10",
   "feature-engine>=1.8.0,<2",
   "numpy>=2.2,<2.3",
   "optuna>=4.2.0,<5",
