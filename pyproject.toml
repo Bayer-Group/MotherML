@@ -73,7 +73,7 @@ clustering = [
 
 ### TabPFN
 tabpfn = [
-  "tabpfn==2.1.0",
+  "tabpfn==8.0.8",
   "torch>=2.3.0,<3",
 ]
 

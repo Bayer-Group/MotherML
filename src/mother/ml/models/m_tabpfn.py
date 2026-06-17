@@ -61,6 +61,7 @@ from sklearn.model_selection import (
 from sklearn.utils import check_array
 from sklearn.utils.validation import check_is_fitted
 from tabpfn import TabPFNClassifier, TabPFNRegressor
+from tabpfn.constants import ModelVersion
 from tabpfn.regressor import FullOutputDict
 
 from mother.ml.core import AbstractMotherPipeline
@@ -202,6 +203,12 @@ class TabPFNRegressorMother(TabPFNRegressor, _TabPFNHyperParams):
 
     def __init__(self, **kwargs):
         _TabPFNHyperParams.__init__(self)
+
+        # Default to commercially-licensed V2 model weights.
+        # Following the official recommendation:
+        #   TabPFNRegressor.create_default_for_version(ModelVersion.V2)
+        if "model_path" not in kwargs:
+            kwargs["model_path"] = TabPFNRegressor.create_default_for_version(ModelVersion.V2).model_path
 
         for key, val in self.default_parameters().items():
             if key not in list(kwargs):
@@ -359,6 +366,12 @@ class TabPFNClassifierMother(TabPFNClassifier, _TabPFNHyperParams):
 
     def __init__(self, **kwargs):
         _TabPFNHyperParams.__init__(self)
+
+        # Default to commercially-licensed V2 model weights.
+        # Following the official recommendation:
+        #   TabPFNClassifier.create_default_for_version(ModelVersion.V2)
+        if "model_path" not in kwargs:
+            kwargs["model_path"] = TabPFNClassifier.create_default_for_version(ModelVersion.V2).model_path
 
         for key, val in self.default_parameters().items():
             if key not in list(kwargs):
