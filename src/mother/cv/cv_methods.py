@@ -141,13 +141,7 @@ def hdbscan_clustering(
     Dict[int, List[int]]
         A dictionary of cluster numbers as keys and values as lists of molecule indices.
     """
-    try:
-        import hdbscan
-
-    except ImportError as import_error:
-        from mother.errors import ExtrasDependencyImportError
-
-        raise ExtrasDependencyImportError("clustering", import_error)
+    from sklearn.cluster import HDBSCAN
 
     if isinstance(fingerprints, np.ndarray):
         fingerprints = [np_to_bv(fv) for fv in fingerprints]
@@ -155,7 +149,7 @@ def hdbscan_clustering(
     module_logger.info("Applying HDBSCAN clustering to the dataset")
 
     clusters: Dict[int, List[int]] = collections.defaultdict(list)
-    clusterer: hdbscan.HDBSCAN = hdbscan.HDBSCAN(min_samples=1, metric="jaccard", min_cluster_size=min_cluster_size)
+    clusterer: HDBSCAN = HDBSCAN(min_samples=1, metric="jaccard", min_cluster_size=min_cluster_size)
     cluster_labels: np.ndarray = clusterer.fit_predict(np.array(fingerprints))
 
     module_logger.info(f"HDBSCAN clustering grouped data into {len(set(cluster_labels))} groups")

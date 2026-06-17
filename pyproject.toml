@@ -67,7 +67,6 @@ rna = [
 
 ### Clustering block
 clustering = [
-  "hdbscan>=0.8.40,<0.9",
   "kmedoids>=0.5.3.1,<0.6",
 ]
 
