@@ -29,16 +29,12 @@ Mother framework compatibility.
 
 import copy
 import logging
-from functools import wraps
-from typing import Callable
 
 import catboost
 import numpy as np
 import pandas as pd
 from catboost import CatBoostClassifier, CatBoostRanker, CatBoostRegressor
 from optuna.trial import Trial
-from sklearn import get_config as skl_get_config
-from sklearn import set_config as skl_set_config
 from sklearn.base import BaseEstimator
 from sklearn.utils import check_X_y
 
@@ -49,39 +45,6 @@ from mother.ml.models import utils as models_utils
 
 module_logger = logging.getLogger(__name__)
 DEFAULT_QUANTILES: list[float] = [0.25, 0.5, 0.75]
-
-
-def ensure_metadata_routing(func: Callable) -> Callable:
-    """
-    Decorator to ensure metadata routing is enabled before executing a function.
-
-    This decorator checks if sklearn's metadata routing is enabled and activates it
-    if necessary. It's particularly useful for initializing ranking models that require
-    metadata routing for passing additional parameters like group_id.
-
-    Parameters
-    ----------
-    func : Callable
-        The function to be decorated (typically __init__ of a ranking model)
-
-    Returns
-    -------
-    Callable
-        The wrapped function with metadata routing ensured
-    """
-
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        use_metadata_routing: bool = bool(skl_get_config().get("enable_metadata_routing", False))
-        if not use_metadata_routing:
-            module_logger.warning(
-                "Metadata routing is not enabled, enabling it now. This may cause issues in passing "
-                "training arguments to other sklearn objects."
-            )
-            skl_set_config(enable_metadata_routing=True)  # NOSONAR
-        return func(*args, **kwargs)
-
-    return wrapper
 
 
 class _CatbooostModelMotherBase(AbstractMotherPipeline):
@@ -1454,12 +1417,10 @@ class CatboostRankerMother(CatBoostRanker, _CatbooostModelMotherBase, _CatboostH
 
     Notes
     -----
-    The __init__ method is decorated with @ensure_metadata_routing to automatically enable
-    sklearn's metadata routing configuration, which is required for ranking models to accept
-    group_id parameters during training.
+    Pass ``group_id`` via ``fit_params`` (or via the ``params`` argument when sklearn
+    metadata routing is enabled) when using this model with cross-validation helpers.
     """
 
-    @ensure_metadata_routing
     def __init__(
         self,
         target_type: props.TargetType = "single_target",

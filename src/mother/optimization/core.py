@@ -70,19 +70,18 @@ def handle_metadata_routing(func: typing.Callable) -> typing.Callable:
         # Check metadata routing configuration
         use_metadata_routing: bool = bool(skl_get_config().get("enable_metadata_routing", False))
 
-        # Determine how to pass groups
-        groups_as_cross_val_args: bool = True
+        # Determine how to pass groups for the CV splitter.
+        # Without routing: pass groups= directly to cross_validate/cross_val_score.
+        # With routing: groups must go via the params= dict so sklearn can route
+        # them to the CV splitter's split(); passing groups= directly raises a
+        # ValueError in sklearn >= 1.8.
+        groups_as_cross_val_args: bool = not use_metadata_routing
         if use_metadata_routing and groups is not None:
-            groups_as_cross_val_args = False
             fit_kwargs["groups"] = groups
 
-        # Handle ranking groups
+        # ranking_groups (group_id) always go to the estimator via fit_params /
+        # params=; global metadata routing does not need to be enabled for this.
         if ranking_groups is not None:
-            if not use_metadata_routing:
-                raise AssertionError(
-                    "To use ranking groups please enable metadata routing in sklearn. "
-                    "Call sklearn.set_config(enable_metadata_routing=True)"
-                )
             fit_kwargs["group_id"] = ranking_groups
 
         # Store the flag for use in the function
