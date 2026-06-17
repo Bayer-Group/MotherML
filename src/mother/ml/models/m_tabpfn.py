@@ -167,8 +167,8 @@ class _TabPFNHyperParams(AbstractMotherPipeline):
             raise ValueError("X and y must not be empty.")
 
         # ensure_2d is off because of the 1D case
-        check_array(X, ensure_2d=False, force_all_finite="allow-nan")
-        check_array(y, ensure_2d=False, dtype=None, force_all_finite="allow-nan")
+        check_array(X, ensure_2d=False, ensure_all_finite="allow-nan")
+        check_array(y, ensure_2d=False, dtype=None, ensure_all_finite="allow-nan")
 
 
 class TabPFNRegressorMother(TabPFNRegressor, _TabPFNHyperParams):
