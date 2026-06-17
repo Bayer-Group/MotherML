@@ -51,7 +51,7 @@ torch = ["torch>=2.3.0,<3"]
 report = [
   "matplotlib>3.7.0",
   "seaborn>=0.13.2,<0.14",
-  "umap-learn>=0.5.7,<0.6",
+  "umap-learn>=0.5.12,<0.6",
   "plotly>=6.0.1,<7",
   "ipywidgets>=8.1.5,<9",
   "igraph>=0.11.8,<0.12",
