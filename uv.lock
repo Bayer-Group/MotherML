@@ -2981,7 +2981,7 @@ requires-dist = [
     { name = "rdkit", specifier = ">=2024.9.1" },
     { name = "rnanorm", marker = "extra == 'rna'" },
     { name = "scanpy", marker = "extra == 'rna'" },
-    { name = "scikit-learn", specifier = "<=1.5.0" },
+    { name = "scikit-learn", specifier = ">=1.5.0,<=1.9.0" },
     { name = "seaborn", marker = "extra == 'report'", specifier = ">=0.13.2,<0.14" },
     { name = "single-source", specifier = ">=0.4.0,<0.5" },
     { name = "tabpfn", marker = "extra == 'tabpfn'", specifier = "==8.0.8" },
