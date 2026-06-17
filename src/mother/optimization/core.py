@@ -76,7 +76,10 @@ def handle_metadata_routing(func: typing.Callable) -> typing.Callable:
         # them to the CV splitter's split(); passing groups= directly raises a
         # ValueError in sklearn >= 1.8.
         groups_as_cross_val_args: bool = not use_metadata_routing
-        if use_metadata_routing and groups is not None:
+        if use_metadata_routing:
+            # Always inject "groups" so that the downstream pop() in optimize()
+            # does not raise KeyError when groups_as_cross_val_args is False,
+            # even when groups is None.
             fit_kwargs["groups"] = groups
 
         # ranking_groups (group_id) always go to the estimator via fit_params /

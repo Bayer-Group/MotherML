@@ -70,7 +70,14 @@ class _CatbooostModelMotherBase(AbstractMotherPipeline):
         cloned_params = new_obj.get_params(deep=False)
         for key, original_value in params.items():
             cloned_value = cloned_params[key]
-            if original_value != cloned_value:
+            try:
+                different = bool(original_value != cloned_value)
+            except ValueError:
+                # numpy arrays / pandas objects: != returns an array-like
+                import numpy as np
+
+                different = not np.array_equal(original_value, cloned_value)
+            if different:
                 raise RuntimeError(
                     f"Parameter '{key}' was not correctly cloned: original={original_value!r}, cloned={cloned_value!r}"
                 )
