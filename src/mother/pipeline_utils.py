@@ -21,7 +21,7 @@ import numpy.typing as npt
 import pandas as pd
 import sklearn.feature_selection as skl_feature_sel
 import sklearn.model_selection as skl_model_sel
-from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.base import BaseEstimator, TransformerMixin, is_classifier
 from sklearn.compose import ColumnTransformer
 from sklearn.metrics import make_scorer
 from sklearn.pipeline import Pipeline
@@ -794,7 +794,7 @@ def mother_cv(
         module_logger.debug("The prefix is being added to the column names for the prediction columns")
         intermediate_performance_data = intermediate_performance_data.add_prefix(prediction_prefix)
 
-        if hasattr(val_estimator, "_estimator_type") and val_estimator._estimator_type == "classifier":
+        if is_classifier(val_estimator):
             existing_proba_columns = [str(col) for col in intermediate_performance_data.columns if "proba_" in str(col)]
 
             if existing_proba_columns:
