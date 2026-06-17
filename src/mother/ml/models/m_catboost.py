@@ -27,6 +27,7 @@ All classes provide methods for Optuna-based hyperparameter optimization, uncert
 Mother framework compatibility.
 """
 
+import copy
 import logging
 from functools import wraps
 from typing import Callable
@@ -81,6 +82,48 @@ def ensure_metadata_routing(func: Callable) -> Callable:
         return func(*args, **kwargs)
 
     return wrapper
+
+
+class _CatbooostModelMotherBase(AbstractMotherPipeline):
+    def __sklearn_clone__(self):
+        """Custom clone that uses content equality instead of identity.
+
+        Newer CatBoost versions internally copy mutable constructor params
+        (cat_features, embedding_features, text_features, etc.), which breaks
+        sklearn.base.clone's identity check (``param1 is param2``).
+        This override reconstructs the estimator from its params directly,
+        bypassing that check.
+
+        It also preserves any metadata routing requests (e.g.
+        ``set_fit_request(group_id=...)``), which are stored on the instance
+        and would otherwise be lost when constructing a fresh object.
+        """
+        klass: type = self.__class__
+        params: dict = self.get_params(deep=False)
+        new_params: dict = {k: copy.deepcopy(v) for k, v in params.items()}
+        new_obj = klass(**new_params)
+
+        # Verify that mutable params were copied with equal content
+        cloned_params = new_obj.get_params(deep=False)
+        for key, original_value in params.items():
+            cloned_value = cloned_params[key]
+            if original_value != cloned_value:
+                raise RuntimeError(
+                    f"Parameter '{key}' was not correctly cloned: original={original_value!r}, cloned={cloned_value!r}"
+                )
+
+        # Preserve metadata routing requests across clone
+        if hasattr(self, "_metadata_request"):
+            new_obj._metadata_request = copy.deepcopy(self._metadata_request)
+            # MetadataRequest does not implement __eq__, so compare via repr
+            if repr(self._metadata_request) != repr(new_obj._metadata_request):
+                raise RuntimeError(
+                    "Metadata routing requests were not correctly cloned: "
+                    f"original={self._metadata_request!r}, "
+                    f"cloned={new_obj._metadata_request!r}"
+                )
+
+        return new_obj
 
 
 class _CatboostHyperParams(AbstractMotherPipeline):
@@ -185,7 +228,7 @@ class _CatboostHyperParams(AbstractMotherPipeline):
         return suggested_params
 
 
-class CatboostRegressorMother(CatBoostRegressor, _CatboostHyperParams):
+class CatboostRegressorMother(CatBoostRegressor, _CatbooostModelMotherBase, _CatboostHyperParams):
     """
     A custom implementation of CatBoostRegressor with extended functionality for hyperparameter tuning.
 
@@ -642,7 +685,7 @@ class CatboostRegressorMother(CatBoostRegressor, _CatboostHyperParams):
         return uncertainty_df
 
 
-class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostHyperParams):
+class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatbooostModelMotherBase, _CatboostHyperParams):
     """
     Scikit-learn-compatible CatBoost Gaussian Process Regressor for Uncertainty Estimation.
 
@@ -1078,7 +1121,7 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostHyperPa
         super().__setstate__(state)
 
 
-class CatboostClassifierMother(CatBoostClassifier, _CatboostHyperParams, AbstractMotherPipeline):
+class CatboostClassifierMother(CatBoostClassifier, _CatbooostModelMotherBase, _CatboostHyperParams):
     """
     Unified CatBoost classifier for binary and multiclass classification with Optuna hyperparameter tuning,
     uncertainty estimation, and active learning support, designed for integration with the Mother framework.
@@ -1384,7 +1427,7 @@ class CatboostClassifierMother(CatBoostClassifier, _CatboostHyperParams, Abstrac
         return uncertainty_df
 
 
-class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
+class CatboostRankerMother(CatBoostRanker, _CatbooostModelMotherBase, _CatboostHyperParams, BaseEstimator):
     """
     A custom implementation of CatBoostRanker with extended functionality for hyperparameter tuning
     and automatic metadata routing enablement.

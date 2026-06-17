@@ -22,7 +22,7 @@ authors = [
 ]
 
 dependencies = [
-  "catboost>=1.2.6,<=1.2.8",
+  "catboost>=1.2.8,<=1.2.8",
   "feature-engine>=1.8.0,<2",
   "numpy>=2.2,<2.3",
   "optuna>=4.2.0,<5",
@@ -358,4 +358,3 @@ module-name = "mother"
 [build-system]
 requires = ["uv_build>=0.11.1,<0.12.0","setuptools>=76.0.0"]
 build-backend = "uv_build"
-

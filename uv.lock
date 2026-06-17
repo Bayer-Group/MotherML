@@ -2810,7 +2810,7 @@ wheels = [
 
 [[package]]
 name = "mother-ml"
-version = "1.0.0"
+version = "1.0.1"
 source = { editable = "." }
 dependencies = [
     { name = "boruta" },
@@ -2895,7 +2895,7 @@ test-duration = [
 requires-dist = [
     { name = "anndata", marker = "extra == 'rna'" },
     { name = "boruta", specifier = ">=0.4.3,<0.5" },
-    { name = "catboost", specifier = ">=1.2.6,<=1.2.8" },
+    { name = "catboost", specifier = ">=1.2.8,<=1.2.8" },
     { name = "colorama", specifier = ">=0.4.6,<0.5" },
     { name = "feature-engine", specifier = ">=1.8.0,<2" },
     { name = "hdbscan", marker = "extra == 'clustering'", specifier = ">=0.8.40,<0.9" },
