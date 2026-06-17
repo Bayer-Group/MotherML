@@ -271,7 +271,27 @@ class TestRNA:
         with pytest.raises(ValueError, match="Invalid normalization method"):
             rna.set_params(normalisation_method="InvalidMethod")
 
-    @pytest.mark.parametrize("norm_method", ["Scanpy", "UQ", "CUF", "CPM"])
+    @pytest.mark.parametrize(
+        "norm_method",
+        [
+            "Scanpy",
+            pytest.param(
+                "UQ",
+                marks=pytest.mark.xfail(
+                    reason="rnanorm<=2.2.0 calls deprecated sklearn._validate_data removed in sklearn>=1.8",
+                    strict=True,
+                ),
+            ),
+            pytest.param(
+                "CUF",
+                marks=pytest.mark.xfail(
+                    reason="rnanorm<=2.2.0 calls deprecated sklearn._validate_data removed in sklearn>=1.8",
+                    strict=True,
+                ),
+            ),
+            "CPM",
+        ],
+    )
     def test_different_normalisation_methods(
         self, small_rna_data: Tuple[pd.DataFrame, pd.Series], norm_method: str
     ) -> None:
