@@ -19,6 +19,7 @@ from typing import (
 import catboost
 import numpy.typing as npt
 import pandas as pd
+import sklearn
 import sklearn.feature_selection as skl_feature_sel
 import sklearn.model_selection as skl_model_sel
 from sklearn.base import BaseEstimator, TransformerMixin, is_classifier
@@ -932,6 +933,10 @@ def get_ranking_pipeline(
     tuner (MotherTuner): the tuner for hyperparameter optimization, including the NDCG-scorer
 
     """
+    # Ranking requires sklearn metadata routing so that group_id is forwarded
+    # to both the ranker's fit() and the NDCG scorer's score().
+    sklearn.set_config(enable_metadata_routing=True)
+
     ranking_model = get_ranking_model(
         target_type=target_type,
         categorical_features=categorical_features,
