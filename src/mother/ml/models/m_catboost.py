@@ -47,7 +47,7 @@ module_logger = logging.getLogger(__name__)
 DEFAULT_QUANTILES: list[float] = [0.25, 0.5, 0.75]
 
 
-class _CatbooostModelMotherBase(AbstractMotherPipeline):
+class _CatboostModelMotherBase(AbstractMotherPipeline):
     def __sklearn_clone__(self):
         """Custom clone that uses content equality instead of identity.
 
@@ -66,18 +66,25 @@ class _CatbooostModelMotherBase(AbstractMotherPipeline):
         new_params: dict = {k: copy.deepcopy(v) for k, v in params.items()}
         new_obj = klass(**new_params)
 
-        # Verify that mutable params were copied with equal content
+        # Verify that mutable params were copied with equal content.
+        # Use explicit type-dispatch to avoid ambiguous truth-value errors from
+        # numpy arrays and pandas objects when using a plain `!=` comparison.
         cloned_params = new_obj.get_params(deep=False)
         for key, original_value in params.items():
             cloned_value = cloned_params[key]
             try:
-                different = bool(original_value != cloned_value)
-            except ValueError:
-                # numpy arrays / pandas objects: != returns an array-like
-                import numpy as np
-
-                different = not np.array_equal(original_value, cloned_value)
-            if different:
+                if isinstance(original_value, np.ndarray) or isinstance(cloned_value, np.ndarray):
+                    equal = np.array_equal(original_value, cloned_value)
+                elif isinstance(original_value, (pd.Series, pd.DataFrame)) and isinstance(
+                    cloned_value, type(original_value)
+                ):
+                    equal = original_value.equals(cloned_value)
+                else:
+                    equal = bool(original_value == cloned_value)
+            except Exception:
+                # Last resort: compare reprs (handles custom types with no __eq__)
+                equal = repr(original_value) == repr(cloned_value)
+            if not equal:
                 raise RuntimeError(
                     f"Parameter '{key}' was not correctly cloned: original={original_value!r}, cloned={cloned_value!r}"
                 )
@@ -198,7 +205,7 @@ class _CatboostHyperParams(AbstractMotherPipeline):
         return suggested_params
 
 
-class CatboostRegressorMother(CatBoostRegressor, _CatbooostModelMotherBase, _CatboostHyperParams):
+class CatboostRegressorMother(CatBoostRegressor, _CatboostModelMotherBase, _CatboostHyperParams):
     """
     A custom implementation of CatBoostRegressor with extended functionality for hyperparameter tuning.
 
@@ -655,7 +662,7 @@ class CatboostRegressorMother(CatBoostRegressor, _CatbooostModelMotherBase, _Cat
         return uncertainty_df
 
 
-class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatbooostModelMotherBase, _CatboostHyperParams):
+class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostHyperParams):
     """
     Scikit-learn-compatible CatBoost Gaussian Process Regressor for Uncertainty Estimation.
 
@@ -1091,7 +1098,7 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatbooostModelM
         super().__setstate__(state)
 
 
-class CatboostClassifierMother(CatBoostClassifier, _CatbooostModelMotherBase, _CatboostHyperParams):
+class CatboostClassifierMother(CatBoostClassifier, _CatboostModelMotherBase, _CatboostHyperParams):
     """
     Unified CatBoost classifier for binary and multiclass classification with Optuna hyperparameter tuning,
     uncertainty estimation, and active learning support, designed for integration with the Mother framework.
@@ -1397,7 +1404,7 @@ class CatboostClassifierMother(CatBoostClassifier, _CatbooostModelMotherBase, _C
         return uncertainty_df
 
 
-class CatboostRankerMother(CatBoostRanker, _CatbooostModelMotherBase, _CatboostHyperParams, BaseEstimator):
+class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHyperParams, BaseEstimator):
     """
     A custom implementation of CatBoostRanker with extended functionality for hyperparameter tuning
     and automatic metadata routing enablement.

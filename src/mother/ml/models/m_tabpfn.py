@@ -46,7 +46,6 @@ from typing import (
 
 import numpy as np
 import pandas as pd
-import sklearn as _sklearn
 import torch
 from optuna.trial import Trial
 from six import iteritems
@@ -70,12 +69,8 @@ from mother.ml.models import utils
 
 module_logger = logging.getLogger(__name__)
 
-# `force_all_finite` was removed in sklearn 1.8; `ensure_all_finite` was added in 1.6.
-# Build a compat kwarg dict once so the rest of the code stays readable.
-_sklearn_version = tuple(int(x) for x in _sklearn.__version__.split(".")[:2])
-_ALLOW_NAN_KWARG: dict = (
-    {"ensure_all_finite": "allow-nan"} if _sklearn_version >= (1, 6) else {"force_all_finite": "allow-nan"}
-)
+# sklearn >= 1.8 is the minimum required version; `ensure_all_finite` is always available.
+_ALLOW_NAN_KWARG: dict = {"ensure_all_finite": "allow-nan"}
 DEFAULT_QUANTILES: list[float] = [0.25, 0.5, 0.75]
 
 

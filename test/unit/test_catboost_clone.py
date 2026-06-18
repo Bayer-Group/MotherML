@@ -1,4 +1,8 @@
-"""Tests for __sklearn_clone__ on all CatBoost Mother estimators.
+"""Tests for __sklearn_clone__ on all CatBoost Mother estimators that expose mutable
+constructor params (CatboostRegressorMother, CatboostClassifierMother, CatboostRankerMother).
+
+Note: CatboostGaussianProcessRegressorMother is intentionally excluded — its custom
+__init__ only surfaces scalar params via get_params(), so sklearn's default clone works.
 
 Covers:
 - Clone round-trip for mutable constructor params (cat_features, text_features,
@@ -8,6 +12,8 @@ Covers:
 - Clone preserves metadata routing requests (requires scikit-learn >= 1.3).
 - cross_val_score works end-to-end with cat_features (exercises clone inside CV).
 """
+
+import re
 
 import pandas as pd
 import pytest
@@ -23,7 +29,9 @@ from mother.ml.models.m_catboost import (
     CatboostRegressorMother,
 )
 
-_SKLEARN_VERSION = tuple(int(x) for x in sklearn.__version__.split(".")[:2])
+# Robust sklearn version tuple that handles release-candidate strings like "1.6.0rc1".
+_match = re.match(r"(\d+)\.(\d+)", sklearn.__version__)
+_SKLEARN_VERSION = (int(_match.group(1)), int(_match.group(2))) if _match else (0, 0)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -31,7 +39,11 @@ _SKLEARN_VERSION = tuple(int(x) for x in sklearn.__version__.split(".")[:2])
 
 _REGRESSOR_CLASSES = [CatboostRegressorMother]
 _CLASSIFIER_CLASSES = [CatboostClassifierMother]
-_ALL_CLASSES = [CatboostRegressorMother, CatboostClassifierMother, CatboostRankerMother]
+_ALL_CLASSES = [
+    CatboostRegressorMother,
+    CatboostClassifierMother,
+    CatboostRankerMother,
+]
 
 
 # ---------------------------------------------------------------------------
