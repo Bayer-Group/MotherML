@@ -62,7 +62,6 @@ report = [
 rna = [
   "anndata",
   "scanpy",
-  "rnanorm",
 ]
 
 ### Clustering block

@@ -2813,7 +2813,6 @@ report = [
 ]
 rna = [
     { name = "anndata" },
-    { name = "rnanorm" },
     { name = "scanpy", version = "1.11.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "scanpy", version = "1.12", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
@@ -2878,7 +2877,6 @@ requires-dist = [
     { name = "pydantic-settings", specifier = ">=2.4.0,<3" },
     { name = "quantile-forest", specifier = ">=1.4.0,<2" },
     { name = "rdkit", specifier = ">=2024.9.1" },
-    { name = "rnanorm", marker = "extra == 'rna'" },
     { name = "scanpy", marker = "extra == 'rna'" },
     { name = "scikit-learn", specifier = ">=1.5.0,<1.9" },
     { name = "seaborn", marker = "extra == 'report'", specifier = ">=0.13.2,<0.14" },
@@ -3631,22 +3629,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/a4/1e/1bac1a839d12e6a82ec6cb40cda2edde64a2013a66963293696bbf31fbbb/pandas-2.3.3-cp314-cp314t-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:2e3ebdb170b5ef78f19bfb71b0dc5dc58775032361fa188e814959b74d726dd5", size = 12121582, upload-time = "2025-09-29T23:30:43.391Z" },
     { url = "https://files.pythonhosted.org/packages/44/91/483de934193e12a3b1d6ae7c8645d083ff88dec75f46e827562f1e4b4da6/pandas-2.3.3-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:d051c0e065b94b7a3cea50eb1ec32e912cd96dba41647eb24104b6c6c14c5788", size = 12699963, upload-time = "2025-09-29T23:31:10.009Z" },
     { url = "https://files.pythonhosted.org/packages/70/44/5191d2e4026f86a2a109053e194d3ba7a31a2d10a9c2348368c63ed4e85a/pandas-2.3.3-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:3869faf4bd07b3b66a9f462417d0ca3a9df29a9f6abd5d0d0dbab15dac7abe87", size = 13202175, upload-time = "2025-09-29T23:31:59.173Z" },
-]
-
-[[package]]
-name = "pandera"
-version = "0.31.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "packaging" },
-    { name = "pydantic" },
-    { name = "typeguard" },
-    { name = "typing-extensions" },
-    { name = "typing-inspect" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/b7/e1/aaa14c989ffd30c7acb293fb986715517ca2b5b435ca291432535bb2b111/pandera-0.31.1.tar.gz", hash = "sha256:c75aa3868af15d4f9aa613acf1a7f436a518f81f1eb658ad630c1dbe1dab0f13", size = 729785, upload-time = "2026-04-15T03:18:59.967Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/2c/2d/6ea7cad2c2f0625c4120bef5353ab7cf749141bf1d070011cebb72f68189/pandera-0.31.1-py3-none-any.whl", hash = "sha256:f9f1ff4852804e1a181a4cb968e732a492f4b6dbefe051a8c5500da43d5c326d", size = 386913, upload-time = "2026-04-15T03:18:58.358Z" },
 ]
 
 [[package]]
@@ -4771,22 +4753,6 @@ wheels = [
 ]
 
 [[package]]
-name = "rnanorm"
-version = "2.1.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "click" },
-    { name = "numpy" },
-    { name = "pandas" },
-    { name = "pandera" },
-    { name = "scikit-learn" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/91/c4/f51fc46f589fec9717a1f04e0791f2f626bc8476140f6adbf57f692d0011/rnanorm-2.1.0.tar.gz", hash = "sha256:651bce77059548b907a4719615646898b6b51fe6915ba713686d2e6aa42d687f", size = 138013, upload-time = "2023-11-06T07:48:31.851Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/63/1f/c475428e1932c8144bd3e1e832b04e80455fefd3aec3ecdf6c840d8a33d2/rnanorm-2.1.0-py3-none-any.whl", hash = "sha256:a5e4741ae98e38081c6df4cdf1170d856c2754a1739bef28f37d02348105bc1b", size = 124521, upload-time = "2023-11-06T07:48:30.094Z" },
-]
-
-[[package]]
 name = "rpds-py"
 version = "2026.5.1"
 source = { registry = "https://pypi.org/simple" }
@@ -5675,18 +5641,6 @@ wheels = [
 ]
 
 [[package]]
-name = "typeguard"
-version = "4.5.2"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "typing-extensions" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/67/1c/dfba5c4633cafc4c701f237d2ba63b416805047fd6d96aab4cfc40969f98/typeguard-4.5.2.tar.gz", hash = "sha256:5a16dcac23502039299c97c8941651bc33d7ea8cc4b2f7d6bbb1b528f6eea423", size = 80240, upload-time = "2026-05-14T12:59:40.857Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/5b/29/74eeb4d3f3ae61ca096b018ad486b3b3c74b17bec09ab4edab721cbefec3/typeguard-4.5.2-py3-none-any.whl", hash = "sha256:fcf9de18bd945cdb4c7b996e12b4c51ce83f92f191314a6d7cf1739586ec98cf", size = 36748, upload-time = "2026-05-14T12:59:39.473Z" },
-]
-
-[[package]]
 name = "typer"
 version = "0.26.7"
 source = { registry = "https://pypi.org/simple" }
@@ -5717,19 +5671,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/72/94/1a15dd82efb362ac84269196e94cf00f187f7ed21c242792a923cdb1c61f/typing_extensions-4.15.0.tar.gz", hash = "sha256:0cea48d173cc12fa28ecabc3b837ea3cf6f38c6d1136f85cbaaf598984861466", size = 109391, upload-time = "2025-08-25T13:49:26.313Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/18/67/36e9267722cc04a6b9f15c7f3441c2363321a3ea07da7ae0c0707beb2a9c/typing_extensions-4.15.0-py3-none-any.whl", hash = "sha256:f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548", size = 44614, upload-time = "2025-08-25T13:49:24.86Z" },
-]
-
-[[package]]
-name = "typing-inspect"
-version = "0.9.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "mypy-extensions" },
-    { name = "typing-extensions" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/dc/74/1789779d91f1961fa9438e9a8710cdae6bd138c80d7303996933d117264a/typing_inspect-0.9.0.tar.gz", hash = "sha256:b23fc42ff6f6ef6954e4852c1fb512cdd18dbea03134f91f856a95ccc9461f78", size = 13825, upload-time = "2023-05-24T20:25:47.612Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/65/f3/107a22063bf27bdccf2024833d3445f4eea42b2e598abfbd46f6a63b6cb0/typing_inspect-0.9.0-py3-none-any.whl", hash = "sha256:9ee6fc59062311ef8547596ab6b955e1b8aa46242d854bfc78f4f6b0eff35f9f", size = 8827, upload-time = "2023-05-24T20:25:45.287Z" },
 ]
 
 [[package]]
