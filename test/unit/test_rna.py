@@ -13,7 +13,15 @@ from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 
 # Import the classes to test
-from mother.ml.rna import RNA, LogisticRegressionL1FeatureSelector, ScanpyPreprocessor
+from mother.ml.rna import (
+    CPM,
+    CUF,
+    RNA,
+    UQ,
+    LogisticRegressionL1FeatureSelector,
+    ScanpyPreprocessor,
+    _remove_allzero_genes,
+)
 
 
 @pytest.fixture
@@ -187,6 +195,179 @@ class TestScanpyPreprocessor:
 
         assert isinstance(result, pd.DataFrame)
         assert result.shape == sparse_df.shape
+
+
+# ---------------------------------------------------------------------------
+# Reference toy dataset used in rnanorm / edgeR validation
+# (Bullard et al. 2010, doi:10.1186/1471-2105-11-94)
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def rnanorm_toy_data() -> pd.DataFrame:
+    """5-gene, 4-sample count matrix from the rnanorm documentation examples."""
+    return pd.DataFrame(
+        {
+            "Gene_1": [200, 400, 200, 200],
+            "Gene_2": [300, 600, 300, 300],
+            "Gene_3": [500, 1000, 500, 500],
+            "Gene_4": [2000, 4000, 2000, 2000],
+            "Gene_5": [7000, 14000, 17000, 2000],
+        },
+        index=["Sample_1", "Sample_2", "Sample_3", "Sample_4"],
+        dtype=float,
+    )
+
+
+class TestRemoveAllzeroGenes:
+    def test_removes_all_zero_columns(self) -> None:
+        X = np.array([[1, 0, 2], [3, 0, 4]], dtype=float)
+        result = _remove_allzero_genes(X)
+        assert result.shape == (2, 2)
+        np.testing.assert_array_equal(result, [[1, 2], [3, 4]])
+
+    def test_no_zero_columns(self) -> None:
+        X = np.array([[1, 2], [3, 4]], dtype=float)
+        result = _remove_allzero_genes(X)
+        np.testing.assert_array_equal(result, X)
+
+    def test_all_zero_columns_removed(self) -> None:
+        X = np.zeros((3, 4))
+        result = _remove_allzero_genes(X)
+        assert result.shape[1] == 0
+
+
+class TestCPM:
+    """Tests for the native CPM (Counts Per Million) normalizer."""
+
+    def test_known_values(self, rnanorm_toy_data: pd.DataFrame) -> None:
+        """CPM output must match the reference values from the rnanorm docs."""
+        expected = pd.DataFrame(
+            {
+                "Gene_1": [20000.0, 20000.0, 10000.0, 40000.0],
+                "Gene_2": [30000.0, 30000.0, 15000.0, 60000.0],
+                "Gene_3": [50000.0, 50000.0, 25000.0, 100000.0],
+                "Gene_4": [200000.0, 200000.0, 100000.0, 400000.0],
+                "Gene_5": [700000.0, 700000.0, 850000.0, 400000.0],
+            },
+            index=["Sample_1", "Sample_2", "Sample_3", "Sample_4"],
+        )
+        result = CPM().set_output(transform="pandas").fit_transform(rnanorm_toy_data)
+        pd.testing.assert_frame_equal(result, expected)
+
+    def test_output_shape(self, rnanorm_toy_data: pd.DataFrame) -> None:
+        result = CPM().fit_transform(rnanorm_toy_data)
+        assert result.shape == rnanorm_toy_data.shape
+
+    def test_set_output_pandas_preserves_index_and_columns(self, rnanorm_toy_data: pd.DataFrame) -> None:
+        result = CPM().set_output(transform="pandas").fit_transform(rnanorm_toy_data)
+        assert isinstance(result, pd.DataFrame)
+        assert list(result.index) == list(rnanorm_toy_data.index)
+        assert list(result.columns) == list(rnanorm_toy_data.columns)
+
+    def test_fit_sets_n_features_in(self, rnanorm_toy_data: pd.DataFrame) -> None:
+        cpm = CPM()
+        cpm.fit(rnanorm_toy_data)
+        assert cpm.n_features_in_ == rnanorm_toy_data.shape[1]
+        np.testing.assert_array_equal(cpm.feature_names_in_, rnanorm_toy_data.columns)
+
+    def test_numpy_input(self) -> None:
+        X = np.array([[100, 200, 700], [500, 500, 0]], dtype=float)
+        result = CPM().fit_transform(X)
+        np.testing.assert_allclose(result[0], [100000.0, 200000.0, 700000.0])
+        np.testing.assert_allclose(result[1], [500000.0, 500000.0, 0.0])
+
+    def test_row_sums_equal_1e6(self, rnanorm_toy_data: pd.DataFrame) -> None:
+        result = CPM().fit_transform(rnanorm_toy_data)
+        np.testing.assert_allclose(result.sum(axis=1), 1e6, rtol=1e-10)
+
+
+class TestUQ:
+    """Tests for the native UQ (Upper Quartile) normalizer."""
+
+    def test_known_values(self, rnanorm_toy_data: pd.DataFrame) -> None:
+        """UQ output must match the reference values from the rnanorm docs."""
+        expected = pd.DataFrame(
+            {
+                "Gene_1": [20000.0, 20000.0, 20000.0, 20000.0],
+                "Gene_2": [30000.0, 30000.0, 30000.0, 30000.0],
+                "Gene_3": [50000.0, 50000.0, 50000.0, 50000.0],
+                "Gene_4": [200000.0, 200000.0, 200000.0, 200000.0],
+                "Gene_5": [700000.0, 700000.0, 1700000.0, 200000.0],
+            },
+            index=["Sample_1", "Sample_2", "Sample_3", "Sample_4"],
+        )
+        result = UQ().set_output(transform="pandas").fit_transform(rnanorm_toy_data)
+        pd.testing.assert_frame_equal(result, expected)
+
+    def test_fit_sets_geometric_mean(self, rnanorm_toy_data: pd.DataFrame) -> None:
+        uq = UQ()
+        uq.fit(rnanorm_toy_data)
+        assert hasattr(uq, "geometric_mean_")
+        assert isinstance(uq.geometric_mean_, float)
+        assert uq.geometric_mean_ > 0
+
+    def test_fit_sets_n_features_in(self, rnanorm_toy_data: pd.DataFrame) -> None:
+        uq = UQ()
+        uq.fit(rnanorm_toy_data)
+        assert uq.n_features_in_ == rnanorm_toy_data.shape[1]
+
+    def test_set_output_pandas_preserves_index_and_columns(self, rnanorm_toy_data: pd.DataFrame) -> None:
+        result = UQ().set_output(transform="pandas").fit_transform(rnanorm_toy_data)
+        assert isinstance(result, pd.DataFrame)
+        assert list(result.index) == list(rnanorm_toy_data.index)
+        assert list(result.columns) == list(rnanorm_toy_data.columns)
+
+    def test_transform_without_fit_raises(self, rnanorm_toy_data: pd.DataFrame) -> None:
+        from sklearn.exceptions import NotFittedError
+
+        with pytest.raises(NotFittedError):
+            UQ().transform(rnanorm_toy_data)
+
+    def test_allzero_gene_ignored(self) -> None:
+        """A column of all zeros must not affect the normalization result."""
+        X_base = pd.DataFrame({"A": [100.0, 200.0], "B": [300.0, 400.0]})
+        X_with_zero = X_base.copy()
+        X_with_zero["zero_gene"] = 0.0
+        result_base = UQ().fit_transform(X_base)
+        result_with_zero = UQ().fit_transform(X_with_zero)[:, :2]
+        np.testing.assert_allclose(result_base, result_with_zero)
+
+
+class TestCUF:
+    """Tests for the native CUF (Counts adjusted with UQ Factors) normalizer."""
+
+    def test_known_values(self, rnanorm_toy_data: pd.DataFrame) -> None:
+        """CUF output must match the reference values from the rnanorm docs."""
+        expected = pd.DataFrame(
+            {
+                "Gene_1": [200.0, 400.0, 400.0, 100.0],
+                "Gene_2": [300.0, 600.0, 600.0, 150.0],
+                "Gene_3": [500.0, 1000.0, 1000.0, 250.0],
+                "Gene_4": [2000.0, 4000.0, 4000.0, 1000.0],
+                "Gene_5": [7000.0, 14000.0, 34000.0, 1000.0],
+            },
+            index=["Sample_1", "Sample_2", "Sample_3", "Sample_4"],
+        )
+        result = CUF().set_output(transform="pandas").fit_transform(rnanorm_toy_data)
+        pd.testing.assert_frame_equal(result, expected)
+
+    def test_set_output_pandas_preserves_index_and_columns(self, rnanorm_toy_data: pd.DataFrame) -> None:
+        result = CUF().set_output(transform="pandas").fit_transform(rnanorm_toy_data)
+        assert isinstance(result, pd.DataFrame)
+        assert list(result.index) == list(rnanorm_toy_data.index)
+        assert list(result.columns) == list(rnanorm_toy_data.columns)
+
+    def test_transform_without_fit_raises(self, rnanorm_toy_data: pd.DataFrame) -> None:
+        from sklearn.exceptions import NotFittedError
+
+        with pytest.raises(NotFittedError):
+            CUF().transform(rnanorm_toy_data)
+
+    def test_differs_from_uq(self, rnanorm_toy_data: pd.DataFrame) -> None:
+        """CUF and UQ use the same factors but produce different output scales."""
+        uq_result = UQ().fit_transform(rnanorm_toy_data)
+        cuf_result = CUF().fit_transform(rnanorm_toy_data)
+        # CUF keeps raw count scale; UQ scales to CPM — they must differ
+        assert not np.allclose(uq_result, cuf_result)
 
 
 # Tests for RNA class
