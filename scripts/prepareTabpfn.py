@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from tabpfn import TabPFNClassifier, TabPFNRegressor
 from tabpfn.constants import ModelVersion
 from tabpfn.model_loading import download_model, get_cache_dir
