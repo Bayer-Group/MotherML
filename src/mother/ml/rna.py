@@ -52,6 +52,11 @@ class CPM(BaseEstimator, OneToOneFeatureMixin, TransformerMixin):
     def transform(self, X: pd.DataFrame) -> np.ndarray:
         X_arr = np.asarray(X, dtype=float)
         lib_size = X_arr.sum(axis=1)
+        if np.any(lib_size == 0):
+            raise ValueError(
+                "CPM normalization requires each sample to have a positive library size "
+                "(row sum > 0). Found one or more all-zero samples."
+            )
         return X_arr / lib_size[:, np.newaxis] * 1e6
 
 
@@ -72,9 +77,26 @@ class UQ(BaseEstimator, OneToOneFeatureMixin, TransformerMixin):
 
     def _raw_factors(self, X: np.ndarray) -> np.ndarray:
         X_nz = _remove_allzero_genes(X)
+        if X_nz.shape[1] == 0:
+            raise ValueError(
+                "UQ/CUF normalization requires at least one gene with non-zero counts, "
+                "but all genes are zero across all samples."
+            )
         lib_size = X_nz.sum(axis=1)
+        if np.any(lib_size == 0):
+            raise ValueError(
+                "UQ/CUF normalization requires each sample to have a positive library size "
+                "(row sum > 0 over expressed genes). Found one or more all-zero samples."
+            )
         upper_q = np.percentile(X_nz, 75, axis=1)
-        return upper_q / lib_size
+        factors = upper_q / lib_size
+        if np.any(factors == 0):
+            raise ValueError(
+                "UQ/CUF normalization produced a zero scaling factor for one or more samples "
+                "(75th-percentile count is zero). This would cause log(0) in fit(). "
+                "Check for samples with very sparse counts."
+            )
+        return factors
 
     def fit(self, X: pd.DataFrame, y=None) -> "UQ":
         X_arr = np.asarray(X, dtype=float)

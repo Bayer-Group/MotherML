@@ -8,6 +8,7 @@ import numpy as np
 import optuna
 import optuna.logging
 import pandas as pd
+import sklearn
 import sklearn.base as skl_base
 import sklearn.metrics as skl_metrics
 import sklearn.model_selection as skl_model_sel
@@ -33,9 +34,11 @@ def handle_metadata_routing(func: typing.Callable) -> typing.Callable:
     of ``cross_val_score`` depending on whether the call is a ranking call.
 
     **Non-ranking** (``ranking_groups`` is None)
+        If sklearn's global ``enable_metadata_routing`` is *off* (default),
         CV-split groups are passed as a direct ``groups=`` kwarg to
-        ``cross_val_score`` — the classic path, works without any global sklearn
-        metadata-routing config.
+        ``cross_val_score``.  If routing is *on* (set by a prior ranking call),
+        sklearn 1.5+ rejects ``groups=`` as a direct kwarg, so the decorator
+        redirects groups into ``fit_kwargs`` (forwarded as ``params=``) instead.
 
     **Ranking** (``ranking_groups`` is not None)
         ``group_id`` (query groups) must reach *both* the ranker's ``fit()``
@@ -44,10 +47,9 @@ def handle_metadata_routing(func: typing.Callable) -> typing.Callable:
         Therefore, for ranking:
         - both ``groups`` (CV splitter) and ``group_id`` (ranker + scorer) are
           injected into ``fit_kwargs`` and forwarded via ``params=``; and
-        - ``groups=`` is *not* passed as a direct kwarg (sklearn 1.8 rejects it
-          when metadata routing is enabled).
-        Callers using the ranking path must have called
-        ``sklearn.set_config(enable_metadata_routing=True)`` beforehand.
+        - ``groups=`` is *not* passed as a direct kwarg.
+        The decorator raises ``RuntimeError`` early if routing is not enabled,
+        rather than silently producing incorrect ranking metrics.
 
     The decorator also sets ``_groups_as_cross_val_args`` so ``optimize()``
     knows which path was taken.
@@ -63,7 +65,16 @@ def handle_metadata_routing(func: typing.Callable) -> typing.Callable:
             fit_kwargs = {}
             kwargs["fit_kwargs"] = fit_kwargs
 
+        routing_on: bool = sklearn.get_config()["enable_metadata_routing"]
+
         if ranking_groups is not None:
+            # Guard: routing must be enabled or group_id will never reach the
+            # NDCG scorer, producing silently wrong ranking metrics.
+            if not routing_on:
+                raise RuntimeError(
+                    "Ranking optimization requires sklearn metadata routing to be enabled. "
+                    "Call sklearn.set_config(enable_metadata_routing=True) before optimize()."
+                )
             # Ranking: query groups must reach the ranker's fit() AND the
             # NDCG scorer's score() — both via params= with routing enabled.
             fit_kwargs["group_id"] = ranking_groups
@@ -71,8 +82,16 @@ def handle_metadata_routing(func: typing.Callable) -> typing.Callable:
                 fit_kwargs["groups"] = groups
             kwargs["_groups_as_cross_val_args"] = False
         else:
-            # Non-ranking: pass CV groups the traditional way as a direct kwarg.
-            kwargs["_groups_as_cross_val_args"] = True
+            if routing_on:
+                # sklearn 1.5+ raises ValueError when groups= is passed directly
+                # to cross_val_score while enable_metadata_routing=True.  Route
+                # via params= (fit_kwargs) instead so the CV splitter picks it up.
+                if groups is not None:
+                    fit_kwargs["groups"] = groups
+                kwargs["_groups_as_cross_val_args"] = False
+            else:
+                # Classic path: pass groups directly to cross_val_score.
+                kwargs["_groups_as_cross_val_args"] = True
 
         return func(*args, **kwargs)
 
