@@ -16,8 +16,9 @@ _MODELS = [
 
 print(f"Downloading TabPFN V2 models to {cache_dir}")
 for model_path, which in _MODELS:
-    print(f"  {which}: {model_path}")
-    result = download_model(model_path, version=ModelVersion.V2, which=which)  # type: ignore[arg-type]
+    path = Path(model_path)  # model_path may be str; download_model requires Path
+    print(f"  {which}: {path}")
+    result = download_model(path, version=ModelVersion.V2, which=which)  # type: ignore[arg-type]
     if result != "ok":
         raise RuntimeError(f"Failed to download TabPFN V2 {which}: {result}")
 print("TabPFN V2 models downloaded successfully")
