@@ -308,7 +308,7 @@ class CatboostRegressorMother(CatBoostRegressor, _CatboostModelMotherBase, _Catb
             kwargs["loss_function"] = "RMSEWithUncertainty"
         elif "loss_function" not in list(kwargs):
             # A specific loss not given. Use the default loss function
-            module_logger.warning("Specified loss does not exist. Using default loss function based on target type.")
+            module_logger.warning("No loss_function specified. Using default loss function based on target type.")
             kwargs["loss_function"] = utils.default_loss_function(self.model_type, self.target_type)
 
         # handle posterior_sampling for uncertainty

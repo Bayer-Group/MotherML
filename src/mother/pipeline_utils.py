@@ -934,7 +934,10 @@ def get_ranking_pipeline(
 
     """
     # Ranking requires sklearn metadata routing so that group_id is forwarded
-    # to both the ranker's fit() and the NDCG scorer's score().
+    # to both the ranker's fit() and the NDCG scorer's score().  Enable it only
+    # for the duration of pipeline construction and restore the prior value
+    # afterwards to avoid permanently mutating global sklearn state.
+    _prev_routing = sklearn.get_config().get("enable_metadata_routing", False)
     sklearn.set_config(enable_metadata_routing=True)
 
     ranking_model = get_ranking_model(
@@ -980,5 +983,12 @@ def get_ranking_pipeline(
     )
 
     tuner = MotherTuner(scorer=scorer, **(tuner_kwargs if tuner_kwargs else {}))
+
+    # Restore the prior metadata-routing config so this function has no
+    # permanent side effects on global sklearn state.  Callers that need
+    # metadata routing active (e.g. around pipeline.fit / tuner.optimize)
+    # should use sklearn.set_config(enable_metadata_routing=True) or wrap
+    # the calls in sklearn.config_context(enable_metadata_routing=True).
+    sklearn.set_config(enable_metadata_routing=_prev_routing)
 
     return ranking_pipeline, tuner
