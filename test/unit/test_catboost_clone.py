@@ -1,14 +1,24 @@
 """Tests for __sklearn_clone__ on all CatBoost Mother estimators that expose mutable
-constructor params (CatboostRegressorMother, CatboostClassifierMother, CatboostRankerMother).
+constructor params.
 
-Note: CatboostGaussianProcessRegressorMother is intentionally excluded — its custom
-__init__ only surfaces scalar params via get_params(), so sklearn's default clone works.
+All four concrete estimator classes inherit _CatboostModelMotherBase:
+
+- CatboostRegressorMother
+- CatboostClassifierMother
+- CatboostRankerMother
+- CatboostGaussianProcessRegressorMother
+
+The GP regressor was initially believed safe without the override because its explicit
+constructor params are all scalars.  However it also accepts **kwargs forwarded to
+CatBoostRegressor, meaning mutable params such as cat_features and embedding_features
+can be supplied.  CatBoost 1.2.9+ copies those lists internally, breaking sklearn's
+default identity-based clone check, so _CatboostModelMotherBase is required here too.
 
 Covers:
 - Clone round-trip for mutable constructor params (cat_features, text_features,
   embedding_features) that newer CatBoost versions copy internally, which breaks
   sklearn's default identity-based clone check.
-- Clone round-trip without any mutable params.
+- Clone round-trip without any mutable params (all four classes).
 - Clone preserves metadata routing requests (requires scikit-learn >= 1.3).
 - cross_val_score works end-to-end with cat_features (exercises clone inside CV).
 """
@@ -25,6 +35,7 @@ from sklearn.model_selection import cross_val_score
 
 from mother.ml.models.m_catboost import (
     CatboostClassifierMother,
+    CatboostGaussianProcessRegressorMother,
     CatboostRankerMother,
     CatboostRegressorMother,
 )
@@ -57,6 +68,7 @@ _ALL_CLASSES = [
     [
         {"cat_features": [0, 1]},
         {"embedding_features": [0]},
+        {"text_features": [0]},
     ],
 )
 def test_clone_regressor_with_mutable_params(estimator_cls, extra_kwargs):
@@ -75,6 +87,7 @@ def test_clone_regressor_with_mutable_params(estimator_cls, extra_kwargs):
     [
         {"cat_features": [0, 1]},
         {"embedding_features": [0]},
+        {"text_features": [0]},
     ],
 )
 def test_clone_classifier_with_mutable_params(estimator_cls, extra_kwargs):
@@ -146,3 +159,40 @@ def test_cross_val_score_classifier_with_cat_features():
     estimator = CatboostClassifierMother(cat_features=[0], iterations=2, verbose=False)
     scores = cross_val_score(estimator, X, y, cv=3)
     assert len(scores) == 3
+
+
+# ---------------------------------------------------------------------------
+# GP regressor clone (uses _CatboostModelMotherBase like all other classes)
+# ---------------------------------------------------------------------------
+
+
+def test_clone_gp_regressor_without_mutable_params():
+    """Clone must succeed for CatboostGaussianProcessRegressorMother without mutable params."""
+    original = CatboostGaussianProcessRegressorMother(verbose=False)
+    cloned = clone(original)
+
+    assert type(cloned) is CatboostGaussianProcessRegressorMother
+    assert original.get_params(deep=False) == cloned.get_params(deep=False)
+
+
+@pytest.mark.parametrize(
+    "extra_kwargs",
+    [
+        {"cat_features": [0, 1]},
+        {"embedding_features": [0]},
+        {"text_features": [0]},
+    ],
+)
+def test_clone_gp_regressor_with_mutable_params(extra_kwargs):
+    """Clone must succeed for CatboostGaussianProcessRegressorMother with mutable kwargs.
+
+    cat_features / embedding_features can be passed via **kwargs and are forwarded to
+    CatBoostRegressor.__init__.  CatBoost 1.2.9+ copies those lists internally, breaking
+    sklearn's default identity-based clone check, so _CatboostModelMotherBase is required.
+    """
+    original = CatboostGaussianProcessRegressorMother(verbose=False, **extra_kwargs)
+    cloned = clone(original)
+
+    assert type(cloned) is CatboostGaussianProcessRegressorMother
+    for key, value in extra_kwargs.items():
+        assert cloned.get_params(deep=False)[key] == value

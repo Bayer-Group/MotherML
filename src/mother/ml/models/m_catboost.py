@@ -662,7 +662,7 @@ class CatboostRegressorMother(CatBoostRegressor, _CatboostModelMotherBase, _Catb
         return uncertainty_df
 
 
-class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostHyperParams):
+class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostModelMotherBase, _CatboostHyperParams):
     """
     Scikit-learn-compatible CatBoost Gaussian Process Regressor for Uncertainty Estimation.
 
