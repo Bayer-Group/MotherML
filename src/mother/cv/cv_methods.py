@@ -143,14 +143,25 @@ def hdbscan_clustering(
     """
     from sklearn.cluster import HDBSCAN
 
-    if isinstance(fingerprints, np.ndarray):
-        fingerprints = [np_to_bv(fv) for fv in fingerprints]
+    if isinstance(fingerprints, tuple):
+        fingerprints = list(fingerprints)
 
     module_logger.info("Applying HDBSCAN clustering to the dataset")
 
+    # sklearn.cluster.HDBSCAN expects a 2D numeric feature matrix.
+    # If the input is already a numpy array (n_samples × n_bits), use it directly.
+    # If it is a list of RDKit ExplicitBitVect objects, convert to a 2D uint8 matrix.
+    if isinstance(fingerprints, np.ndarray):
+        X = fingerprints
+    else:
+        nbits = fingerprints[0].GetNumBits()
+        X = np.zeros((len(fingerprints), nbits), dtype=np.uint8)
+        for i, fp in enumerate(fingerprints):
+            DataStructs.ConvertToNumpyArray(fp, X[i])
+
     clusters: Dict[int, List[int]] = collections.defaultdict(list)
     clusterer: HDBSCAN = HDBSCAN(min_samples=1, metric="jaccard", min_cluster_size=min_cluster_size)
-    cluster_labels: np.ndarray = clusterer.fit_predict(np.array(fingerprints))
+    cluster_labels: np.ndarray = clusterer.fit_predict(X)
 
     module_logger.info(f"HDBSCAN clustering grouped data into {len(set(cluster_labels))} groups")
 
