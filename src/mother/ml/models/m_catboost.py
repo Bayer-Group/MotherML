@@ -1406,12 +1406,12 @@ class CatboostClassifierMother(CatBoostClassifier, _CatboostModelMotherBase, _Ca
 
 class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHyperParams, BaseEstimator):
     """
-    A custom implementation of CatBoostRanker with extended functionality for hyperparameter tuning
-    and automatic metadata routing enablement.
+    A custom implementation of CatBoostRanker with extended functionality for hyperparameter tuning.
 
     This class extends the CatBoostRanker and integrates with the Mother framework to provide
-    dynamic hyperparameter tuning using Optuna. It automatically enables sklearn's metadata routing
-    if not already enabled, which is required for passing group_id parameters during training.
+    dynamic hyperparameter tuning using Optuna. Callers are responsible for enabling sklearn's
+    metadata routing (``sklearn.set_config(enable_metadata_routing=True)``) before calling
+    ``fit()`` or ``tuner.optimize()``, as it is required for passing ``group_id`` during training.
 
     Attributes
     ----------
