@@ -146,6 +146,10 @@ def hdbscan_clustering(
     if isinstance(fingerprints, tuple):
         fingerprints = list(fingerprints)
 
+    if len(fingerprints) == 0:
+        module_logger.warning("No valid fingerprints provided for clustering")
+        return {}
+
     module_logger.info("Applying HDBSCAN clustering to the dataset")
 
     # sklearn.cluster.HDBSCAN expects a 2D numeric feature matrix.
