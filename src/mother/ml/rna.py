@@ -50,6 +50,7 @@ class CPM(BaseEstimator, OneToOneFeatureMixin, TransformerMixin):
         return self
 
     def transform(self, X: pd.DataFrame) -> np.ndarray:
+        check_is_fitted(self)
         X_arr = np.asarray(X, dtype=float)
         lib_size = X_arr.sum(axis=1)
         if np.any(lib_size == 0):
