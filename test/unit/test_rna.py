@@ -251,7 +251,7 @@ class TestCPM:
             index=["Sample_1", "Sample_2", "Sample_3", "Sample_4"],
         )
         result = CPM().set_output(transform="pandas").fit_transform(rnanorm_toy_data)
-        pd.testing.assert_frame_equal(result, expected)
+        pd.testing.assert_frame_equal(result, expected, rtol=1e-9)
 
     def test_output_shape(self, rnanorm_toy_data: pd.DataFrame) -> None:
         result = CPM().fit_transform(rnanorm_toy_data)
@@ -296,7 +296,7 @@ class TestUQ:
             index=["Sample_1", "Sample_2", "Sample_3", "Sample_4"],
         )
         result = UQ().set_output(transform="pandas").fit_transform(rnanorm_toy_data)
-        pd.testing.assert_frame_equal(result, expected)
+        pd.testing.assert_frame_equal(result, expected, rtol=1e-9)
 
     def test_fit_sets_geometric_mean(self, rnanorm_toy_data: pd.DataFrame) -> None:
         uq = UQ()
@@ -348,7 +348,7 @@ class TestCUF:
             index=["Sample_1", "Sample_2", "Sample_3", "Sample_4"],
         )
         result = CUF().set_output(transform="pandas").fit_transform(rnanorm_toy_data)
-        pd.testing.assert_frame_equal(result, expected)
+        pd.testing.assert_frame_equal(result, expected, rtol=1e-9)
 
     def test_set_output_pandas_preserves_index_and_columns(self, rnanorm_toy_data: pd.DataFrame) -> None:
         result = CUF().set_output(transform="pandas").fit_transform(rnanorm_toy_data)
