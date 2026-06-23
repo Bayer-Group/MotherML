@@ -588,6 +588,11 @@ class TabPFNEmbeddingTransformer(BaseEstimator, TransformerMixin):
             models perform GroupKFold.
         only_best_embeddings : bool, default=False
             If True, selects the best embedding space from multiple ensembles.
+            When ``use_kfold=True`` the best estimator index is determined from
+            the out-of-fold embeddings of the fold models, then reused for the
+            full-data model stored in ``self.model``. This is an approximation:
+            estimator ranking may differ slightly between fold models and the
+            full-data model.
 
         Returns
         -------
@@ -687,6 +692,14 @@ class TabPFNEmbeddingTransformer(BaseEstimator, TransformerMixin):
                 self.train_embeddings_ = np.concatenate(
                     [np.expand_dims(emb, axis=1) for _, emb in embedding_chunks], axis=1
                 )
+
+                # Train a full-data model so transform() can embed unseen samples later.
+                self.model = model_class(
+                    device=self.device,
+                    ignore_pretraining_limits=self.ignore_pretraining_limits,
+                    **self.kwargs,
+                )
+                self.model.fit(X_array, y_array)
 
             else:
                 # Train main model on all data for transform of new data
