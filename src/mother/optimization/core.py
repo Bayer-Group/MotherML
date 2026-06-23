@@ -61,9 +61,11 @@ def handle_metadata_routing(func: typing.Callable) -> typing.Callable:
         ranking_groups = kwargs.get("ranking_groups")
         fit_kwargs = kwargs.get("fit_kwargs")
 
-        if fit_kwargs is None:
-            fit_kwargs = {}
-            kwargs["fit_kwargs"] = fit_kwargs
+        # Shallow-copy so the decorator never mutates a caller-provided dict.
+        # Injected keys (group_id, groups) must not leak into subsequent calls
+        # that reuse the same fit_kwargs object.
+        fit_kwargs = dict(fit_kwargs) if fit_kwargs is not None else {}
+        kwargs["fit_kwargs"] = fit_kwargs
 
         routing_on: bool = sklearn.get_config()["enable_metadata_routing"]
 

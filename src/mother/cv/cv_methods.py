@@ -167,7 +167,8 @@ def hdbscan_clustering(
     clusterer: HDBSCAN = HDBSCAN(min_samples=1, metric="jaccard", min_cluster_size=min_cluster_size)
     cluster_labels: np.ndarray = clusterer.fit_predict(X)
 
-    module_logger.info(f"HDBSCAN clustering grouped data into {len(set(cluster_labels))} groups")
+    n_clusters = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
+    module_logger.info(f"HDBSCAN clustering grouped data into {n_clusters} groups")
 
     for idx, best_idx in enumerate(cluster_labels):
         clusters[best_idx].append(idx)
