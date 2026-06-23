@@ -204,13 +204,17 @@ class LogisticRegressionL1FeatureSelector(BaseEstimator, TransformerMixin, OneTo
         X = pd.DataFrame(X_scaled, columns=X.columns, index=X.index)
 
         # Create feature selector with LogisticRegressionCV
+        # Use "saga" solver: supports L1 penalty for both binary and multiclass.
+        # "liblinear" was removed for multiclass in scikit-learn >= 1.8.
+        n_classes = len(np.unique(y))
+        solver = "liblinear" if n_classes == 2 else "saga"
         self.feature_selector = SelectFromModel(
             LogisticRegressionCV(
                 cv=self.cv,
                 random_state=self.random_state,
                 penalty="l1",
                 class_weight="balanced",
-                solver="liblinear",
+                solver=solver,
             ),
             threshold=threshold,  # Use n_features instead of threshold
             max_features=max_features,
