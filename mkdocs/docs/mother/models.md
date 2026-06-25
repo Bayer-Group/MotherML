@@ -2,6 +2,26 @@
 
 Although mother is build around catboost it basically supports other models from the ML community (like all sklearn estimators). For example, `RandomForest` is already supported. Furthermore, [own models](#providing-your-own-model) can be provided.
 
+## Prediction and Uncertainty Interface
+
+Starting with the 1.1.x release line, model wrappers expose a more consistent prediction interface:
+
+- `predict(...)` returns aligned outputs across model backends.
+- `predict_uncertainty(...)` provides uncertainty outputs for models that support it.
+
+For regression models with uncertainty support, output columns follow a common naming pattern:
+
+- `prediction`
+- `uncertainty_data`
+- `uncertainty_knowledge`
+- `uncertainty_total`
+
+Depending on model capabilities, one or more uncertainty columns can be present. The returned DataFrame keeps index alignment with the input rows to make downstream merging and analysis robust.
+
+!!! note
+
+    `mother_cv` now has improved return typing and estimator-return behavior to better support workflows that inspect trained estimators after CV.
+
 !!! tip
 
     === "Getting a list of provided algorithms"

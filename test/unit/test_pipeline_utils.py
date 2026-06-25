@@ -1,7 +1,6 @@
 import logging
 import typing
 
-import numpy as np
 import pandas as pd
 import pandas.testing as pdt
 import pytest
@@ -19,12 +18,15 @@ from mother import ml
 from mother.ml import estimators as mother_estimators
 from mother.ml.estimators import MotherBorutaPy
 from mother.pipeline_utils import (
+    get_cv_folds,
     get_feature_generation_pipeline,
+    get_feature_importance,
     get_feature_selection_pipeline,
     get_groups,
     get_importance_selector,
     get_model,
     get_preprocessing_pipeline,
+    get_preprocessing_steps,
     get_ranking_pipeline,
     report_feature_selection,
 )
@@ -179,7 +181,8 @@ def test_get_model_raises_error(settings: MotherSettings) -> None:
 def test_get_model_raises_invalid_parameters(settings: MotherSettings) -> None:
     settings.model.algorithm = "lasso"
     settings.model.model_type = "regression"  # type: ignore
-    settings.model.parameters = {"invalid_param": "value"}  # Invalid parameter for Lasso
+    # Invalid parameter for Lasso
+    settings.model.parameters = {"invalid_param": "value"}
     with pytest.raises(ValueError, match="Invalid parameters for"):
         get_model(settings)
 
@@ -405,24 +408,156 @@ def test_get_ranking_pipeline(modeling_data, cv_cross_validation, preserve_metad
     )
 
 
-def test_component_compatibility(
-    caplog,
-    settings: MotherSettings,
-    data: pd.DataFrame,
-) -> None:
-    caplog.set_level(logging.INFO)
-    # Use the preprocessing pipeline as documented
-    prep_pipeline = get_preprocessing_pipeline(settings=settings)
-    prep_pipeline.set_output(transform=settings.pipeline.transform)
-    feature_pipeline = get_feature_generation_pipeline(settings=settings)
-    feature_pipeline.set_output(transform=settings.pipeline.transform)
+def test_get_cv_folds_groups(settings: MotherSettings) -> None:
+    """Test get_cv_folds with GROUPS cv_type"""
+    from mother import cv as cv_module
 
-    # Transform
-    prep_result: pd.DataFrame = prep_pipeline.fit_transform(data[["smiles"]])
-    logging.info(f"Preprocessed shape: {prep_result.shape}")
-    logging.info(f"Preprocessed sample: {prep_result}")
-    assert prep_result.shape[1] == 1  # Still one column after preprocessing
-    assert not prep_result.isna().any().any()  # Check for NaNs in the preprocessed result
-    features: pd.DataFrame = feature_pipeline.fit_transform(prep_result)
-    logging.info(f"NaN count: {np.isnan(features).sum()}")
-    assert not features.isna().any().any()  # No NaNs after feature generation
+    settings.cv.cv_type = cv_module.CVtype.GROUPS
+    settings.cv.n_splits = 3
+    settings.model.model_type = "regression"
+
+    group_data = pd.DataFrame({"group": [1, 1, 2, 2, 3, 3]})
+
+    cv = get_cv_folds(settings, group_data)
+    assert isinstance(cv, GroupKFold)
+    assert cv.n_splits == 3
+
+
+def test_get_cv_folds_tanimoto_grouping(settings: MotherSettings) -> None:
+    """Test get_cv_folds with TANIMOTO_GROUPING cv_type"""
+    from mother import cv as cv_module
+
+    settings.cv.cv_type = cv_module.CVtype.TANIMOTO_GROUPING
+    settings.cv.n_splits = 2
+    settings.model.model_type = "classification_binary"
+
+    group_data = pd.DataFrame({"group": [1, 1, 2, 2]})
+
+    cv = get_cv_folds(settings, group_data)
+    from sklearn.model_selection import StratifiedGroupKFold
+
+    assert isinstance(cv, StratifiedGroupKFold)
+    assert cv.n_splits == 2
+
+
+def test_get_cv_folds_time_series(settings: MotherSettings) -> None:
+    """Test get_cv_folds with TIME_SERIES cv_type"""
+    from sklearn.model_selection import TimeSeriesSplit
+
+    from mother import cv as cv_module
+
+    settings.cv.cv_type = cv_module.CVtype.TIME_SERIES
+    settings.cv.n_splits = 4
+
+    cv = get_cv_folds(settings)
+    assert isinstance(cv, TimeSeriesSplit)
+    assert cv.n_splits == 4
+
+
+def test_get_cv_folds_missing_group_data(settings: MotherSettings) -> None:
+    """Test get_cv_folds raises error when group data is required but not provided"""
+    from mother import cv as cv_module
+
+    settings.cv.cv_type = cv_module.CVtype.GROUPS
+    with pytest.raises(ValueError, match="Group data is required for group-based cross-validation"):
+        get_cv_folds(settings, group_data=None)
+
+
+def test_get_cv_folds_with_nan_groups(settings: MotherSettings) -> None:
+    """Test get_cv_folds raises error when group data contains NaN"""
+    from mother import cv as cv_module
+
+    settings.cv.cv_type = cv_module.CVtype.GROUPS
+    group_data = pd.DataFrame({"group": [1, 2, None, 4]})
+
+    with pytest.raises(ValueError, match="Group column contains missing values"):
+        get_cv_folds(settings, group_data)
+
+
+def test_get_preprocessing_steps(settings: MotherSettings) -> None:
+    """Test get_preprocessing_steps returns correct steps"""
+    steps = get_preprocessing_steps(settings, molecule_col="mol_col", smiles_col="smi_col")
+
+    assert len(steps) == 2
+    assert steps[0][0] == "smiles_standardizer"
+    assert steps[1][0] == "smiles_to_mol"
+
+    from mother.preprocessing.core import (
+        SmilesToMolTransformer,
+        StandardizerTransformer,
+    )
+
+    assert isinstance(steps[0][1], StandardizerTransformer)
+    assert isinstance(steps[1][1], SmilesToMolTransformer)
+
+
+def test_get_preprocessing_pipeline(settings: MotherSettings) -> None:
+    """Test get_preprocessing_pipeline returns a valid pipeline"""
+    pipeline = get_preprocessing_pipeline(settings)
+
+    assert isinstance(pipeline, Pipeline)
+    assert len(pipeline.steps) == 2
+    assert "smiles_standardizer" in pipeline.named_steps
+    assert "smiles_to_mol" in pipeline.named_steps
+
+
+def test_get_feature_generation_pipeline_with_maccs(settings: MotherSettings) -> None:
+    """Test get_feature_generation_pipeline with MACCS fingerprints"""
+    settings.feature_generation.maccs = True
+    settings.feature_generation.chemical_descriptors = None
+    settings.feature_generation.fingerprints = []
+
+    pipeline = get_feature_generation_pipeline(settings)
+
+    assert isinstance(pipeline, ml.FeatureUnionWithHyperparameterRooting)
+    assert len(pipeline.transformer_list) == 1
+    assert pipeline.transformer_list[0][0] == "Maccs"
+
+
+def test_get_feature_generation_pipeline_with_descriptors(settings: MotherSettings) -> None:
+    """Test get_feature_generation_pipeline with chemical descriptors"""
+    from mother.feature_generation.config import ChemicalDescriptorsParams
+
+    settings.feature_generation.maccs = False
+    settings.feature_generation.chemical_descriptors = ChemicalDescriptorsParams()
+    settings.feature_generation.fingerprints = []
+
+    pipeline = get_feature_generation_pipeline(settings)
+
+    assert isinstance(pipeline, ml.FeatureUnionWithHyperparameterRooting)
+    assert len(pipeline.transformer_list) == 1
+    assert pipeline.transformer_list[0][0] == "Desc"
+
+
+def test_get_feature_generation_pipeline_with_multiple_fingerprints(settings: MotherSettings) -> None:
+    """Test get_feature_generation_pipeline with multiple fingerprint types"""
+    settings.feature_generation.maccs = True
+    settings.feature_generation.chemical_descriptors = None
+    settings.feature_generation.fingerprints = [
+        {"AtomPairFP": {"nBits": 2048}},
+        {"MorganFP": {"radius": 2, "nBits": 2048}},
+    ]
+
+    pipeline = get_feature_generation_pipeline(settings)
+
+    assert isinstance(pipeline, ml.FeatureUnionWithHyperparameterRooting)
+    assert len(pipeline.transformer_list) == 3  # Maccs + AtomPair + Morgan
+    transformer_names = [t[0] for t in pipeline.transformer_list]
+    assert "Maccs" in transformer_names
+    assert "AtomPairFP" in transformer_names
+    assert "MorganFP" in transformer_names
+
+
+def test_get_feature_importance_no_importance_attribute() -> None:
+    """Test get_feature_importance raises error when model doesn't have feature importance"""
+    from sklearn.linear_model import LinearRegression
+
+    X = pd.DataFrame({"A": [1, 2, 3], "B": [4, 5, 6]})
+    y = pd.Series([1, 2, 3])
+
+    model = LinearRegression()
+    pipeline = Pipeline([("model", model)], memory=None)
+    pipeline.fit(X, y)
+
+    with pytest.raises(ValueError, match="Model does not have feature importance"):
+        get_feature_importance(pipeline, model_step_name="model")

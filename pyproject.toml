@@ -1,6 +1,6 @@
 [project]
 name = "mother-ml"
-version = "1.0.0"
+version = "1.0.1"
 description = "A ML framework that takes care"
 requires-python = ">=3.10, <3.14"
 license = { file = "LICENSE" }
@@ -96,6 +96,7 @@ dev = [
   "ruff>=0.9.2,<1",
   "types-pyyaml>=6.0.12.20241230",
   "python-semantic-release>=10.2.0,<11",
+  "git-changelog>=2.9.4",
 ]
 examples = [
   "polaris-lib>=0.13.0,<0.14",
@@ -140,6 +141,7 @@ log_cli_format = "%(asctime)s | %(name)30s | %(levelname)8s | %(message)s"
 #    "test/unit",
 #]
 
+
 [tool.pylint.main]
 
 extension-pkg-allow-list = "rdkit"
@@ -181,6 +183,7 @@ logging-format-style = "new"
 # Logging modules to check that the string format arguments are in logging
 # function parameter format.
 logging-modules = ["logging"]
+
 
 [tool.ruff]
 # Exclude a variety of commonly ignored directories.
@@ -241,6 +244,7 @@ docstring-code-format = true
 # This only has an effect when the `docstring-code-format` setting is
 # enabled.
 docstring-code-line-length = "dynamic"
+
 
 [tool.mypy]
 disallow_untyped_calls = true
@@ -319,6 +323,7 @@ parse_squash_commits = true
 ignore_merge_commits = true
 
 
+
 [tool.poe.tasks]
 analyse-coverage = [
   "coverage",
@@ -351,9 +356,11 @@ style = ["sort-imports", "format"]
 test-unit = { shell = "pytest test -m 'not slow and not serial' -n auto && pytest test -m 'serial and not slow' -n 0" }
 test-slow = { shell = "pytest test -m 'slow' -n auto" }
 
+
+[tool.uv.build-backend]
+module-name = "mother"
+
 [build-system]
 requires = ["uv_build>=0.11.1,<0.12.0","setuptools>=76.0.0"]
 build-backend = "uv_build"
 
-[tool.uv.build-backend]
-module-name = "mother"

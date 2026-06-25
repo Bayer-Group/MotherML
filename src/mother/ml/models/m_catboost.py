@@ -47,6 +47,7 @@ from mother.ml.core import AbstractMotherPipeline
 from mother.ml.models import utils as models_utils
 
 module_logger = logging.getLogger(__name__)
+DEFAULT_QUANTILES: list[float] = [0.25, 0.5, 0.75]
 
 
 def ensure_metadata_routing(func: Callable) -> Callable:
@@ -255,23 +256,29 @@ class CatboostRegressorMother(CatBoostRegressor, _CatboostHyperParams):
             # multi-quantile regression
             # Validate quantiles
             if not all(0 < q < 1 for q in quantiles):
-                raise ValueError("Quantiles must be a non-empty list of floats between 0 and 1.")
-            # Store the original quantiles exactly as passed (for cloning compatibility)
+                raise ValueError("Quantiles must be a list of floats between 0 and 1.")
+            # Store original quantiles for sklearn clone compatibility (get_params/set_params round-trip).
+            # Store the original quantiles exactly as passed (for cloning compatibility).
             self.quantiles = quantiles
-
-            # create a copy to avoid changing the input parameter
+            # Build extended list: ensure 0.5 for median and DEFAULT_QUANTILES (0.25, 0.75) for IQR.
             quantiles_processed = list(quantiles)
-            # sort quantiles
-            if 0.5 not in quantiles_processed:
-                module_logger.info(
-                    "0.5 is not included in the given quantiles. It will be included for the median prediction."
-                )
-                quantiles_processed.append(0.5)
+
+            for q in DEFAULT_QUANTILES:
+                if q not in quantiles_processed:
+                    quantiles_processed.append(q)
             quantiles_processed.sort()
 
+            module_logger.info(
+                "Using quantile regression with mandatory default quantiles %s and user quantiles %s; "
+                "final quantiles used by the model: %s",
+                DEFAULT_QUANTILES,
+                self.quantiles,
+                quantiles_processed,
+            )
+
             self._quantiles_processed = quantiles_processed
+
             if "loss_function" not in kwargs:
-                # Set the loss function to MultiQuantile with the provided quantiles
                 kwargs["loss_function"] = f"MultiQuantile:alpha={', '.join(map(str, quantiles_processed))}"
         else:
             self.quantiles = None
@@ -460,7 +467,8 @@ class CatboostRegressorMother(CatBoostRegressor, _CatboostHyperParams):
         n_ensembles: int = 10,
         n_threads: int = 1,
         uncertainty_for_opt: bool = False,
-    ) -> pd.DataFrame:
+        return_quantiles: bool = False,
+    ) -> pd.DataFrame | tuple[pd.DataFrame, np.ndarray]:
         """
         Estimate targets and uncertainty for regression.
 
@@ -473,22 +481,44 @@ class CatboostRegressorMother(CatBoostRegressor, _CatboostHyperParams):
                 Number of threads.
             uncertainty_for_opt : bool, optional
                 If True, return only uncertainty for optimization.
+            return_quantiles : bool, optional
+                If True and using quantile regression, return tuple (output_df, quantile_array).
 
         Returns:
-            pd.DataFrame: Predictions with uncertainty.
+            pd.DataFrame | tuple[pd.DataFrame, np.ndarray]: Predictions with uncertainty.
+                Returns a tuple (uncertainty_df, quantile_array) only when
+                return_quantiles=True and quantile regression is used; otherwise returns pd.DataFrame.
         """
+        quantile_array = None
+        # Get predictions from the model's predict method
+        model_predictions = self.predict(X)
+
         if self.quantiles is not None:
             # Use the model's predict method to get multi-quantile predictions
             # return samples-by-quantiles prediction
-            predictions = super().predict(X)
-            module_logger.debug("Shape of predictions: %s", predictions.shape)
-            if predictions.shape[1] != len(self.quantiles):
+            quantile_array = super().predict(X)
+            module_logger.debug("Shape of predictions: %s", quantile_array.shape)
+            if quantile_array.shape[1] != len(self._quantiles_processed):
                 logging.warning("Mismatch between predictions and quantiles. Check model configuration.")
 
+            # For quantile-based regression, the interquartile range (IQR) represents
+            # the total uncertainty. In this implementation quantile regression
+            # does not provide a natural decomposition into knowledge (epistemic) and
+            # data (aleatoric) uncertainty components. Therefore, these fields are set
+            # to None. The 'total_uncertainty' column contains the IQR (Q3 - Q1)
+            # which is the primary uncertainty measure.
+            # For detailed uncertainty decomposition, consider using RMSEWithUncertainty
+            # loss or ensemble-based approaches (e.g., virtual ensembles with staged_predict).
             uncertainty_df = pd.DataFrame(
-                predictions,
+                {
+                    "pred": model_predictions,
+                    "mean_predictions": None,
+                    "knowledge_uncertainty": None,
+                    "data_uncertainty": None,
+                    "total_uncertainty": quantile_array[:, self._quantiles_processed.index(0.75)]
+                    - quantile_array[:, self._quantiles_processed.index(0.25)],
+                },
                 index=X.index,
-                columns=[f"quantile_{q}" for q in self._quantiles_processed],
             )
 
         elif self.target_type == "single_target":
@@ -500,6 +530,8 @@ class CatboostRegressorMother(CatBoostRegressor, _CatboostHyperParams):
             )
             # set the index of data frame
             uncertainty_df.index = X.index
+            # Insert one column with model predictions
+            uncertainty_df.insert(0, "pred", model_predictions)
 
         elif self.target_type == "multi_target":
             module_logger.info("Using custom knowledge uncertainty prediction due to multi target regression")
@@ -526,7 +558,7 @@ class CatboostRegressorMother(CatBoostRegressor, _CatboostHyperParams):
             # calculate uncertainty and mean predictions from multiple tree results
             knowledge_uncertainty: pd.DataFrame = pd.DataFrame(
                 np.array(staged_predictions).std(axis=0, ddof=1), index=X.index
-            )  # ddof=1 for the matched result with pandas std
+            )
 
             mean_predictions: pd.DataFrame = pd.DataFrame(np.array(staged_predictions).mean(axis=0), index=X.index)
 
@@ -534,38 +566,67 @@ class CatboostRegressorMother(CatBoostRegressor, _CatboostHyperParams):
             # knowledge_uncertainty.index = X.index
             # mean_predictions.index = X.index
 
-            # Assign column names to the DataFrames
+            # Assign column names and reorder: all predictions first, then means, then uncertainties
             n_targets = staged_predictions[0].shape[1] if len(staged_predictions[0].shape) > 1 else 1
-            mean_predictions.columns = [f"target_{i}" for i in range(n_targets)]
-            knowledge_uncertainty.columns = [f"target_{i}" for i in range(n_targets)]
-
-            target_names = [str(i) for i in range(mean_predictions.shape[1])]
+            mean_predictions.columns = [f"target_{i}_mean_predictions" for i in range(n_targets)]
+            knowledge_uncertainty.columns = [f"target_{i}_knowledge_uncertainty" for i in range(n_targets)]
+            target_indices = [str(i) for i in range(n_targets)]
 
             module_logger.info(f"Shape of mean_predictions: {mean_predictions.shape}")
-            module_logger.info(f"Target names: {target_names}")
+            module_logger.info(f"Number of targets: {n_targets}")
 
-            if len(target_names) != mean_predictions.shape[1]:
+            if len(target_indices) != mean_predictions.shape[1]:
                 raise ValueError(
-                    f"Length mismatch: target_names has {len(target_names)} elements, "
+                    f"Length mismatch: target_indices has {len(target_indices)} elements, "
                     f"but mean_predictions has {mean_predictions.shape[1]} columns."
                 )
 
-            mean_predictions.columns = [f"{target}_mean_predictions" for target in target_names]
-            knowledge_uncertainty.columns = [f"{target}_knowledge_uncertainty" for target in target_names]
+            if isinstance(model_predictions, np.ndarray) and model_predictions.ndim == 1:
+                model_predictions = model_predictions.reshape(-1, 1)
+            y_pred_df = pd.DataFrame(model_predictions, index=X.index)
+            y_pred_df.columns = [f"target_{idx}_pred" for idx in target_indices]
 
-            uncertainty_df = pd.concat([mean_predictions, knowledge_uncertainty], axis=1)
+            # Keep the multi-target output schema aligned with single-target output.
+            # Data and total uncertainty are currently unavailable in this path.
+            data_uncertainty = pd.DataFrame(
+                np.nan,
+                index=X.index,
+                columns=[f"target_{idx}_data_uncertainty" for idx in target_indices],
+            )
+            total_uncertainty = pd.DataFrame(
+                np.nan,
+                index=X.index,
+                columns=[f"target_{idx}_total_uncertainty" for idx in target_indices],
+            )
+
+            # Concat in order: predictions, then means, then uncertainties
+            uncertainty_df = pd.concat(
+                [
+                    y_pred_df,
+                    mean_predictions,
+                    knowledge_uncertainty,
+                    data_uncertainty,
+                    total_uncertainty,
+                ],
+                axis=1,
+            )
         else:
             raise ValueError(f"Unsupported target type: {self.target_type}")
 
         if uncertainty_for_opt:
-            # fixed format of output for the optimization
-            if self.quantiles is not None:
-                # use the difference between max and min
-                def min_max_dist(x):
-                    return x.max() - x.min()
-
+            if self.target_type == "multi_target":
+                module_logger.warning(
+                    "uncertainty_for_opt=True for multi-target regression: "
+                    "returning max of per-target knowledge_uncertainty as total_uncertainty."
+                )
+                ku_cols = [c for c in uncertainty_df.columns if c.endswith("_knowledge_uncertainty")]
                 return pd.DataFrame(
-                    {"total_uncertainty": uncertainty_df.apply(lambda x: min_max_dist(x), axis=1)},
+                    {"total_uncertainty": uncertainty_df[ku_cols].astype(float).max(axis=1)},
+                    index=X.index,
+                )
+            elif self.quantiles is not None:
+                return pd.DataFrame(
+                    {"total_uncertainty": uncertainty_df["total_uncertainty"]},
                     index=X.index,
                 )
             else:
@@ -573,6 +634,10 @@ class CatboostRegressorMother(CatBoostRegressor, _CatboostHyperParams):
                     {"knowledge_uncertainty": uncertainty_df["knowledge_uncertainty"]},
                     index=X.index,
                 )
+
+        # Check if should return quantile array along with standard output
+        if return_quantiles and quantile_array is not None:
+            return uncertainty_df, quantile_array
 
         return uncertainty_df
 
@@ -629,6 +694,7 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostHyperPa
         tune_tree_structure_type: bool = True,
         verbose: bool = False,
         model_type: str = "regression",
+        target_type: props.TargetType = "single_target",
         **kwargs,
     ):
         """
@@ -661,6 +727,8 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostHyperPa
                 Whether to print training logs during fitting.
             model_type : str, default="regression"
                 The type of model. For compatibility with the Mother framework.
+            target_type : str, default="single_target"
+                Target type (must be "single_target").
             **kwargs : dict
                 Additional parameters for CatBoost's `sample_gaussian_process` method.
         """
@@ -671,7 +739,14 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostHyperPa
         if model_type != "regression":
             raise ValueError("model_type for CatboostGaussianProcessRegressorMother must be 'regression'.")
 
+        if target_type != "single_target":
+            raise ValueError(
+                "target_type for CatboostGaussianProcessRegressorMother must be 'single_target'. "
+                "Multi-target regression is not supported."
+            )
+
         self.model_type = model_type
+        self.target_type = target_type
 
         # Store GP-specific parameters as instance attributes
         self.samples = samples
@@ -733,6 +808,7 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostHyperPa
         # Add our custom parameters
         custom_params = {
             "model_type": self.model_type,
+            "target_type": self.target_type,
             "tune_boosting_type": self.tune_boosting_type,
             "tune_tree_structure_type": self.tune_tree_structure_type,
             "samples": self.samples,
@@ -759,6 +835,7 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostHyperPa
         # Handle our custom parameters
         custom_param_names = {
             "model_type",
+            "target_type",
             "tune_boosting_type",
             "tune_tree_structure_type",
             "samples",
@@ -825,6 +902,12 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostHyperPa
         Returns:
             self
         """
+        if self.target_type != "single_target":
+            raise ValueError(
+                "target_type for CatboostGaussianProcessRegressorMother must be 'single_target'. "
+                "Multi-target regression is not supported."
+            )
+
         X, y = check_X_y(X, y, accept_sparse=False, ensure_2d=True, dtype=None)
         posterior_iterations = 1000 - self.prior_iterations
 
@@ -850,26 +933,29 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostHyperPa
         )
         return self
 
-    def predict(self, X: pd.DataFrame) -> np.ndarray:
+    def predict(self, X: pd.DataFrame, **kwargs) -> np.ndarray:
         """
         Predict regression targets.
 
         Args:
             X : pd.DataFrame
                 Input data.
+            **kwargs
+                Additional keyword arguments passed to CatBoostRegressor.predict().
+                Examples: prediction_type, ntree_start, ntree_end, thread_count, etc.
 
         Returns:
-            np.ndarray: Mean predictions.
+            np.ndarray: Mean predictions averaged over all ensemble models.
         """
         if not hasattr(self, "models_") or not self.models_:
             module_logger.error("Prediction requested before model was fitted. Call 'fit' before 'predict'.")
             raise RuntimeError("Model has not been fitted yet. Call 'fit' before 'predict'.")
 
-        predictions = np.array([model.predict(X) for model in self.models_])
+        predictions = np.array([model.predict(X, **kwargs) for model in self.models_])
         mean_predictions = predictions.mean(axis=0)
         return mean_predictions
 
-    def predict_uncertainty(self, X: pd.DataFrame, uncertainty_for_opt: bool = False) -> pd.DataFrame:
+    def predict_uncertainty(self, X: pd.DataFrame, uncertainty_for_opt: bool = False, **kwargs) -> pd.DataFrame:
         """
         Estimate knowledge uncertainty for regression.
 
@@ -878,21 +964,25 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostHyperPa
                 Input data.
             uncertainty_for_opt : bool
                 If True, return only uncertainty for optimization.
+            **kwargs
+                Additional keyword arguments passed to CatBoostRegressor.predict().
+                Examples: prediction_type, ntree_start, ntree_end, thread_count, etc.
 
         Returns:
-            pd.DataFrame: Predictions with uncertainty.
+            pd.DataFrame: Predictions with uncertainty (knowledge_uncertainty computed as std across models).
         """
         if not hasattr(self, "models_") or not self.models_:
             raise RuntimeError("Model has not been fitted yet. Call 'fit' before 'predict_uncertainty'.")
 
-        predictions = np.array([model.predict(X) for model in self.models_])
+        predictions = np.array([model.predict(X, **kwargs) for model in self.models_])
 
         mean_predictions = predictions.mean(axis=0)
         knowledge_uncertainty = predictions.std(axis=0)
 
         results = pd.DataFrame(
             {
-                "mean_predictions": mean_predictions,
+                "pred": mean_predictions,
+                "mean_predictions": None,
                 "knowledge_uncertainty": knowledge_uncertainty,
                 "data_uncertainty": None,
                 "total_uncertainty": None,
@@ -955,6 +1045,7 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostHyperPa
         state.update(
             {
                 "model_type": self.model_type,
+                "target_type": self.target_type,
                 "tune_boosting_type": self.tune_boosting_type,
                 "tune_tree_structure_type": self.tune_tree_structure_type,
                 "samples": self.samples,
@@ -972,6 +1063,7 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostHyperPa
         """Set state for unpickling."""
         # Extract our custom attributes
         self.model_type = state.pop("model_type", "regression")
+        self.target_type = state.pop("target_type", "single_target")
         self.tune_boosting_type = state.pop("tune_boosting_type", False)
         self.tune_tree_structure_type = state.pop("tune_tree_structure_type", True)
         self.samples = state.pop("samples", 10)
@@ -1235,16 +1327,53 @@ class CatboostClassifierMother(CatBoostClassifier, _CatboostHyperParams, Abstrac
                 If True, return only uncertainty for optimization.
 
         Returns:
-            pd.DataFrame: Predictions with uncertainty.
+            pd.DataFrame: Predictions with uncertainty and probabilities,
+            including the standard model prediction in column "pred".
         """
         if str(self.target_type) == "multi_target" or str(self.model_type) == "classification_multiclass":
             module_logger.warning(
-                "Uncertainty prediction for MULTICLASS or MULTI-TARGET is a PROTOTYPE; "
-                "check CatBoost docs to ensure compatibility."
+                "Uncertainty prediction for MULTICLASS or MULTI-TARGET is not yet supported. "
+                "Please check CatBoost docs for compatibility."
             )
+
         uncertainty_df = utils.get_virtual_prediction(
             X, model=self, virtual_ensembles_count=n_ensembles, thread_count=n_threads
         )
+
+        # Supports only single
+        # Keep standard model predictions separate from virtual-ensemble mean_predictions.
+        model_predictions = np.asarray(self.predict(X)).flatten()
+        pred_df = pd.DataFrame({"pred": model_predictions}, index=X.index)
+
+        # Get model predictions probabilities
+        model_predictions_proba = np.asarray(self.predict_proba(X))
+
+        # Create DataFrame with probabilities
+        if model_predictions_proba.ndim == 1:
+            model_predictions_proba = model_predictions_proba.reshape(1, -1)
+
+        if model_predictions_proba.ndim != 2:
+            raise ValueError(
+                "Expected predict_proba output to be a 1D or 2D array, "
+                f"got array with {model_predictions_proba.ndim} dimensions"
+            )
+
+        if model_predictions_proba.shape[0] != len(X.index):
+            raise ValueError(
+                "Number of probability predictions does not match number of input rows: "
+                f"{model_predictions_proba.shape[0]} vs {len(X.index)} rows"
+            )
+
+        n_classes = model_predictions_proba.shape[1]
+        prediction_columns_proba = [f"proba_{i}" for i in range(n_classes)]
+        proba_df = pd.DataFrame(
+            data=model_predictions_proba,
+            index=X.index,
+            columns=prediction_columns_proba,
+        )
+
+        # Keep a stable output order: standard prediction, probabilities, uncertainty terms.
+        uncertainty_df = pd.concat([pred_df, proba_df, uncertainty_df], axis=1)
 
         if uncertainty_for_opt:
             return pd.DataFrame(

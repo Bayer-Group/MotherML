@@ -165,7 +165,8 @@ class _TabPFNHyperParams(AbstractMotherPipeline):
         elif (X.shape[0] == 0) or (y.shape[0] == 0):
             raise ValueError("X and y must not be empty.")
 
-        check_array(X, ensure_2d=False, force_all_finite="allow-nan")  # ensure_2d is off because of the 1D case
+        # ensure_2d is off because of the 1D case
+        check_array(X, ensure_2d=False, force_all_finite="allow-nan")
         check_array(y, ensure_2d=False, dtype=None, force_all_finite="allow-nan")
 
 
@@ -303,7 +304,8 @@ class TabPFNRegressorMother(TabPFNRegressor, _TabPFNHyperParams):
 
         output: pd.DataFrame = pd.DataFrame(
             {
-                "mean_predictions": pred_res["mean"],
+                "pred": pred_res["mean"],
+                "mean_predictions": None,
                 "knowledge_uncertainty": None,
                 "data_uncertainty": None,
                 "total_uncertainty": pred_res["quantiles"][:, quantiles.index(0.75)]
@@ -488,7 +490,8 @@ class TabPFNEmbeddingTransformer(BaseEstimator, TransformerMixin):
         self.ignore_pretraining_limits: bool = ignore_pretraining_limits
         self.kwargs: Dict[str, Any] = kwargs
         self.model: Optional[Union[TabPFNClassifierMother, TabPFNRegressorMother]] = model
-        self.pre_fitted = self.model is not None  # otherwise, the model will be fitted every time new data is given
+        # otherwise, the model will be fitted every time new data is given
+        self.pre_fitted = self.model is not None
 
         # For embeddings
         self.input_features_: Optional[List[str]] = None
