@@ -636,7 +636,7 @@ class TabICLRegressorMother(TabICLRegressor, _TabICLHyperParams):
         self,
         X: Union[np.ndarray, pd.DataFrame],
         return_quantiles: bool = False,
-        quantiles: Optional[List] = None,
+        quantiles: Optional[List[float]] = None,
         uncertainty_for_opt: bool = False,
         **kwargs,
     ) -> Union[pd.DataFrame, pd.Series, tuple[pd.DataFrame, np.ndarray]]:
@@ -674,8 +674,11 @@ class TabICLRegressorMother(TabICLRegressor, _TabICLHyperParams):
                 quantiles_list.append(q)
         quantiles_list.sort()
 
+        q25_idx: int = quantiles_list.index(0.25)
+        q75_idx: int = quantiles_list.index(0.75)
+
         pred_res: Union[np.ndarray, dict] = self.predict(
-            np.array(X), output_type="quantiles", alphas=quantiles, **kwargs
+            np.array(X), output_type="quantiles", alphas=quantiles_list, **kwargs
         )
 
         if not isinstance(pred_res, np.ndarray):
@@ -689,7 +692,7 @@ class TabICLRegressorMother(TabICLRegressor, _TabICLHyperParams):
                 "mean_predictions": pred_res.mean(axis=1).tolist(),
                 "knowledge_uncertainty": None,  # Not available for this model
                 "data_uncertainty": None,  # Not available for this model
-                "total_uncertainty": (pred_res[:, quantiles.index(0.75)] - pred_res[:, quantiles.index(0.25)]).tolist(),
+                "total_uncertainty": (pred_res[:, q75_idx] - pred_res[:, q25_idx]).tolist(),
             },
         )
 
