@@ -810,6 +810,14 @@ class TabICLEmbeddingTransformer(BaseEstimator, TransformerMixin):
         self.model = model
         self.pre_fitted: bool = model is not None
 
+        if self.pre_fitted:
+            if isinstance(model, TabICLClassifier):
+                self.model_type = "classification"
+            elif isinstance(model, TabICLRegressor):
+                self.model_type = "regression"
+            else:
+                raise TypeError(f"Unsupported model type: {type(model)}. Expected TabICLClassifier or TabICLRegressor.")
+
         # Populated during fit
         self.input_features_: Optional[List[str]] = None
         self.train_embeddings_: Optional[np.ndarray] = None
