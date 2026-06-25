@@ -204,9 +204,14 @@ class LogisticRegressionL1FeatureSelector(BaseEstimator, TransformerMixin, OneTo
         X = pd.DataFrame(X_scaled, columns=X.columns, index=X.index)
 
         # Create feature selector with LogisticRegressionCV.
-        # saga: only solver that supports ElasticNet (l1_ratios), works for both
-        #       binary and multiclass.
-        # l1_ratios=(1,): pure L1 regularisation (replaces deprecated penalty="l1").
+        # saga: only solver that supports l1/elastic-net regularisation; works
+        #       for both binary and multiclass.
+        # l1_ratios=(1,): pure L1 regularisation via the sklearn ≥1.8 API.
+        #   In sklearn 1.8, `penalty` was deprecated for LogisticRegressionCV.
+        #   The replacement is to set `l1_ratios` directly: l1_ratios=(1,) is
+        #   pure L1, l1_ratios=(0,) is pure L2. Do NOT also pass
+        #   penalty="elasticnet" — that raises a FutureWarning and will error
+        #   in sklearn 1.10 when the penalty parameter is removed.
         # use_legacy_attributes=False: opt in to the simplified coef_ shape
         #       introduced in sklearn 1.9 (becomes the default in 1.10).
         self.feature_selector = SelectFromModel(
