@@ -74,13 +74,20 @@ class _CatboostModelMotherBase(AbstractMotherPipeline):
             cloned_value = cloned_params[key]
             try:
                 if isinstance(original_value, np.ndarray) or isinstance(cloned_value, np.ndarray):
-                    equal = np.array_equal(original_value, cloned_value)
+                    # equal_nan=True: NaN values at the same position count as equal
+                    equal = np.array_equal(original_value, cloned_value, equal_nan=True)
                 elif isinstance(original_value, (pd.Series, pd.DataFrame)) and isinstance(
                     cloned_value, type(original_value)
                 ):
                     equal = original_value.equals(cloned_value)
                 else:
                     equal = bool(original_value == cloned_value)
+                    if not equal:
+                        # NaN != NaN by IEEE 754; x != x is True only for NaN
+                        try:
+                            equal = original_value != original_value and cloned_value != cloned_value
+                        except Exception:
+                            pass
             except Exception:
                 # Last resort: compare reprs (handles custom types with no __eq__)
                 equal = repr(original_value) == repr(cloned_value)
