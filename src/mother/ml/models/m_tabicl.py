@@ -667,13 +667,12 @@ class TabICLRegressorMother(TabICLRegressor, _TabICLHyperParams):
         """
         check_is_fitted(self)
 
-        # Update the quantiles list with default quantiles
-        if quantiles is None:
-            quantiles = list()
+        # Build a local, sorted quantile list without mutating caller input
+        quantiles_list: list[float] = list(quantiles) if quantiles is not None else []
         for q in DEFAULT_QUANTILES:
-            if q not in quantiles:
-                quantiles.append(q)
-        quantiles.sort()
+            if q not in quantiles_list:
+                quantiles_list.append(q)
+        quantiles_list.sort()
 
         pred_res: Union[np.ndarray, dict] = self.predict(
             np.array(X), output_type="quantiles", alphas=quantiles, **kwargs
