@@ -203,18 +203,21 @@ class LogisticRegressionL1FeatureSelector(BaseEstimator, TransformerMixin, OneTo
         X_scaled: np.ndarray = scaler.fit_transform(X)
         X = pd.DataFrame(X_scaled, columns=X.columns, index=X.index)
 
-        # Create feature selector with LogisticRegressionCV
-        # Use "saga" solver: supports L1 penalty for both binary and multiclass.
-        # "liblinear" was removed for multiclass in scikit-learn >= 1.8.
-        n_classes = len(np.unique(y))
-        solver = "liblinear" if n_classes == 2 else "saga"
+        # Create feature selector with LogisticRegressionCV.
+        # saga: only solver that supports ElasticNet (l1_ratios), works for both
+        #       binary and multiclass.
+        # l1_ratios=(1,): pure L1 regularisation (replaces deprecated penalty="l1").
+        # use_legacy_attributes=False: opt in to the simplified coef_ shape
+        #       introduced in sklearn 1.9 (becomes the default in 1.10).
         self.feature_selector = SelectFromModel(
             LogisticRegressionCV(
                 cv=self.cv,
                 random_state=self.random_state,
-                penalty="l1",
+                l1_ratios=(1,),
                 class_weight="balanced",
-                solver=solver,
+                solver="saga",
+                scoring="neg_log_loss",
+                use_legacy_attributes=False,
             ),
             threshold=threshold,  # Use n_features instead of threshold
             max_features=max_features,
