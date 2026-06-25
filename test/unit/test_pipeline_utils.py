@@ -390,6 +390,13 @@ def test_get_ranking_pipeline(modeling_data, cv_cross_validation, preserve_metad
         },
     )
 
+    # Metadata routing must be enabled for ranking fit and optimize calls.
+    # get_ranking_pipeline() no longer sets this permanently; the
+    # preserve_metadata_routing fixture restores the original value on teardown.
+    import sklearn as _sklearn
+
+    _sklearn.set_config(enable_metadata_routing=True)
+
     # test fitting
     pipeline["model"].fit(features, target, group_id=ranking_groups)
     pipeline.fit(features, target, group_id=ranking_groups)

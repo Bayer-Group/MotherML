@@ -19,9 +19,10 @@ from typing import (
 import catboost
 import numpy.typing as npt
 import pandas as pd
+import sklearn
 import sklearn.feature_selection as skl_feature_sel
 import sklearn.model_selection as skl_model_sel
-from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.base import BaseEstimator, TransformerMixin, is_classifier
 from sklearn.compose import ColumnTransformer
 from sklearn.metrics import make_scorer
 from sklearn.pipeline import Pipeline
@@ -794,7 +795,7 @@ def mother_cv(
         module_logger.debug("The prefix is being added to the column names for the prediction columns")
         intermediate_performance_data = intermediate_performance_data.add_prefix(prediction_prefix)
 
-        if hasattr(val_estimator, "_estimator_type") and val_estimator._estimator_type == "classifier":
+        if is_classifier(val_estimator):
             existing_proba_columns = [str(col) for col in intermediate_performance_data.columns if "proba_" in str(col)]
 
             if existing_proba_columns:
@@ -932,48 +933,63 @@ def get_ranking_pipeline(
     tuner (MotherTuner): the tuner for hyperparameter optimization, including the NDCG-scorer
 
     """
-    ranking_model = get_ranking_model(
-        target_type=target_type,
-        categorical_features=categorical_features,
-        **(model_kwargs if model_kwargs else {}),
-    )
+    # Ranking requires sklearn metadata routing so that group_id is forwarded
+    # to both the ranker's fit() and the NDCG scorer's score().  Enable it only
+    # for the duration of pipeline construction and restore the prior value
+    # afterwards to avoid permanently mutating global sklearn state.  A
+    # try/finally guarantees restoration even if construction raises.
+    _prev_routing = sklearn.get_config().get("enable_metadata_routing", False)
+    sklearn.set_config(enable_metadata_routing=True)
+    try:
+        ranking_model = get_ranking_model(
+            target_type=target_type,
+            categorical_features=categorical_features,
+            **(model_kwargs if model_kwargs else {}),
+        )
 
-    scorer = get_ranking_scorer(k=k_scorer)
+        scorer = get_ranking_scorer(k=k_scorer)
 
-    # default settings for feature selection
-    model_settings = {
-        "feature_selection_flags": [
-            "DROP_CORRELATED",
-            "DROP_CONSTANT",
-            "DROP_DUPLICATES",
-            "DROP_UNIMPORTANT",
-        ],
-        "categorical_features": categorical_features,
-        "feature_selection_threshold": 0,
-        "correlation_threshold": 0.9,
-        "algorithm": "catboost",
-        "feature_selection_type": "permutation",
-        "model_type": "regression",
-        "target_type": "single_target",
-    }
-    pipeline_settings = {
-        "remainder": "drop" if len(categorical_features) == 0 else "passthrough",
-        "verbose_feature_names_out": False,
-    }
+        # default settings for feature selection
+        model_settings = {
+            "feature_selection_flags": [
+                "DROP_CORRELATED",
+                "DROP_CONSTANT",
+                "DROP_DUPLICATES",
+                "DROP_UNIMPORTANT",
+            ],
+            "categorical_features": categorical_features,
+            "feature_selection_threshold": 0,
+            "correlation_threshold": 0.9,
+            "algorithm": "catboost",
+            "feature_selection_type": "permutation",
+            "model_type": "regression",
+            "target_type": "single_target",
+        }
+        pipeline_settings = {
+            "remainder": "drop" if len(categorical_features) == 0 else "passthrough",
+            "verbose_feature_names_out": False,
+        }
 
-    feature_selection_pipeline = get_feature_selection_pipeline(
-        settings=model_settings,
-        pipeline_settings=pipeline_settings,
-        cv=None,  # use default cv for feature selection
-    ).set_output(transform="pandas")
+        feature_selection_pipeline = get_feature_selection_pipeline(
+            settings=model_settings,
+            pipeline_settings=pipeline_settings,
+            cv=None,  # use default cv for feature selection
+        ).set_output(transform="pandas")
 
-    ranking_pipeline = PipelineWithHyperparameterRooting(
-        steps=[
-            ("feature_selection", feature_selection_pipeline),
-            ("model", ranking_model),
-        ]
-    )
+        ranking_pipeline = PipelineWithHyperparameterRooting(
+            steps=[
+                ("feature_selection", feature_selection_pipeline),
+                ("model", ranking_model),
+            ]
+        )
 
-    tuner = MotherTuner(scorer=scorer, **(tuner_kwargs if tuner_kwargs else {}))
+        tuner = MotherTuner(scorer=scorer, **(tuner_kwargs if tuner_kwargs else {}))
+    finally:
+        # Restore regardless of success or failure so this function has no
+        # permanent side effects on global sklearn state.  Callers that need
+        # metadata routing active (e.g. around pipeline.fit / tuner.optimize)
+        # should use sklearn.set_config(enable_metadata_routing=True) or wrap
+        # the calls in sklearn.config_context(enable_metadata_routing=True).
+        sklearn.set_config(enable_metadata_routing=_prev_routing)
 
     return ranking_pipeline, tuner
