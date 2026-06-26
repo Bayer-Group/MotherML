@@ -689,7 +689,8 @@ class TabICLRegressorMother(TabICLRegressor, _TabICLHyperParams):
 
         output: pd.DataFrame = pd.DataFrame(
             {
-                "mean_predictions": pred_res.mean(axis=1).tolist(),
+                "pred": pred_res.mean(axis=1).tolist(),
+                "mean_predictions": None,
                 "knowledge_uncertainty": None,  # Not available for this model
                 "data_uncertainty": None,  # Not available for this model
                 "total_uncertainty": (pred_res[:, q75_idx] - pred_res[:, q25_idx]).tolist(),
