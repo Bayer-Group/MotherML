@@ -43,7 +43,7 @@ def data_containers(request):
 
 @pytest.mark.slow
 class TestTabICLRegression:
-    model = TabICLRegressorMother(n_estimators=1)
+    model: TabICLRegressorMother
 
     @pytest.fixture(autouse=True)
     def _fresh_model(self) -> None:
@@ -164,7 +164,7 @@ class TestTabICLRegression:
 
 @pytest.mark.slow
 class TestTabICLClassification:
-    model = TabICLClassifierMother(n_estimators=1)
+    model: TabICLClassifierMother
 
     @pytest.fixture(autouse=True)
     def _fresh_model(self) -> None:
@@ -248,9 +248,10 @@ class TestTabICLClassification:
 
 @pytest.mark.slow
 class TestTabICLEmbeddingTransformer:
-    X = pd.DataFrame(np.random.rand(24, 8), columns=[f"f{i}" for i in range(8)])
-    regression_y = pd.Series(np.random.rand(24))
-    classification_y = pd.Series(np.random.randint(0, 2, size=24))
+    rng = np.random.default_rng(0)
+    X = pd.DataFrame(rng.random((24, 8)), columns=[f"f{i}" for i in range(8)])
+    regression_y = pd.Series(rng.random(24))
+    classification_y = pd.Series(rng.integers(0, 2, size=24))
 
     def test_init_invalid_kfold_with_prefitted_model(self):
         with pytest.raises(ValueError):
