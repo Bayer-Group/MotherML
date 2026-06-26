@@ -1,8 +1,15 @@
 import logging
 from typing import Literal, Mapping, Optional, Union
 
+import numpy as np
+import pandas as pd
 from optuna.trial import Trial
-from sklearn.linear_model import Lasso, LogisticRegression
+from sklearn.linear_model import (
+    ARDRegression,
+    Lasso,
+    LogisticRegression,
+    MultiTaskLasso,
+)
 
 from mother.ml.core import AbstractMotherPipeline
 from mother.ml.models import utils
@@ -170,3 +177,185 @@ class LassoClassifierMulticlassMother(LassoClassifierBinaryMother):
             # 'saga' supports L1 penalty and is suitable for large datasets
         kwargs["solver"] = "saga"
         super().__init__(**kwargs)
+
+
+class MultiTaskLassoMother(MultiTaskLasso, AbstractMotherPipeline):
+    """
+    MOTHER class for a MultiTask LASSO regression including hyperparameter optimization.
+
+    Wraps sklearn.linear_model.MultiTaskLasso to fit multiple regression targets
+    simultaneously with a shared L1 sparsity pattern. Features are selected or
+    discarded jointly across all targets, which is appropriate when targets share
+    a common set of relevant features.
+
+    Use this model when y has shape (n_samples, n_targets). For single-target
+    regression use LassoRegressorMother instead.
+    """
+
+    def get_hyperparameter_space(self, X, y, trial: Trial, prefix: str = "") -> dict:
+        """
+        Define the hyperparameter search space for MultiTask Lasso regression.
+
+        Parameters:
+            X: array-like
+                Feature matrix.
+            y: array-like
+                Target matrix (n_samples, n_targets).
+            trial: optuna.trial.Trial
+                Optuna trial object for suggesting hyperparameters.
+            prefix: str, optional
+                Prefix to add to hyperparameter names.
+
+        Returns:
+            dict: Dictionary containing hyperparameter names and their suggested values.
+        """
+        return utils.add_prefix_to_dict_keys(
+            {"alpha": trial.suggest_float(prefix + "alpha", 1e-6, 1e1, log=True)},
+            prefix=prefix,
+        )
+
+    def default_parameters(self, prefix: str = "") -> dict:
+        """
+        Return the default hyperparameters for the MultiTask Lasso model.
+
+        Parameters:
+            prefix: str, optional
+                Prefix to add to hyperparameter names.
+
+        Returns:
+            dict: Dictionary containing default hyperparameter values.
+        """
+        return utils.add_prefix_to_dict_keys({"alpha": 1e-3}, prefix=prefix)
+
+    def set_params(self, **params):
+        return super().set_params(**params)
+
+    def get_params(self, deep=True) -> dict:
+        return super().get_params(deep=deep)
+
+
+class ARDRegressionMother(ARDRegression, AbstractMotherPipeline):
+    """
+    MOTHER class for ARD (Automatic Relevance Determination) regression including
+    hyperparameter optimization and native uncertainty estimation.
+
+    ARDRegression is a Bayesian linear model that places individual sparsity-inducing
+    priors over each feature weight. It produces a posterior distribution over the weights,
+    yielding calibrated predictive uncertainty (posterior predictive standard deviation)
+    without requiring conformal post-processing or ensembling.
+
+    The regularisation strength is inferred per-feature from the data, making this
+    model effective on high-dimensional datasets where only a subset of features are
+    relevant.
+
+    predict_uncertainty() follows the standard Mother uncertainty interface and returns
+    the posterior predictive standard deviation as knowledge_uncertainty.
+    """
+
+    def get_hyperparameter_space(self, X, y, trial: Trial, prefix: str = "") -> dict:
+        """
+        Define the hyperparameter search space for ARD regression.
+
+        The Bayesian priors are parameterised by four hyperparameters that control the
+        shape of the Gamma prior over the noise precision (alpha) and the weight
+        precision (lambda). Tuning these allows the model to adapt the degree of
+        sparsity and noise tolerance to the dataset.
+
+        Parameters:
+            X: array-like
+                Feature matrix.
+            y: array-like
+                Target vector.
+            trial: optuna.trial.Trial
+                Optuna trial object for suggesting hyperparameters.
+            prefix: str, optional
+                Prefix to add to hyperparameter names.
+
+        Returns:
+            dict: Dictionary containing hyperparameter names and their suggested values.
+        """
+        return utils.add_prefix_to_dict_keys(
+            {
+                "alpha_1": trial.suggest_float(prefix + "alpha_1", 1e-7, 1e-4, log=True),
+                "alpha_2": trial.suggest_float(prefix + "alpha_2", 1e-7, 1e-4, log=True),
+                "lambda_1": trial.suggest_float(prefix + "lambda_1", 1e-7, 1e-4, log=True),
+                "lambda_2": trial.suggest_float(prefix + "lambda_2", 1e-7, 1e-4, log=True),
+            },
+            prefix=prefix,
+        )
+
+    def default_parameters(self, prefix: str = "") -> dict:
+        """
+        Return the default hyperparameters for the ARD regression model.
+
+        Parameters:
+            prefix: str, optional
+                Prefix to add to hyperparameter names.
+
+        Returns:
+            dict: Dictionary containing default hyperparameter values.
+        """
+        return utils.add_prefix_to_dict_keys(
+            {
+                "alpha_1": 1e-6,
+                "alpha_2": 1e-6,
+                "lambda_1": 1e-6,
+                "lambda_2": 1e-6,
+            },
+            prefix=prefix,
+        )
+
+    def set_params(self, **params):
+        return super().set_params(**params)
+
+    def get_params(self, deep=True) -> dict:
+        return super().get_params(deep=deep)
+
+    def predict_uncertainty(
+        self,
+        X: pd.DataFrame,
+        uncertainty_for_opt: bool = False,
+        **kwargs,
+    ) -> pd.DataFrame:
+        """
+        Predict target values and estimate uncertainty using the ARD posterior.
+
+        ARDRegression natively provides a predictive standard deviation via
+        return_std=True, which reflects the posterior predictive uncertainty over
+        the weights (epistemic / knowledge uncertainty). No ensembling or
+        post-hoc calibration is required.
+
+        Parameters:
+            X: pd.DataFrame
+                Input features.
+            uncertainty_for_opt: bool, optional
+                If True, return only the knowledge_uncertainty column for use
+                in uncertainty-aware optimisation workflows.
+
+        Returns:
+            pd.DataFrame with columns:
+                - 'pred': point predictions (posterior mean)
+                - 'mean_predictions': posterior mean (same as pred)
+                - 'knowledge_uncertainty': posterior predictive standard deviation
+                - 'data_uncertainty': None (not available from ARD)
+                - 'total_uncertainty': same as knowledge_uncertainty
+        """
+        mean_preds, std_preds = super().predict(X, return_std=True)
+
+        index = X.index if isinstance(X, pd.DataFrame) else None
+
+        result = pd.DataFrame(
+            {
+                "pred": mean_preds,
+                "mean_predictions": mean_preds,
+                "knowledge_uncertainty": std_preds,
+                "data_uncertainty": np.nan,
+                "total_uncertainty": std_preds,
+            },
+            index=index,
+        )
+
+        if uncertainty_for_opt:
+            return pd.DataFrame({"knowledge_uncertainty": result["knowledge_uncertainty"]}, index=index)
+
+        return result
