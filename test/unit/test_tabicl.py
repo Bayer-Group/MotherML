@@ -44,6 +44,11 @@ def data_containers(request):
 @pytest.mark.slow
 class TestTabICLRegression:
     model = TabICLRegressorMother(n_estimators=1)
+
+    @pytest.fixture(autouse=True)
+    def _fresh_model(self) -> None:
+        self.model = TabICLRegressorMother(n_estimators=1)
+
     X, y = load_diabetes(return_X_y=True, as_frame=True)
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.5, random_state=42)
 
@@ -159,6 +164,11 @@ class TestTabICLRegression:
 @pytest.mark.slow
 class TestTabICLClassification:
     model = TabICLClassifierMother(n_estimators=1)
+
+    @pytest.fixture(autouse=True)
+    def _fresh_model(self) -> None:
+        self.model = TabICLClassifierMother(n_estimators=1)
+
     X, y = load_wine(return_X_y=True)
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.5, random_state=42)
 
@@ -377,6 +387,17 @@ class TestTabICLEmbeddingTransformer:
         )
         transformer.fit(self.X, self.regression_y)
         assert transformer.train_embeddings_ is not None
+
+    def test_fit_with_unfitted_prefitted_model_raises_not_fitted_error(self):
+        model = TabICLRegressorMother(n_estimators=1)
+        transformer = TabICLEmbeddingTransformer(
+            model_type="regression",
+            use_kfold=False,
+            model=model,
+            n_estimators=1,
+        )
+        with pytest.raises(NotFittedError):
+            transformer.fit(self.X, self.regression_y)
 
     def test_fit_falls_back_when_samples_less_than_folds(self):
         X_tiny = self.X.iloc[:3].copy()

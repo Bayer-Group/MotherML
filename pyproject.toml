@@ -80,7 +80,7 @@ tabpfn = [
 ### TabICL
 tabicl = [
     "tabicl>=2.1.1",
-    "torch>=2.11.0",
+    "torch>=2.11.0,<3",
 ]
 
 [dependency-groups]

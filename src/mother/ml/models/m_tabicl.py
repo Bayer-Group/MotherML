@@ -913,6 +913,8 @@ class TabICLEmbeddingTransformer(BaseEstimator, TransformerMixin):
             # array and append it to the representations list
             representations_list.append(output.detach().cpu().float().numpy())
 
+        # Ensure a clear failure mode when a user passes an unfitted estimator via `model=`.
+        check_is_fitted(fitted_estimator, attributes="model_")
         hook = fitted_estimator.model_.row_interactor.register_forward_hook(_hook)
 
         # Force a forward pass to trigger the hook and populate representations_list.
