@@ -24,7 +24,7 @@ jobs:
         uses: ./.github/actions/setup-uv-env
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          install-args: "--extra report --extra rna --extra tabpfn"
+          install-args: "--extra report --extra rna --extra tabpfn --extra tabicl"
 
       # - name: Run type checks #needs a lot of type fixing
       #   run: |
@@ -61,7 +61,7 @@ jobs:
         uses: ./.github/actions/setup-uv-env
         with:
           python-version: ${{ matrix.python-version }}
-          install-args: "--extra rna --extra report --extra tabpfn --extra clustering
+          install-args: "--extra rna --extra report --extra tabpfn --extra tabicl --extra clustering
             --group test_duration"
 
       #----------------------------------------------
@@ -101,7 +101,7 @@ jobs:
         uses: ./.github/actions/setup-uv-env
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          install-args: "--extra rna --extra report --extra tabpfn --extra clustering
+          install-args: "--extra rna --extra report --extra tabpfn --extra tabicl --extra clustering
             --group test_duration"
 
       - name: Download TabPFN checkpoint
@@ -143,7 +143,7 @@ jobs:
         uses: ./.github/actions/setup-uv-env
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          install-args: "--extra report --extra rna --extra tabpfn"
+          install-args: "--extra report --extra rna --extra tabpfn --extra tabicl"
 
       - name: Python Semantic Release
         uses: python-semantic-release/python-semantic-release@v10.2.0

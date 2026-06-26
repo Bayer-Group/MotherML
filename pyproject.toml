@@ -77,6 +77,11 @@ tabpfn = [
   "torch>=2.3.0,<3",
 ]
 
+### TabICL
+tabicl = [
+    "tabicl>=2.1.1",
+    "torch>=2.11.0,<3",
+]
 
 [dependency-groups]
 dev = [
