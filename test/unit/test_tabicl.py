@@ -101,6 +101,7 @@ class TestTabICLRegression:
         assert isinstance(output, pd.DataFrame)
         assert isinstance(quantiles, np.ndarray)
         assert list(output.columns) == [
+            "pred",
             "mean_predictions",
             "knowledge_uncertainty",
             "data_uncertainty",
