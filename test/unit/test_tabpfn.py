@@ -51,7 +51,8 @@ class TestRegression:
 
     def test_set_params(self):
         # Test if set_params works correctly
-        params = {"n_estimators": 10, "softmax_temperature": 0.5}  # Replace with actual parameters
+        # Replace with actual parameters
+        params = {"n_estimators": 10, "softmax_temperature": 0.5}
         self.model.set_params(**params)
 
         for key, value in params.items():
@@ -90,7 +91,7 @@ class TestRegression:
         predictions = self.model.predict(self.X_test)
         predictions_with_uncertainty = self.model.predict_uncertainty(self.X_test)
 
-        assert np.allclose(predictions, predictions_with_uncertainty["mean_predictions"]), (
+        assert np.allclose(predictions, predictions_with_uncertainty["pred"]), (
             "Predictions should match between predict and predict_with_uncertainty"
         )
 
@@ -114,7 +115,8 @@ class TestClassification:
 
     def test_set_params(self):
         # Test if set_params works correctly
-        params = {"n_estimators": 10, "softmax_temperature": 0.5}  # Replace with actual parameters
+        # Replace with actual parameters
+        params = {"n_estimators": 10, "softmax_temperature": 0.5}
         self.model.set_params(**params)
 
         for key, value in params.items():
