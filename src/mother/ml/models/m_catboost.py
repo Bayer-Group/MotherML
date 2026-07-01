@@ -1491,6 +1491,7 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
         tune_boosting_type: bool = False,
         tune_tree_structure_type: bool = True,
         tune_loss_function: bool = True,
+        model_type: props.ModelType = "ranking",
         top: Optional[int] = 0,
         max_pairs: Optional[int] = None,
         **kwargs,
