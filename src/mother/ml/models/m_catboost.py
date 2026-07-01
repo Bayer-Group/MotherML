@@ -1660,9 +1660,12 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
         """
         Override set_params to handle custom parameters like target_type.
         """
+        # model_type must always be 'ranking' — discard any attempt to change it.
+        params.pop("model_type", None)
+        self.model_type = "ranking"
+
         for param in [
             "target_type",
-            "model_type",
             "tune_pairwise_type",
             "tune_boosting_type",
             "tune_tree_structure_type",

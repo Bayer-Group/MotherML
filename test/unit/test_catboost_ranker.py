@@ -259,6 +259,9 @@ class TestCatboostRankerGetSetParams(unittest.TestCase):
         """model_type must stay 'ranking' regardless of what set_params receives."""
         model = CatboostRankerMother(model_type="ranking")
         self.assertEqual(model.model_type, "ranking")
+        # set_params must not allow changing model_type away from 'ranking'
+        model.set_params(model_type="regression")
+        self.assertEqual(model.model_type, "ranking")
 
     def test_sklearn_clone_preserves_params(self):
         skl_set_config(enable_metadata_routing=True)
