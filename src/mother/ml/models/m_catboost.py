@@ -29,7 +29,7 @@ Mother framework compatibility.
 
 import logging
 from functools import wraps
-from typing import Callable
+from typing import Any, Callable, Optional, Union
 
 import catboost
 import numpy as np
@@ -48,6 +48,14 @@ from mother.ml.models import utils as models_utils
 
 module_logger = logging.getLogger(__name__)
 DEFAULT_QUANTILES: list[float] = [0.25, 0.5, 0.75]
+
+
+def scores_to_ranks(scores: np.ndarray) -> np.ndarray:
+    """Convert an array of scores to 1-based integer ranks (rank 1 = lowest score)."""
+    order = np.argsort(scores)
+    ranks = np.empty_like(order)
+    ranks[order] = np.arange(1, len(scores) + 1)
+    return ranks
 
 
 def ensure_metadata_routing(func: Callable) -> Callable:
@@ -1403,6 +1411,27 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
         Whether to include the "boosting_type" parameter in the hyperparameter space for tuning.
     tune_tree_structure_type : bool
         Whether to include the "grow_policy" parameter in the hyperparameter space for tuning.
+    tune_pairwise_type : bool
+        Whether to include Pairwise loss functions (``YetiRankPairwise``,
+        ``PairLogitPairwise``) in the hyperparameter space for tuning.
+        Pairwise losses require ``grow_policy="SymmetricTree"`` and
+        ``boosting_type="Plain"``; therefore pairwise tuning is only possible
+        when both ``tune_tree_structure_type=False`` and
+        ``tune_boosting_type=False``.
+
+        If an incompatible combination is passed at construction time (e.g.
+        ``tune_pairwise_type=True`` together with
+        ``tune_tree_structure_type=True``), a warning is emitted and
+        ``tune_pairwise_type`` is automatically set to ``False``.
+    top : Optional[int]
+        Maximum number of top documents to consider for ranking metrics (e.g., NDCG@k).
+        Only works with YetiRank loss function. Default is 0 (disabled).
+    max_pairs : Optional[int]
+        Maximum number of pairs to generate for PairLogit losses. This can significantly
+        reduce computation time for large ranking tasks. Only applies to PairLogit and
+        PairLogitPairwise loss functions. Default is ``None`` (no limit). Also used during
+        hyperparameter tuning to set an upper limit on the number of pairs when evaluating
+        PairLogit losses.
 
     Methods
     -------
@@ -1411,108 +1440,528 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
 
     Notes
     -----
-    The __init__ method is decorated with @ensure_metadata_routing to automatically enable
-    sklearn's metadata routing configuration, which is required for ranking models to accept
-    group_id parameters during training.
+    - The ``__init__`` method is decorated with ``@ensure_metadata_routing`` to automatically
+      enable sklearn's metadata routing configuration, which is required for ranking models
+      to accept ``group_id`` parameters during training.
+    - Passing an explicit Pairwise ``loss_function`` (e.g. ``"YetiRankPairwise"``) together
+      with an incompatible ``grow_policy`` or ``boosting_type`` raises a ``ValueError``
+      immediately at construction time.
     """
 
     @ensure_metadata_routing
     def __init__(
         self,
+        posterior_sampling: bool = True,
         target_type: props.TargetType = "single_target",
+        tune_pairwise_type: bool = False,
         tune_boosting_type: bool = False,
         tune_tree_structure_type: bool = True,
+        top: Optional[int] = 0,
+        max_pairs: Optional[int] = None,
         **kwargs,
     ):
         """
         Initialize CatboostRankerMother.
 
+        Validates compatibility between pairwise tuning flags and tree/boosting
+        configuration at construction time:
+
+        - If ``tune_pairwise_type=True`` is combined with
+          ``tune_tree_structure_type=True`` or ``tune_boosting_type=True``, a
+          warning is logged and ``tune_pairwise_type`` is set to ``False``
+          (pairwise losses require fixed ``SymmetricTree`` + ``Plain`` and
+          cannot coexist with dynamic Optuna categoricals for those params).
+        - If an explicit Pairwise ``loss_function`` (e.g.
+          ``"YetiRankPairwise"``) is passed together with an incompatible
+          ``grow_policy`` or ``boosting_type``, a ``ValueError`` is raised.
+
         Args:
+            posterior_sampling : bool, optional
+                Whether to use posterior sampling.
             target_type : props.TargetType, optional
-                Target type ("single_target" for ranking).
+                Target type (``"single_target"`` for ranking).
+            tune_pairwise_type : bool, optional
+                Whether to include Pairwise loss functions in the
+                hyperparameter search space.  Requires both
+                ``tune_tree_structure_type=False`` and
+                ``tune_boosting_type=False``; otherwise automatically
+                disabled with a warning.
             tune_boosting_type : bool, optional
-                Whether to tune boosting_type.
+                Whether to tune ``boosting_type``.
             tune_tree_structure_type : bool, optional
-                Whether to include the "grow_policy" parameter in hyperparameter tuning.
+                Whether to include the ``grow_policy`` parameter in
+                hyperparameter tuning.
+            top : Optional[int], optional
+                Maximum number of top documents for NDCG calculation.
+                Only works with YetiRank loss function.
+            max_pairs : Optional[int], optional
+                Maximum number of pairs to generate for PairLogit losses.
             **kwargs
                 Additional CatBoostRanker parameters.
-        """
-        self.model_type: props.ModelType = "ranking"
-        self.target_type: props.TargetType = target_type
 
+        Raises:
+            ValueError
+                If an explicit Pairwise ``loss_function`` is passed with an
+                incompatible ``grow_policy`` (not ``SymmetricTree``) or
+                ``boosting_type`` (not ``Plain``).
+        """
         # Initialize hyperparameter tuning configuration
         _CatboostHyperParams.__init__(self, tune_boosting_type, tune_tree_structure_type)
 
-        if "loss_function" not in list(kwargs):
-            kwargs["loss_function"] = utils.default_loss_function("ranking", target_type)
+        self.posterior_sampling: bool = posterior_sampling
+        self.model_type: props.ModelType = "ranking"
+        self.target_type: props.TargetType = target_type
+        self.tune_pairwise_type: bool = tune_pairwise_type
+        self.top: Optional[int] = top
+        self.max_pairs: Optional[int] = max_pairs
 
+        # --- Validate pairwise tuning compatibility ---
+        # Pairwise losses (YetiRankPairwise, PairLogitPairwise) require SymmetricTree + Plain
+        # boosting.  When tune_tree_structure_type or tune_boosting_type is True the tree
+        # structure / boosting type varies across Optuna trials, so we cannot guarantee
+        # compatibility.  Adding pairwise losses to a dynamic categorical list would also
+        # break Optuna (it requires a fixed set of choices per parameter name).
+        if self.tune_pairwise_type:
+            conflicts: list[str] = []
+            if self.tune_tree_structure_type:
+                conflicts.append("tune_tree_structure_type=True")
+            if self.tune_boosting_type:
+                conflicts.append("tune_boosting_type=True")
+
+            if conflicts:
+                module_logger.warning(
+                    "tune_pairwise_type=True is incompatible with %s. "
+                    "Pairwise losses require SymmetricTree grow_policy and Plain boosting_type, "
+                    "but these settings vary across Optuna trials when their tuning flags are "
+                    "enabled.  Pairwise losses will be excluded from the search space. "
+                    "To enable pairwise tuning, set %s.",
+                    " and ".join(conflicts),
+                    " and ".join(c.replace("True", "False") for c in conflicts),
+                )
+                self.tune_pairwise_type = False
+
+        # Validate explicit pairwise loss_function against grow_policy / boosting_type
+        explicit_loss = kwargs.get("loss_function", "")
+        if "Pairwise" in str(explicit_loss):
+            explicit_grow = kwargs.get("grow_policy", "SymmetricTree")
+            explicit_boost = kwargs.get("boosting_type", "Plain")
+            incompatible: list[str] = []
+            if explicit_grow != "SymmetricTree":
+                incompatible.append(f"grow_policy='{explicit_grow}' (must be 'SymmetricTree')")
+            if explicit_boost != "Plain":
+                incompatible.append(f"boosting_type='{explicit_boost}' (must be 'Plain')")
+            if incompatible:
+                raise ValueError(
+                    f"Pairwise loss '{explicit_loss}' requires SymmetricTree grow_policy "
+                    f"and Plain boosting_type, but got {', '.join(incompatible)}."
+                )
+
+        if "loss_function" not in list(kwargs):
+            if self.top is not None and self.top > 0:
+                kwargs["loss_function"] = f"YetiRank:mode=NDCG;top={self.top}"
+            else:
+                kwargs["loss_function"] = "YetiRank:mode=Classic"
+
+        elif (
+            "PairLogit" in kwargs["loss_function"]
+            and "max_pairs" not in kwargs["loss_function"]
+            and self.max_pairs is not None
+        ):
+            kwargs["loss_function"] += f";max_pairs={self.max_pairs}"
+
+        # Apply defaults, excluding building block parameters that are only for Optuna
+        # These parameters (base_loss, mode, dcg_denominator, dcg_type) are combined into loss_function
+        tuning_building_blocks = ("base_loss", "mode", "dcg_denominator", "dcg_type")
         for key, val in self.default_parameters().items():
-            if key not in list(kwargs):
+            if key not in list(kwargs) and key not in tuning_building_blocks:
                 kwargs[key] = val
 
         CatBoostRanker.__init__(self, **kwargs)
 
-    # def get_params(self, deep=True):
-    #     """
-    #     Override get_params to include custom parameters like target_type.
-    #     """
-    #     params = super().get_params(deep=deep)
-    #     params.update(
-    #         {
-    #             "target_type": self.target_type,
-    #             "tune_boosting_type": self.tune_boosting_type,
-    #             "tune_tree_structure_type": self.tune_tree_structure_type,
-    #         }
-    #     )
-    #     return params
+    def get_params(self, deep: bool = True) -> dict:
+        """
+        Override get_params to include custom parameters like target_type.
+        """
+        params = super().get_params(deep=deep)
+        params.update(
+            {
+                "target_type": self.target_type,
+                "tune_pairwise_type": self.tune_pairwise_type,
+                "tune_boosting_type": self.tune_boosting_type,
+                "tune_tree_structure_type": self.tune_tree_structure_type,
+                "top": self.top,
+                "max_pairs": self.max_pairs,
+            }
+        )
+        return params
 
-    # def set_params(self, **params):
-    #     """
-    #     Override set_params to handle custom parameters like target_type.
-    #     """
-    #     for param in ["target_type", "tune_boosting_type", "tune_tree_structure_type"]:
-    #         if param in params:
-    #             setattr(self, param, params[param])
-    #             params.pop(param, None)
-    #     return super().set_params(**params)
+    def set_params(self, **params) -> "CatboostRankerMother":
+        """
+        Override set_params to handle custom parameters like target_type.
+        """
+        for param in [
+            "target_type",
+            "tune_pairwise_type",
+            "tune_boosting_type",
+            "tune_tree_structure_type",
+            "top",
+            "max_pairs",
+        ]:
+            if param in params:
+                setattr(self, param, params[param])
+                params.pop(param, None)
+        return super().set_params(**params)
 
-    # def __getstate__(self):
-    #     """
-    #     Custom getstate to handle pickling of the model.
-    #     This ensures all necessary attributes are included when the object is pickled.
+    def __getstate__(self) -> dict:
+        """
+        Custom getstate to handle pickling of the model.
+        This ensures all necessary attributes are included when the object is pickled.
 
-    #     Returns:
-    #         dict: A dictionary containing the state of the object.
-    #     """
-    #     state = super().__getstate__()
-    #     state.update(
-    #         {
-    #             "target_type": self.target_type,
-    #             "tune_boosting_type": self.tune_boosting_type,
-    #             "tune_tree_structure_type": self.tune_tree_structure_type,
-    #         }
-    #     )
-    #     return state
+        Returns:
+            dict: A dictionary containing the state of the object.
+        """
+        state = super().__getstate__()
+        state.update(
+            {
+                "target_type": self.target_type,
+                "tune_pairwise_type": self.tune_pairwise_type,
+                "tune_boosting_type": self.tune_boosting_type,
+                "tune_tree_structure_type": self.tune_tree_structure_type,
+                "top": self.top,
+                "max_pairs": self.max_pairs,
+            }
+        )
+        return state
 
-    # def __setstate__(self, state):
-    #     """
-    #     Custom setstate to handle unpickling of the model.
-    #     This ensures all attributes are properly restored when the object is unpickled.
+    def __setstate__(self, state: dict) -> None:
+        """
+        Custom setstate to handle unpickling of the model.
+        This ensures all attributes are properly restored when the object is unpickled.
 
-    #     Args:
-    #         state (dict): A dictionary containing the state of the object.
-    #     """
-    #     self.target_type = state.pop("target_type", "single_target")
-    #     self.tune_boosting_type = state.pop("tune_boosting_type", False)
-    #     self.tune_tree_structure_type = state.pop("tune_tree_structure_type", True)
-    #     super().__setstate__(state)
+        Args:
+            state (dict): A dictionary containing the state of the object.
+        """
+        self.target_type = state.pop("target_type", "single_target")
+        self.tune_pairwise_type = state.pop("tune_pairwise_type", False)
+        self.tune_boosting_type = state.pop("tune_boosting_type", False)
+        self.tune_tree_structure_type = state.pop("tune_tree_structure_type", True)
+        self.top = state.pop("top", 0)
+        self.max_pairs = state.pop("max_pairs", None)
+        super().__setstate__(state)
 
-    def default_parameters(self, prefix: str = "") -> dict:
-        return {
+    def predict(
+        self,
+        X: pd.DataFrame,
+        ntree_start: int = 0,
+        ntree_end: int = 0,
+        thread_count: int = -1,
+        verbose: Optional[bool] = None,
+        ranks: bool = False,
+    ) -> np.ndarray:
+        """
+        Predict scores or ranks for a single query group.
+
+        This `predict` assumes `X` contains only the rows for a single query group. When
+        `ranks` is False (default) the method returns raw scores as produced by CatBoost.
+        When `ranks` is True the method returns 1-based integer ranks where rank 1
+        corresponds to the lowest score (ascending order). The output order matches the
+        input row order.
+
+        Note on Ranking Convention
+        ---------------------------
+        When `ranks` is True, ranking uses ascending order (lower score = rank 1). This
+        convention is chosen for user interpretability where rank 1 represents the "best"
+        item. For metrics like NDCG that may expect different conventions, users should
+        be aware of this ordering when interpreting results.
+
+        Parameters
+        ----------
+        X : pd.DataFrame or array-like
+            Features for the documents of a single group (n_docs, n_features).
+        ntree_start, ntree_end, thread_count, verbose : passed to CatBoost `predict`.
+        ranks : bool
+            If True, return 1-based integer ranks within this group (rank 1 = lowest score).
+
+        Returns
+        -------
+        np.ndarray
+            If `ranks` is False: array of raw scores (floats) in the same order as `X`.
+            If `ranks` is True: array of integer ranks (1-based) corresponding to rows in `X`.
+        """
+        preds = super().predict(
+            X, ntree_start=ntree_start, ntree_end=ntree_end, thread_count=thread_count, verbose=verbose
+        )
+
+        if not ranks:
+            return preds
+
+        return scores_to_ranks(preds)
+
+    def predict_uncertainty(
+        self,
+        X: pd.DataFrame,
+        n_tree_start: int = 0,
+        n_tree_end: int = 0,
+        eval_period: int = 1,
+        uncertainty_for_opt: bool = False,
+        **kwargs,
+    ) -> pd.DataFrame:
+        """
+        Estimate rank uncertainty for a single query group using staged predictions.
+
+        This method runs `staged_predict` with the given `eval_period` and collects the
+        predictions at each evaluation step. For every stage it converts raw scores into
+        1-based ranks (1 = best). It then returns a DataFrame with per-row rank statistics
+        across stages. The output is always ranks (not raw scores).
+
+        Parameters
+        ----------
+        X : pd.DataFrame
+            Feature matrix for a single query group (n_documents, n_features).
+        n_tree_start, n_tree_end : ints
+            Passed to `staged_predict`.
+        eval_period : int
+            Step size (number of trees) between staged predictions. Must be >= 1.
+        uncertainty_for_opt : bool, optional
+                If True, return only uncertainty for optimization.
+
+
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with the same index as `X` and six columns:
+            - `mean_rank`: arithmetic mean rank across stages (float)
+            - `std_rank`: standard deviation of rank across stages (float)
+            - `gmean_rank`: geometric mean rank across stages (float)
+            - `min_rank`: minimum (best) rank observed across stages (float)
+            - `max_rank`: maximum (worst) rank observed across stages (float)
+            - `iqr_rank`: interquartile range (Q3 - Q1) of ranks across stages (float)
+
+        Notes
+        -----
+        - The method assumes `X` contains rows for a single group. It does not perform
+          group-splitting internally.
+        - Ranks are computed per stage with 1 being the best (highest score).
+        - The geometric mean provides a measure less sensitive to outliers than arithmetic mean.
+        - The min/max range shows the best and worst case rankings across model stages.
+        - The IQR provides a robust measure of rank variability, less sensitive to extreme values.
+        """
+
+        assert eval_period >= 1, "eval_period must be >= 1"
+        assert len(X) != 0, "X must contain at least one row"
+        assert hasattr(self, "staged_predict"), "Model must have staged_predict method"
+
+        staged_preds = []
+        for preds in self.staged_predict(
+            X,
+            eval_period=eval_period,
+            ntree_start=n_tree_start,
+            ntree_end=n_tree_end,
+            **kwargs,
+        ):
+            staged_preds.append(np.asarray(preds))
+
+        if len(staged_preds) == 0:
+            raise RuntimeError(
+                "No staged predictions were produced. Check model/training configuration and eval_period"
+            )
+
+        stacked = np.vstack(staged_preds)
+
+        # Compute ranks per stage using scores_to_ranks (ascending: lower score = better rank)
+        n_stages, n_rows = stacked.shape
+        ranks = np.zeros((n_stages, n_rows), dtype=float)
+
+        for s in range(n_stages):
+            ranks[s, :] = scores_to_ranks(stacked[s]).astype(float)
+
+        # Calculate rank statistics and round to integers where appropriate
+        mean_rank_doc = np.round(np.mean(ranks, axis=0)).astype(int)
+        std_rank_doc = np.round(np.std(ranks, axis=0), 2)
+        # Geometric mean of ranks (safe since ranks are >= 1)
+        gmean_rank_doc = np.round(np.exp(np.mean(np.log(ranks), axis=0))).astype(int)
+        min_rank_doc = np.min(ranks, axis=0).astype(int)
+        max_rank_doc = np.max(ranks, axis=0).astype(int)
+        iqr_rank_doc = np.round(np.percentile(ranks, 75, axis=0) - np.percentile(ranks, 25, axis=0), 2)
+
+        if uncertainty_for_opt:
+            result = pd.DataFrame({"std_rank": std_rank_doc}, index=X.index)
+        else:
+            result = pd.DataFrame(
+                {
+                    "mean_rank": mean_rank_doc,
+                    "std_rank": std_rank_doc,
+                    "gmean_rank": gmean_rank_doc,
+                    "min_rank": min_rank_doc,
+                    "max_rank": max_rank_doc,
+                    "iqr_rank": iqr_rank_doc,
+                },
+                index=X.index,
+            )
+        return result
+
+    def suggested_params_loss(
+        self,
+        trial: Trial,
+        suggested_params: dict[str, Any],
+        y: Union[pd.DataFrame, pd.Series],
+        prefix: str,
+    ) -> dict[str, Any]:
+        """
+        Add ranking-loss-specific hyperparameters to the suggested parameters.
+
+        Builds a composite ``loss_function`` string from individually suggested
+        building-block parameters (``base_loss``, ``mode``, ``dcg_denominator``,
+        ``dcg_type``) and removes the building blocks afterwards so that only
+        the final ``loss_function`` is passed to CatBoost.
+
+        Pairwise losses (``YetiRankPairwise``, ``PairLogitPairwise``) are only
+        included in the Optuna search space when ``tune_pairwise_type=True``
+        **and** the current trial's ``grow_policy`` / ``boosting_type`` are
+        compatible (``SymmetricTree`` + ``Plain``).  The ``__init__`` method
+        already guarantees ``tune_pairwise_type=False`` when the tuning flags
+        would conflict, so the runtime check here only inspects the actual
+        trial values.
+
+        Args:
+            trial : optuna.trial.Trial
+                Optuna trial object.
+            suggested_params : dict[str, Any]
+                Current suggested parameters (mutated in place).
+            y : Union[pd.DataFrame, pd.Series]
+                Target data.
+            prefix : str
+                Parameter prefix.
+
+        Returns:
+            dict[str, Any]: Updated suggested parameters.
+        """
+        if self.target_type == "multi_target":
+            return suggested_params
+
+        # Check if target is binary (only contains 0 and 1)
+        is_binary: bool = bool(np.array_equal(np.unique(y), [0, 1]))
+
+        # Check if the current trial's tree structure and boosting type are
+        # compatible with Pairwise losses (require SymmetricTree + Plain).
+        # Note: __init__ already guarantees tune_pairwise_type=False when
+        # tune_tree_structure_type or tune_boosting_type are True, so we only
+        # need to verify the actual values chosen for this trial.
+        grow_policy: Optional[str] = suggested_params.get(prefix + "grow_policy")
+        boosting_type: str = suggested_params.get(prefix + "boosting_type", "Plain")
+        can_use_pairwise: bool = grow_policy == "SymmetricTree" and boosting_type == "Plain"
+
+        # Build list of possible loss functions
+        has_top: bool = self.top is not None and self.top > 0
+
+        # When top is specified, only use YetiRank (top parameter only works with YetiRank)
+        suggested_base_loss: str
+        if has_top:
+            if self.tune_pairwise_type and can_use_pairwise:
+                suggested_base_loss = trial.suggest_categorical(prefix + "base_loss", ["YetiRank", "YetiRankPairwise"])
+            else:
+                suggested_base_loss = "YetiRank"
+        else:
+            base_losses: list[str] = ["YetiRank", "PairLogit"]
+
+            # Add QuerySoftMax if the target y is binary, otherwise use QueryRMSE
+            if is_binary:
+                base_losses.append("QuerySoftMax")
+            else:
+                base_losses.append("QueryRMSE")
+
+            # Only add Pairwise losses when pairwise tuning is enabled and the
+            # current trial's tree/boosting settings are compatible
+            if self.tune_pairwise_type and can_use_pairwise:
+                base_losses.extend(["YetiRankPairwise", "PairLogitPairwise"])
+
+            suggested_base_loss = trial.suggest_categorical(prefix + "base_loss", base_losses)
+
+        if suggested_base_loss in ["YetiRank", "YetiRankPairwise"]:
+            # Suggest mode (NDCG or Classic)
+            suggested_mode: str
+            if has_top:
+                if is_binary:
+                    suggested_mode = trial.suggest_categorical(prefix + "mode", ["NDCG", "MAP"])
+                else:
+                    suggested_mode = "NDCG"
+            else:
+                if is_binary:
+                    suggested_mode = trial.suggest_categorical(prefix + "mode", ["NDCG", "Classic", "MAP"])
+                else:
+                    suggested_mode = trial.suggest_categorical(prefix + "mode", ["NDCG", "Classic"])
+
+            # Build loss function string
+            suggested_loss_function: str = f"{suggested_base_loss}:mode={suggested_mode}"
+
+            # Add NDCG-specific parameters
+            if suggested_mode == "NDCG":
+                suggested_dcg_denominator: str = trial.suggest_categorical(
+                    prefix + "dcg_denominator", ["LogPosition", "Position"]
+                )
+                suggested_loss_function += f";dcg_denominator={suggested_dcg_denominator}"
+
+                suggested_dcg_type: str = trial.suggest_categorical(prefix + "dcg_type", ["Base", "Exp"])
+                suggested_loss_function += f";dcg_type={suggested_dcg_type}"
+
+            if suggested_mode != "Classic" and has_top:
+                suggested_loss_function += f";top={self.top}"
+
+            suggested_params[prefix + "loss_function"] = suggested_loss_function
+
+        else:
+            # Non-YetiRank losses (QueryRMSE, QuerySoftMax, PairLogit, PairLogitPairwise)
+            loss_function: str = suggested_base_loss
+
+            # Add max_pairs parameter for PairLogit losses if specified
+            if "PairLogit" in suggested_base_loss and self.max_pairs is not None and self.max_pairs > 0:
+                loss_function += f":max_pairs={self.max_pairs}"
+
+            suggested_params[prefix + "loss_function"] = loss_function
+
+        # Remove building block parameters — only loss_function should be passed to CatBoost
+        # (similar to how Focal loss removes alpha/gamma after building the loss string)
+        for param in ["base_loss", "mode", "dcg_denominator", "dcg_type"]:
+            suggested_params.pop(prefix + param, None)
+
+        return suggested_params
+
+    def default_parameters(self, prefix: str = "") -> dict[str, Any]:
+        """
+        Returns the default recommended parameters for the CatBoostRanker.
+
+        The returned dictionary includes Optuna building-block keys (``base_loss``,
+        ``mode``, ``dcg_denominator``, ``dcg_type``) that are used by the tuning
+        logic to compose the composite ``loss_function`` string.  These building-block
+        keys are **not** passed directly to CatBoost — they are consumed and removed
+        by :meth:`suggested_params_loss`.
+
+        When ``top`` is set, the default mode is ``NDCG`` with
+        ``dcg_denominator=Position`` and ``dcg_type=Base``; otherwise the default
+        mode is ``Classic``.
+
+        Args:
+            prefix : str, optional
+                Optional prefix for parameter names (default: ``""``).
+
+        Returns:
+            dict[str, Any]: Default parameters for the ranker.
+        """
+        defaults: dict[str, Any] = {
             prefix + "learning_rate": 0.03,
             prefix + "bootstrap_type": "MVS",
             prefix + "random_strength": 1,
             prefix + "grow_policy": "SymmetricTree",
             prefix + "boosting_type": "Plain",
             prefix + "max_depth": 6,
+            prefix + "base_loss": "YetiRank",
         }
+
+        if self.top is not None and self.top > 0:
+            defaults[prefix + "mode"] = "NDCG"
+            defaults[prefix + "dcg_denominator"] = "Position"
+            defaults[prefix + "dcg_type"] = "Base"
+        else:
+            defaults[prefix + "mode"] = "Classic"
+
+        return defaults
