@@ -1459,7 +1459,7 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
         ``tune_tree_structure_type=True``), a warning is emitted and
         ``tune_pairwise_type`` is automatically set to ``False``.
     top : Optional[int]
-        Maximum number of top documents to consider for ranking metrics (e.g., NDCG@k).
+        Maximum number of top samples to consider for ranking metrics (e.g., NDCG@k).
         Only works with YetiRank loss function. Default is 0 (disabled).
     max_pairs : Optional[int]
         Maximum number of pairs to generate for PairLogit losses. This can significantly
@@ -1531,7 +1531,7 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
                 construction time and ``suggested_params_loss`` is not called
                 during Optuna tuning.  Defaults to ``True``.
             top : Optional[int], optional
-                Maximum number of top documents for NDCG calculation.
+                Maximum number of top samples for NDCG calculation.
                 Only works with YetiRank loss function.
             max_pairs : Optional[int], optional
                 Maximum number of pairs to generate for PairLogit losses.
@@ -1675,6 +1675,14 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
         ]:
             if param in params:
                 setattr(self, param, params.pop(param))
+
+        if self.tune_pairwise_type and (self.tune_tree_structure_type or self.tune_boosting_type):
+            module_logger.warning(
+                "tune_pairwise_type=True is incompatible with tune_tree_structure_type=True or "
+                "tune_boosting_type=True; disabling tune_pairwise_type."
+            )
+            self.tune_pairwise_type = False
+
         return super().set_params(**params)
 
     def __getstate__(self) -> dict:

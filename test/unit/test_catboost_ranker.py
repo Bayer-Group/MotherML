@@ -263,6 +263,19 @@ class TestCatboostRankerGetSetParams(unittest.TestCase):
         model.set_params(model_type="regression")
         self.assertEqual(model.model_type, "ranking")
 
+    def test_set_params_pairwise_guard_disables_incompatible_combination(self):
+        """set_params must re-apply the pairwise incompatibility guard after updating attributes."""
+        # Start with a valid pairwise-compatible config
+        model = CatboostRankerMother(
+            tune_pairwise_type=True,
+            tune_tree_structure_type=False,
+            tune_boosting_type=False,
+        )
+        self.assertTrue(model.tune_pairwise_type)
+        # Enabling tune_tree_structure_type via set_params must auto-disable pairwise
+        model.set_params(tune_tree_structure_type=True)
+        self.assertFalse(model.tune_pairwise_type)
+
     def test_sklearn_clone_preserves_params(self):
         skl_set_config(enable_metadata_routing=True)
         model = CatboostRankerMother(
