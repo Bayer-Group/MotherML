@@ -107,6 +107,10 @@ class _CatboostHyperParams(AbstractMotherPipeline):
         Whether to include the "grow_policy" parameter in the hyperparameter space for tuning.
         If False Symmetric Trees are used which allows the use of i.e. object importance or
         monotonic constraints.
+    tune_loss_function : bool
+        Whether to include the loss function in the hyperparameter search space.
+        If False, the loss function set on the model at construction time is kept fixed
+        throughout tuning and ``suggested_params_loss`` is not called.
 
     Methods
     -------
@@ -116,7 +120,12 @@ class _CatboostHyperParams(AbstractMotherPipeline):
         Adds loss-specific hyperparameters to the suggested parameters based on the target type.
     """
 
-    def __init__(self, tune_boosting_type: bool = False, tune_tree_structure_type: bool = True):
+    def __init__(
+        self,
+        tune_boosting_type: bool = False,
+        tune_tree_structure_type: bool = True,
+        tune_loss_function: bool = True,
+    ):
         """
         Initialize the _CatboostHyperParams.
 
@@ -127,9 +136,14 @@ class _CatboostHyperParams(AbstractMotherPipeline):
                 Whether to include the "grow_policy" parameter in the hyperparameter space for tuning.
                 If False Symmetric Trees are used which allows the use of i.e. object importance or
                 monotonic constraints.
+            tune_loss_function : bool, optional
+                Whether to include the loss function in the hyperparameter search space.
+                If False, the loss function set on the model at construction time is kept fixed
+                throughout tuning and ``suggested_params_loss`` is not called. Defaults to ``True``.
         """
         self.tune_boosting_type = tune_boosting_type
         self.tune_tree_structure_type = tune_tree_structure_type
+        self.tune_loss_function = tune_loss_function
 
     def get_hyperparameter_space(self, X, y, trial: Trial, prefix: str = "") -> dict:
         min_depth, max_depth = utils.calc_range_tree_depth(X)
@@ -168,7 +182,9 @@ class _CatboostHyperParams(AbstractMotherPipeline):
         else:
             suggested_params[prefix + "max_depth"] = trial.suggest_int(prefix + "max_depth", min_depth, max_depth)
 
-        suggested_params = self.suggested_params_loss(trial, suggested_params, y, prefix)
+        if self.tune_loss_function:
+            suggested_params = self.suggested_params_loss(trial, suggested_params, y, prefix)
+
         module_logger.info(f"Suggested parameters in trial {trial.number}: {suggested_params}")
 
         return suggested_params
