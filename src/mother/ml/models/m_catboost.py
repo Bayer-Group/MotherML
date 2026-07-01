@@ -1700,105 +1700,85 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
     def predict_uncertainty(
         self,
         X: pd.DataFrame,
-        n_tree_start: int = 0,
-        n_tree_end: int = 0,
-        eval_period: int = 1,
+        n_ensembles: int = 10,
+        n_threads: int = 1,
         uncertainty_for_opt: bool = False,
-        **kwargs,
+        normalize_by_group_size: bool = False,
     ) -> pd.DataFrame:
         """
         Estimate rank uncertainty for a single query group using staged predictions.
 
-        This method runs `staged_predict` with the given `eval_period` and collects the
-        predictions at each evaluation step. For every stage it converts raw scores into
-        1-based ranks (1 = best). It then returns a DataFrame with per-row rank statistics
-        across stages. The output is always ranks (not raw scores).
+        Divides the tree sequence into ``n_ensembles`` equally-spaced snapshots via
+        ``staged_predict``, converts each snapshot's raw scores to 1-based ranks, then
+        summarises per-document rank variability across snapshots.  The IQR of ranks is
+        used as the ``knowledge_uncertainty`` column, matching the convention used by the
+        other CatBoost Mother wrappers.
 
-        Parameters
-        ----------
-        X : pd.DataFrame
-            Feature matrix for a single query group (n_documents, n_features).
-        n_tree_start, n_tree_end : ints
-            Passed to `staged_predict`.
-        eval_period : int
-            Step size (number of trees) between staged predictions. Must be >= 1.
-        uncertainty_for_opt : bool, optional
-                If True, return only uncertainty for optimization.
+        Args:
+            X : pd.DataFrame
+                Feature matrix for a single query group (n_documents, n_features).
+            n_ensembles : int, optional
+                Number of staged-predict snapshots (ensemble members) to collect.
+            n_threads : int, optional
+                Number of threads passed to ``staged_predict``.
+            uncertainty_for_opt : bool, optional
+                If True, return only ``knowledge_uncertainty`` for optimisation.
+            normalize_by_group_size : bool, optional
+                If True, divide ``knowledge_uncertainty`` and ``total_uncertainty`` by
+                the number of documents in the group (``len(X)``).  This rescales the
+                IQR to the range ``[0, 1]``, making uncertainty values comparable across
+                groups of different sizes.  Default is ``False``.
 
-
-        Returns
-        -------
-        pd.DataFrame
-            DataFrame with the same index as `X` and six columns:
-            - `mean_rank`: arithmetic mean rank across stages (float)
-            - `std_rank`: standard deviation of rank across stages (float)
-            - `gmean_rank`: geometric mean rank across stages (float)
-            - `min_rank`: minimum (best) rank observed across stages (float)
-            - `max_rank`: maximum (worst) rank observed across stages (float)
-            - `iqr_rank`: interquartile range (Q3 - Q1) of ranks across stages (float)
-
-        Notes
-        -----
-        - The method assumes `X` contains rows for a single group. It does not perform
-          group-splitting internally.
-        - Ranks are computed per stage with 1 being the best (highest score).
-        - The geometric mean provides a measure less sensitive to outliers than arithmetic mean.
-        - The min/max range shows the best and worst case rankings across model stages.
-        - The IQR provides a robust measure of rank variability, less sensitive to extreme values.
+        Returns:
+            pd.DataFrame: DataFrame with the same index as ``X`` and columns:
+                - ``pred``: 1-based rank from the full model.
+                - ``mean_predictions``: mean rank across snapshots (rounded to int).
+                - ``knowledge_uncertainty``: IQR of ranks across snapshots (Q3 - Q1),
+                  optionally normalised by group size.
+                - ``data_uncertainty``: ``None`` (not available for ranking).
+                - ``total_uncertainty``: same as ``knowledge_uncertainty``.
         """
-
-        assert eval_period >= 1, "eval_period must be >= 1"
-        assert len(X) != 0, "X must contain at least one row"
-        assert hasattr(self, "staged_predict"), "Model must have staged_predict method"
+        eval_period = max(1, self.tree_count_ // n_ensembles)
 
         staged_preds = []
-        for preds in self.staged_predict(
+        for stage_scores in self.staged_predict(
             X,
             eval_period=eval_period,
-            ntree_start=n_tree_start,
-            ntree_end=n_tree_end,
-            **kwargs,
+            ntree_start=0,
+            ntree_end=self.tree_count_,
+            thread_count=n_threads,
         ):
-            staged_preds.append(np.asarray(preds))
+            staged_preds.append(np.asarray(stage_scores))
 
         if len(staged_preds) == 0:
-            raise RuntimeError(
-                "No staged predictions were produced. Check model/training configuration and eval_period"
-            )
+            raise RuntimeError("No staged predictions were produced. Check model/training configuration.")
 
+        # Stack to (n_stages, n_docs) and convert each stage's scores to 1-based ranks
         stacked = np.vstack(staged_preds)
-
-        # Compute ranks per stage using scores_to_ranks (ascending: lower score = better rank)
         n_stages, n_rows = stacked.shape
         ranks = np.zeros((n_stages, n_rows), dtype=float)
-
         for s in range(n_stages):
             ranks[s, :] = scores_to_ranks(stacked[s]).astype(float)
 
-        # Calculate rank statistics and round to integers where appropriate
-        mean_rank_doc = np.round(np.mean(ranks, axis=0)).astype(int)
-        std_rank_doc = np.round(np.std(ranks, axis=0), 2)
-        # Geometric mean of ranks (safe since ranks are >= 1)
-        gmean_rank_doc = np.round(np.exp(np.mean(np.log(ranks), axis=0))).astype(int)
-        min_rank_doc = np.min(ranks, axis=0).astype(int)
-        max_rank_doc = np.max(ranks, axis=0).astype(int)
-        iqr_rank_doc = np.round(np.percentile(ranks, 75, axis=0) - np.percentile(ranks, 25, axis=0), 2)
+        mean_predictions = np.round(np.mean(ranks, axis=0)).astype(int)
+        knowledge_uncertainty = np.round(np.percentile(ranks, 75, axis=0) - np.percentile(ranks, 25, axis=0), 2)
+
+        if normalize_by_group_size:
+            knowledge_uncertainty = np.round(knowledge_uncertainty / len(X), 4)
 
         if uncertainty_for_opt:
-            result = pd.DataFrame({"std_rank": std_rank_doc}, index=X.index)
-        else:
-            result = pd.DataFrame(
-                {
-                    "mean_rank": mean_rank_doc,
-                    "std_rank": std_rank_doc,
-                    "gmean_rank": gmean_rank_doc,
-                    "min_rank": min_rank_doc,
-                    "max_rank": max_rank_doc,
-                    "iqr_rank": iqr_rank_doc,
-                },
-                index=X.index,
-            )
-        return result
+            return pd.DataFrame({"knowledge_uncertainty": knowledge_uncertainty}, index=X.index)
+
+        return pd.DataFrame(
+            {
+                "pred": self.predict(X, ranks=True),
+                "mean_predictions": mean_predictions,
+                "knowledge_uncertainty": knowledge_uncertainty,
+                "data_uncertainty": None,
+                "total_uncertainty": knowledge_uncertainty,
+            },
+            index=X.index,
+        )
 
     def suggested_params_loss(
         self,
