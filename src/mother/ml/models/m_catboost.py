@@ -1583,7 +1583,8 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
             and "max_pairs" not in kwargs["loss_function"]
             and self.max_pairs is not None
         ):
-            kwargs["loss_function"] += f";max_pairs={self.max_pairs}"
+            sep = ";" if ":" in kwargs["loss_function"] else ":"
+            kwargs["loss_function"] += f"{sep}max_pairs={self.max_pairs}"
 
         # Apply defaults, excluding building block parameters that are only for Optuna
         # These parameters (base_loss, mode, dcg_denominator, dcg_type) are combined into loss_function
