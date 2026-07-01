@@ -85,6 +85,7 @@ def _fit_ranker(num_trees: int = 20) -> tuple:
 
 
 @pytest.mark.slow
+@pytest.mark.usefixtures("preserve_metadata_routing")
 class TestCatboostRankerPredict(unittest.TestCase):
     def setUp(self):
         self.model, self.X, self.y, self.groups = _fit_ranker()
@@ -132,6 +133,7 @@ class TestCatboostRankerPredict(unittest.TestCase):
 
 
 @pytest.mark.slow
+@pytest.mark.usefixtures("preserve_metadata_routing")
 class TestCatboostRankerPredictUncertainty(unittest.TestCase):
     def setUp(self):
         self.model, self.X, self.y, self.groups = _fit_ranker()
@@ -203,6 +205,7 @@ class TestCatboostRankerPredictUncertainty(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("preserve_metadata_routing")
 class TestCatboostRankerGetSetParams(unittest.TestCase):
     def test_get_params_contains_all_custom_keys(self):
         model = CatboostRankerMother()
