@@ -350,7 +350,7 @@ class CatboostRegressorMother(CatBoostRegressor, _CatboostHyperParams):
     def __setstate__(self, state):
         self.target_type = state.pop("target_type", "single_target")
         self.tune_boosting_type = state.pop("tune_boosting_type", False)
-        self.tune_loss_function = state.pop("tune_loss_function", True)
+        self.tune_loss_function = state.pop("tune_loss_function")
         self.model_type = state.pop("model_type", "regression")
         self.quantiles = state.pop("quantiles", None)
         self._quantiles_processed = state.pop("_quantiles_processed", None)
@@ -1343,7 +1343,7 @@ class CatboostClassifierMother(CatBoostClassifier, _CatboostHyperParams, Abstrac
     def __setstate__(self, state):
         self.target_type = state.pop("target_type", "single_target")
         self.tune_boosting_type = state.pop("tune_boosting_type", False)
-        self.tune_loss_function = state.pop("tune_loss_function", True)
+        self.tune_loss_function = state.pop("tune_loss_function")
         self.model_type = state.pop("model_type", "classification_binary")
         self.tune_tree_structure_type = state.pop("tune_tree_structure_type", True)
         super(CatBoostClassifier, self).__setstate__(state)
