@@ -52,9 +52,10 @@ DEFAULT_QUANTILES: list[float] = [0.25, 0.5, 0.75]
 
 def scores_to_ranks(scores: np.ndarray) -> np.ndarray:
     """Convert an array of scores to 1-based integer ranks (rank 1 = highest score)."""
-    order = np.argsort(-scores)
+    scores = np.asarray(scores).reshape(-1)
+    order = np.argsort(-scores, kind="mergesort")
     ranks = np.empty_like(order)
-    ranks[order] = np.arange(1, len(scores) + 1)
+    ranks[order] = np.arange(1, scores.size + 1)
     return ranks
 
 
