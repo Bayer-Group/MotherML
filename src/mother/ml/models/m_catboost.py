@@ -374,6 +374,7 @@ class CatboostRegressorMother(CatBoostRegressor, _CatboostHyperParams):
                 "quantiles": self.quantiles,
                 "target_type": self.target_type,
                 "tune_boosting_type": self.tune_boosting_type,
+                "tune_loss_function": self.tune_loss_function,
                 "model_type": self.model_type,
                 "data_uncertainty": self.data_uncertainty,
                 "tune_tree_structure_type": self.tune_tree_structure_type,
@@ -396,6 +397,7 @@ class CatboostRegressorMother(CatBoostRegressor, _CatboostHyperParams):
         our_params = [
             "target_type",
             "tune_boosting_type",
+            "tune_loss_function",
             "model_type",
             "quantiles",
             "data_uncertainty",
@@ -1221,6 +1223,7 @@ class CatboostClassifierMother(CatBoostClassifier, _CatboostHyperParams, Abstrac
             {
                 "target_type": self.target_type,
                 "tune_boosting_type": self.tune_boosting_type,
+                "tune_loss_function": self.tune_loss_function,
                 "model_type": self.model_type,
                 "tune_tree_structure_type": self.tune_tree_structure_type,
             }
@@ -1240,6 +1243,7 @@ class CatboostClassifierMother(CatBoostClassifier, _CatboostHyperParams, Abstrac
         our_params = [
             "target_type",
             "tune_boosting_type",
+            "tune_loss_function",
             "model_type",
             "tune_tree_structure_type",
         ]
@@ -1623,9 +1627,12 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
         params.update(
             {
                 "target_type": self.target_type,
+                "model_type": self.model_type,
+                "posterior_sampling": self.posterior_sampling,
                 "tune_pairwise_type": self.tune_pairwise_type,
                 "tune_boosting_type": self.tune_boosting_type,
                 "tune_tree_structure_type": self.tune_tree_structure_type,
+                "tune_loss_function": self.tune_loss_function,
                 "top": self.top,
                 "max_pairs": self.max_pairs,
             }
@@ -1638,9 +1645,12 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
         """
         for param in [
             "target_type",
+            "model_type",
+            "posterior_sampling",
             "tune_pairwise_type",
             "tune_boosting_type",
             "tune_tree_structure_type",
+            "tune_loss_function",
             "top",
             "max_pairs",
         ]:
@@ -1661,9 +1671,12 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
         state.update(
             {
                 "target_type": self.target_type,
+                "model_type": self.model_type,
+                "posterior_sampling": self.posterior_sampling,
                 "tune_pairwise_type": self.tune_pairwise_type,
                 "tune_boosting_type": self.tune_boosting_type,
                 "tune_tree_structure_type": self.tune_tree_structure_type,
+                "tune_loss_function": self.tune_loss_function,
                 "top": self.top,
                 "max_pairs": self.max_pairs,
             }
@@ -1679,9 +1692,12 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
             state (dict): A dictionary containing the state of the object.
         """
         self.target_type = state.pop("target_type", "single_target")
+        self.model_type = state.pop("model_type", "ranking")
+        self.posterior_sampling = state.pop("posterior_sampling", True)
         self.tune_pairwise_type = state.pop("tune_pairwise_type", False)
         self.tune_boosting_type = state.pop("tune_boosting_type", False)
         self.tune_tree_structure_type = state.pop("tune_tree_structure_type", True)
+        self.tune_loss_function = state.pop("tune_loss_function", True)
         self.top = state.pop("top", 0)
         self.max_pairs = state.pop("max_pairs", None)
         super().__setstate__(state)
