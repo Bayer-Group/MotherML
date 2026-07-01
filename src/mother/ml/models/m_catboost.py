@@ -1591,6 +1591,22 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
                     f"Pairwise loss '{explicit_loss}' requires SymmetricTree grow_policy "
                     f"and Plain boosting_type, but got {', '.join(incompatible)}."
                 )
+            # A fixed Pairwise loss also requires fixed tree structure and boosting type
+            # during Optuna tuning; disable the flags if they would vary across trials.
+            tuning_conflicts: list[str] = []
+            if self.tune_tree_structure_type:
+                tuning_conflicts.append("tune_tree_structure_type")
+            if self.tune_boosting_type:
+                tuning_conflicts.append("tune_boosting_type")
+            if tuning_conflicts:
+                module_logger.warning(
+                    "Explicit Pairwise loss '%s' requires fixed SymmetricTree + Plain boosting, "
+                    "but %s are True. Disabling them to prevent incompatible Optuna trials.",
+                    explicit_loss,
+                    " and ".join(tuning_conflicts),
+                )
+                self.tune_tree_structure_type = False
+                self.tune_boosting_type = False
 
         if "loss_function" not in list(kwargs):
             if self.top is not None and self.top > 0:
