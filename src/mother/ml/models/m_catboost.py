@@ -236,6 +236,7 @@ class CatboostRegressorMother(CatBoostRegressor, _CatboostHyperParams):
         target_type: props.TargetType = "single_target",
         tune_tree_structure_type: bool = True,
         tune_boosting_type: bool = False,
+        tune_loss_function: bool = True,
         quantiles: list[float] | None = None,
         data_uncertainty: bool = False,
         model_type: props.ModelType = "regression",
@@ -251,6 +252,11 @@ class CatboostRegressorMother(CatBoostRegressor, _CatboostHyperParams):
                 Whether to include the "grow_policy" parameter in hyperparameter tuning.
             tune_boosting_type : bool, optional
                 Whether to tune boosting_type.
+            tune_loss_function : bool, optional
+                Whether to include the loss function in the hyperparameter search space.
+                If ``False``, the loss function is fixed at construction time and
+                ``suggested_params_loss`` is not called during Optuna tuning.
+                Defaults to ``True``.
             quantiles : list[float] or None, optional
                 Quantiles for multi-quantile regression.
             data_uncertainty : bool, optional
@@ -262,7 +268,7 @@ class CatboostRegressorMother(CatBoostRegressor, _CatboostHyperParams):
                 Additional CatBoostRegressor parameters.
         """
         # Initialize hyperparameter tuning configuration
-        _CatboostHyperParams.__init__(self, tune_boosting_type, tune_tree_structure_type)
+        _CatboostHyperParams.__init__(self, tune_boosting_type, tune_tree_structure_type, tune_loss_function)
 
         # set the correct model_type
         if model_type != "regression":
@@ -1149,6 +1155,7 @@ class CatboostClassifierMother(CatBoostClassifier, _CatboostHyperParams, Abstrac
         tune_boosting_type: bool = False,
         model_type: props.ModelType = "classification_binary",
         tune_tree_structure_type: bool = True,
+        tune_loss_function: bool = True,
         **kwargs,
     ):
         """
@@ -1159,11 +1166,14 @@ class CatboostClassifierMother(CatBoostClassifier, _CatboostHyperParams, Abstrac
             tune_boosting_type (bool): Whether to tune boosting_type.
             model_type (str): Model type ("classification_binary" or "classification_multiclass").
             tune_tree_structure_type (bool): Whether to include the "grow_policy" parameter in hyperparameter tuning.
+            tune_loss_function (bool): Whether to include the loss function in the hyperparameter search space.
+                If ``False``, the loss function is fixed at construction time and
+                ``suggested_params_loss`` is not called during Optuna tuning. Defaults to ``True``.
             **kwargs: Additional CatBoostClassifier parameters.
         """
 
         # Initialize hyperparameter tuning configuration
-        _CatboostHyperParams.__init__(self, tune_boosting_type, tune_tree_structure_type)
+        _CatboostHyperParams.__init__(self, tune_boosting_type, tune_tree_structure_type, tune_loss_function)
 
         self.model_type = model_type
         self.target_type = target_type
@@ -1472,6 +1482,7 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
         tune_pairwise_type: bool = False,
         tune_boosting_type: bool = False,
         tune_tree_structure_type: bool = True,
+        tune_loss_function: bool = True,
         top: Optional[int] = 0,
         max_pairs: Optional[int] = None,
         **kwargs,
@@ -1507,6 +1518,11 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
             tune_tree_structure_type : bool, optional
                 Whether to include the ``grow_policy`` parameter in
                 hyperparameter tuning.
+            tune_loss_function : bool, optional
+                Whether to include the loss function in the hyperparameter
+                search space.  If ``False``, the loss function is fixed at
+                construction time and ``suggested_params_loss`` is not called
+                during Optuna tuning.  Defaults to ``True``.
             top : Optional[int], optional
                 Maximum number of top documents for NDCG calculation.
                 Only works with YetiRank loss function.
@@ -1522,7 +1538,7 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
                 ``boosting_type`` (not ``Plain``).
         """
         # Initialize hyperparameter tuning configuration
-        _CatboostHyperParams.__init__(self, tune_boosting_type, tune_tree_structure_type)
+        _CatboostHyperParams.__init__(self, tune_boosting_type, tune_tree_structure_type, tune_loss_function)
 
         self.posterior_sampling: bool = posterior_sampling
         self.model_type: props.ModelType = "ranking"
@@ -1585,6 +1601,10 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
         ):
             sep = ";" if ":" in kwargs["loss_function"] else ":"
             kwargs["loss_function"] += f"{sep}max_pairs={self.max_pairs}"
+
+        # Inject posterior_sampling into kwargs so it is forwarded to CatBoostRanker
+        if "posterior_sampling" not in kwargs:
+            kwargs["posterior_sampling"] = self.posterior_sampling
 
         # Apply defaults, excluding building block parameters that are only for Optuna
         # These parameters (base_loss, mode, dcg_denominator, dcg_type) are combined into loss_function
