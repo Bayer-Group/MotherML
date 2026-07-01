@@ -51,8 +51,8 @@ DEFAULT_QUANTILES: list[float] = [0.25, 0.5, 0.75]
 
 
 def scores_to_ranks(scores: np.ndarray) -> np.ndarray:
-    """Convert an array of scores to 1-based integer ranks (rank 1 = lowest score)."""
-    order = np.argsort(scores)
+    """Convert an array of scores to 1-based integer ranks (rank 1 = highest score)."""
+    order = np.argsort(-scores)
     ranks = np.empty_like(order)
     ranks[order] = np.arange(1, len(scores) + 1)
     return ranks
@@ -1657,6 +1657,7 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
         thread_count: int = -1,
         verbose: Optional[bool] = None,
         ranks: bool = False,
+        normalize_by_group_size: bool = False,
     ) -> np.ndarray:
         """
         Predict scores or ranks for a single query group.
@@ -1664,29 +1665,33 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
         This `predict` assumes `X` contains only the rows for a single query group. When
         `ranks` is False (default) the method returns raw scores as produced by CatBoost.
         When `ranks` is True the method returns 1-based integer ranks where rank 1
-        corresponds to the lowest score (ascending order). The output order matches the
+        corresponds to the highest score (descending order). The output order matches the
         input row order.
 
         Note on Ranking Convention
         ---------------------------
-        When `ranks` is True, ranking uses ascending order (lower score = rank 1). This
-        convention is chosen for user interpretability where rank 1 represents the "best"
-        item. For metrics like NDCG that may expect different conventions, users should
-        be aware of this ordering when interpreting results.
+        CatBoost assigns higher scores to better-ranked samples, so rank 1 is given to
+        the sample with the highest score (descending order). This matches the standard
+        "rank 1 = best" interpretation used throughout the Mother framework.
 
         Parameters
         ----------
         X : pd.DataFrame or array-like
-            Features for the documents of a single group (n_docs, n_features).
+            Features for the samples of a single group (n_samples, n_features).
         ntree_start, ntree_end, thread_count, verbose : passed to CatBoost `predict`.
         ranks : bool
-            If True, return 1-based integer ranks within this group (rank 1 = lowest score).
+            If True, return 1-based integer ranks within this group (rank 1 = highest score).
+        normalize_by_group_size : bool
+            If True and ``ranks`` is True, divide the ranks by ``len(X)`` so that values
+            fall in ``(0, 1]``, making them comparable across groups of different sizes.
+            Has no effect when ``ranks`` is False.
 
         Returns
         -------
         np.ndarray
             If `ranks` is False: array of raw scores (floats) in the same order as `X`.
-            If `ranks` is True: array of integer ranks (1-based) corresponding to rows in `X`.
+            If `ranks` is True: array of integer ranks (1-based) corresponding to rows in `X`,
+            optionally normalised by group size.
         """
         preds = super().predict(
             X, ntree_start=ntree_start, ntree_end=ntree_end, thread_count=thread_count, verbose=verbose
@@ -1695,7 +1700,10 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
         if not ranks:
             return preds
 
-        return scores_to_ranks(preds)
+        rank_values = scores_to_ranks(preds)
+        if normalize_by_group_size:
+            return np.round(rank_values / len(X), 4)
+        return rank_values
 
     def predict_uncertainty(
         self,
@@ -1710,13 +1718,13 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
 
         Divides the tree sequence into ``n_ensembles`` equally-spaced snapshots via
         ``staged_predict``, converts each snapshot's raw scores to 1-based ranks, then
-        summarises per-document rank variability across snapshots.  The IQR of ranks is
+        summarises per-sample rank variability across snapshots.  The IQR of ranks is
         used as the ``knowledge_uncertainty`` column, matching the convention used by the
         other CatBoost Mother wrappers.
 
         Args:
             X : pd.DataFrame
-                Feature matrix for a single query group (n_documents, n_features).
+                Feature matrix for a single query group (n_samples, n_features).
             n_ensembles : int, optional
                 Number of staged-predict snapshots (ensemble members) to collect.
             n_threads : int, optional
@@ -1724,8 +1732,8 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
             uncertainty_for_opt : bool, optional
                 If True, return only ``knowledge_uncertainty`` for optimisation.
             normalize_by_group_size : bool, optional
-                If True, divide ``knowledge_uncertainty`` and ``total_uncertainty`` by
-                the number of documents in the group (``len(X)``).  This rescales the
+                If True, divide ``knowledge_uncertainty``, ``total_uncertainty``, and
+                ``mean_predictions`` by the number of samples in the group (``len(X)``).  This rescales the
                 IQR to the range ``[0, 1]``, making uncertainty values comparable across
                 groups of different sizes.  Default is ``False``.
 
@@ -1765,6 +1773,7 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
 
         if normalize_by_group_size:
             knowledge_uncertainty = np.round(knowledge_uncertainty / len(X), 4)
+            mean_predictions = np.round(mean_predictions / len(X), 4)
 
         if uncertainty_for_opt:
             return pd.DataFrame({"knowledge_uncertainty": knowledge_uncertainty}, index=X.index)
