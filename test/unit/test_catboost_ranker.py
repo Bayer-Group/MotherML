@@ -210,7 +210,6 @@ class TestCatboostRankerGetSetParams(unittest.TestCase):
         for key in (
             "target_type",
             "model_type",
-            "posterior_sampling",
             "tune_pairwise_type",
             "tune_boosting_type",
             "tune_tree_structure_type",
@@ -225,7 +224,6 @@ class TestCatboostRankerGetSetParams(unittest.TestCase):
         params = model.get_params()
         self.assertEqual(params["model_type"], "ranking")
         self.assertEqual(params["target_type"], "single_target")
-        self.assertTrue(params["posterior_sampling"])
         self.assertFalse(params["tune_pairwise_type"])
         self.assertFalse(params["tune_boosting_type"])
         self.assertTrue(params["tune_tree_structure_type"])
@@ -289,7 +287,6 @@ class TestCatboostRankerGetSetParams(unittest.TestCase):
         # Custom params preserved
         self.assertEqual(restored.model_type, model.model_type)
         self.assertEqual(restored.target_type, model.target_type)
-        self.assertEqual(restored.posterior_sampling, model.posterior_sampling)
         self.assertEqual(restored.tune_boosting_type, model.tune_boosting_type)
         self.assertEqual(restored.tune_loss_function, model.tune_loss_function)
         self.assertEqual(restored.tune_tree_structure_type, model.tune_tree_structure_type)

@@ -1486,7 +1486,6 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
     @ensure_metadata_routing
     def __init__(
         self,
-        posterior_sampling: bool = True,
         target_type: props.TargetType = "single_target",
         tune_pairwise_type: bool = False,
         tune_boosting_type: bool = False,
@@ -1513,8 +1512,6 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
           ``grow_policy`` or ``boosting_type``, a ``ValueError`` is raised.
 
         Args:
-            posterior_sampling : bool, optional
-                Whether to use posterior sampling.
             target_type : props.TargetType, optional
                 Target type (``"single_target"`` for ranking).
             tune_pairwise_type : bool, optional
@@ -1550,7 +1547,6 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
         # Initialize hyperparameter tuning configuration
         _CatboostHyperParams.__init__(self, tune_boosting_type, tune_tree_structure_type, tune_loss_function)
 
-        self.posterior_sampling: bool = posterior_sampling
         self.model_type: props.ModelType = "ranking"
         self.target_type: props.TargetType = target_type
         self.tune_pairwise_type: bool = tune_pairwise_type
@@ -1628,9 +1624,9 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
             sep = ";" if ":" in kwargs["loss_function"] else ":"
             kwargs["loss_function"] += f"{sep}max_pairs={self.max_pairs}"
 
-        # Inject posterior_sampling into kwargs so it is forwarded to CatBoostRanker
+        # Always enable posterior_sampling for uncertainty estimation
         if "posterior_sampling" not in kwargs:
-            kwargs["posterior_sampling"] = self.posterior_sampling
+            kwargs["posterior_sampling"] = True
 
         # Apply defaults, excluding building block parameters that are only for Optuna
         # These parameters (base_loss, mode, dcg_denominator, dcg_type) are combined into loss_function
@@ -1650,7 +1646,6 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
             {
                 "target_type": self.target_type,
                 "model_type": self.model_type,
-                "posterior_sampling": self.posterior_sampling,
                 "tune_pairwise_type": self.tune_pairwise_type,
                 "tune_boosting_type": self.tune_boosting_type,
                 "tune_tree_structure_type": self.tune_tree_structure_type,
@@ -1668,7 +1663,6 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
         for param in [
             "target_type",
             "model_type",
-            "posterior_sampling",
             "tune_pairwise_type",
             "tune_boosting_type",
             "tune_tree_structure_type",
@@ -1677,8 +1671,7 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
             "max_pairs",
         ]:
             if param in params:
-                setattr(self, param, params[param])
-                params.pop(param, None)
+                setattr(self, param, params.pop(param))
         return super().set_params(**params)
 
     def __getstate__(self) -> dict:
@@ -1694,7 +1687,6 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
             {
                 "target_type": self.target_type,
                 "model_type": self.model_type,
-                "posterior_sampling": self.posterior_sampling,
                 "tune_pairwise_type": self.tune_pairwise_type,
                 "tune_boosting_type": self.tune_boosting_type,
                 "tune_tree_structure_type": self.tune_tree_structure_type,
@@ -1715,7 +1707,7 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
         """
         self.target_type = state.pop("target_type", "single_target")
         self.model_type = state.pop("model_type", "ranking")
-        self.posterior_sampling = state.pop("posterior_sampling", True)
+        state.pop("posterior_sampling", None)  # legacy field, no longer stored
         self.tune_pairwise_type = state.pop("tune_pairwise_type", False)
         self.tune_boosting_type = state.pop("tune_boosting_type", False)
         self.tune_tree_structure_type = state.pop("tune_tree_structure_type", True)
