@@ -1744,6 +1744,11 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
                 Feature matrix for a single query group (n_samples, n_features).
             n_ensembles : int, optional
                 Number of staged-predict snapshots (ensemble members) to collect.
+                The tree sequence is divided into ``n_ensembles`` equally-spaced checkpoints
+                via ``eval_period = tree_count // n_ensembles``.  Must be >= 3 because the
+                IQR (Q3 − Q1) requires at least three observations to be non-trivial —
+                with fewer snapshots the 25th and 75th percentiles collapse and the
+                uncertainty estimate becomes meaningless.  Raises ``ValueError`` if < 3.
             n_threads : int, optional
                 Number of threads passed to ``staged_predict``.
             uncertainty_for_opt : bool, optional
@@ -1763,6 +1768,8 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
                 - ``data_uncertainty``: ``None`` (not available for ranking).
                 - ``total_uncertainty``: same as ``knowledge_uncertainty``.
         """
+        if n_ensembles < 3:
+            raise ValueError(f"n_ensembles must be >= 3 to compute a meaningful IQR, got {n_ensembles}.")
         eval_period = max(1, self.tree_count_ // n_ensembles)
 
         staged_preds = []
