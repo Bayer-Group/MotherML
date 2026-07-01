@@ -1837,7 +1837,13 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
         if len(staged_preds) == 0:
             raise RuntimeError("No staged predictions were produced. Check model/training configuration.")
 
-        # Stack to (n_stages, n_docs) and convert each stage's scores to 1-based ranks
+        if len(staged_preds) < 3:
+            raise ValueError(
+                f"Need at least 3 staged predictions to compute IQR, got {len(staged_preds)}. "
+                "Increase num_trees or decrease n_ensembles."
+            )
+
+        # Stack to (n_stages, n_samples) and convert each stage's scores to 1-based ranks
         stacked = np.vstack(staged_preds)
         n_stages, n_rows = stacked.shape
         ranks = np.zeros((n_stages, n_rows), dtype=float)

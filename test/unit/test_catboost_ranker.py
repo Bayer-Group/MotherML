@@ -62,7 +62,7 @@ def _make_ranker_data(n_samples: int = 100, n_features: int = 5, n_groups: int =
     X = pd.DataFrame(X, columns=[f"feature_{i}" for i in range(n_features)])
     y = pd.Series(y, name="target")
 
-    group_ids = np.repeat(np.arange(n_groups), n_samples // n_groups)
+    group_ids = np.repeat(np.arange(n_groups), int(np.ceil(n_samples / n_groups)))[:n_samples]
     # Sort by group so CatBoost receives contiguous groups
     order = np.argsort(group_ids, kind="stable")
     X = X.iloc[order].reset_index(drop=True)
