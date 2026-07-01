@@ -1762,7 +1762,9 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
         Returns:
             pd.DataFrame: DataFrame with the same index as ``X`` and columns:
                 - ``pred``: 1-based rank from the full model.
-                - ``mean_predictions``: mean rank across snapshots (rounded to int).
+                - ``mean_predictions``: mean rank across snapshots (rounded to int);
+                  when ``normalize_by_group_size=True``, a float in ``(0, 1]`` rounded
+                  to 4 decimal places.
                 - ``knowledge_uncertainty``: IQR of ranks across snapshots (Q3 - Q1),
                   optionally normalised by group size.
                 - ``data_uncertainty``: ``None`` (not available for ranking).
