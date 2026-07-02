@@ -136,21 +136,35 @@ class MotherTuner:
         self.early_stopping_optuna: bool = early_stopping_optuna
         self.tuning_direction: typing.Union[StudyDirection, str] = tuning_direction
         self.scorer: typing.Callable = skl_metrics.get_scorer(scorer)
+
         if sampler is None:
-            module_logger.debug("Setting up default sampler TPE")
-            self.sampler = optuna.samplers.TPESampler(
-                multivariate=kwargs.get("multivariate", True),
-                group=True,
-                constant_liar=True,
-                seed=seed,
-                n_startup_trials=n_startup_trials,
-            )
+            if torch_available:
+                module_logger.debug("torch available — using GPSampler as default")
+                self.sampler = optuna.samplers.GPSampler(
+                    seed=seed,
+                    n_startup_trials=n_startup_trials,
+                    deterministic_objective=False,
+                    # constant liar is aalways True for GPSampler,
+                    # so we don't need to set it explicitly
+                )
+            else:
+                module_logger.debug("torch not available — falling back to TPESampler")
+                self.sampler = optuna.samplers.TPESampler(
+                    multivariate=True,
+                    group=True,
+                    constant_liar=True,
+                    seed=seed,
+                    n_startup_trials=n_startup_trials,
+                )
         else:
             self.sampler = sampler
 
         self.study: typing.Optional[Study] = None
 
-    def get_callbacks(self):
+    def get_callbacks(
+        self,
+        cross_validation: typing.Optional[skl_model_sel.BaseCrossValidator] = None,
+    ):
         """
         Prepares and returns a list of callbacks for early stopping in Optuna optimization.
 
@@ -164,6 +178,15 @@ class MotherTuner:
         """
         callbacks: typing.Optional[typing.List[TerminatorCallback]] = None
         if self.early_stopping_optuna:
+            if cross_validation is not None:
+                n_splits = cross_validation.get_n_splits()
+                if n_splits < 2:
+                    module_logger.warning(
+                        "Optuna early stopping requires at least 2 CV folds. "
+                        "Skipping early stopping (hold-out detected, n_splits=%s)",
+                        n_splits,
+                    )
+                    return None
             if not torch_available:
                 module_logger.warning("Torch not installed, early optuna termination will not be available")
                 module_logger.warning(
@@ -277,7 +300,7 @@ class MotherTuner:
             objective,
             n_trials=self.n_trials_optuna,
             gc_after_trial=True,
-            callbacks=self.get_callbacks(),
+            callbacks=self.get_callbacks(cross_validation=cross_validation),
         )
 
         if default_parameters != {}:
