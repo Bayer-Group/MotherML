@@ -2905,7 +2905,7 @@ requires-dist = [
     { name = "leidenalg", marker = "extra == 'report'", specifier = ">=0.10.2,<0.11" },
     { name = "matplotlib", marker = "extra == 'report'", specifier = ">3.7.0" },
     { name = "numpy", specifier = ">=2.2,<2.3" },
-    { name = "optuna", specifier = ">=4.2.0,<5" },
+    { name = "optuna", specifier = ">=4.9.0,<5" },
     { name = "pandas", specifier = ">=2.2,<3.0" },
     { name = "plotly", marker = "extra == 'report'", specifier = ">=6.0.1,<7" },
     { name = "pydantic-settings", specifier = ">=2.4.0,<3" },
