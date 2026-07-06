@@ -88,6 +88,27 @@ from mother.ml.models.m_head_utils import compute_flow_mode_and_uncertainty
 
 module_logger = logging.getLogger(__name__)
 
+# Default quantiles for the standardised predict_uncertainty interface
+# (mirrors the convention used by CatBoost / TabPFN / RandomForest / NODE).
+DEFAULT_QUANTILES: List[float] = [0.25, 0.5, 0.75]
+
+
+def _prepare_for_dataframe(values: npt.NDArray[np.float32]) -> Any:
+    """Convert a prediction / uncertainty array into a column suitable for a DataFrame.
+
+    Single-target arrays are flattened to 1D; multi-target arrays are converted to a
+    list of per-row vectors so each cell holds the full target vector. This mirrors the
+    helper used by the NODE estimators so head outputs share the same layout.
+    """
+    if values is None:
+        return None
+    arr = np.asarray(values)
+    if arr.ndim == 1:
+        return arr
+    if arr.ndim == 2 and arr.shape[1] == 1:
+        return arr.flatten()
+    return [row for row in arr]
+
 
 # ============================================================================
 # SHARED UTILITIES
@@ -567,25 +588,85 @@ class MLPHeadRegressor(NeuralNetRegressor, BaseMLPHeadEstimator, AbstractMotherP
             preds = preds.ravel()
         return preds
 
-    def predict_uncertainty(self, X: pd.DataFrame, n_samples: int = 100, **kwargs: Any) -> pd.DataFrame:
+    def predict_uncertainty(
+        self,
+        X: pd.DataFrame,
+        return_quantiles: bool = False,
+        quantiles: List[float] = DEFAULT_QUANTILES,
+        uncertainty_for_opt: bool = False,
+        num_samples: int = 100,
+        use_std: bool = True,
+        **kwargs: Any,
+    ) -> Union[pd.DataFrame, pd.Series]:
         """
-        Predict with uncertainty estimates using MC Dropout.
+        Predict with uncertainty estimation using MC Dropout (Mother framework compatible).
 
-        This method enables dropout during inference and generates multiple predictions
-        to estimate uncertainty. The variance across predictions provides an estimate
-        of model uncertainty (epistemic uncertainty).
+        This standalone MLP head has no probabilistic output, so uncertainty comes purely
+        from Monte-Carlo dropout: multiple stochastic forward passes give a predictive
+        ``mean`` and ``std``. This matches the interface of the other Mother estimators
+        (CatBoost, TabPFN, RandomForest, NODE).
 
         Args:
-            X: Input features
-            n_samples: Number of MC dropout samples (default: 100)
-            **kwargs: Additional arguments (not used, for interface compatibility)
+            X: Input features.
+            return_quantiles: Not supported for MC-dropout heads. Quantiles are only
+                available for flow heads; passing True raises ``ValueError``.
+            quantiles: Accepted for interface compatibility but unused.
+            uncertainty_for_opt: If True, return only ``total_uncertainty`` as a Series
+                for optimisation / active learning (default False).
+            num_samples: Number of MC Dropout forward passes (default 100).
+            use_std: If True, use standard deviation; if False, use IQR (default True).
+            **kwargs: Additional arguments (ignored, for interface compatibility).
 
         Returns:
-            DataFrame with columns:
-            - mean_predictions: Mean of MC dropout predictions
-            - knowledge_uncertainty: Standard deviation (epistemic uncertainty)
-            - data_uncertainty: None (not available for point estimates)
-            - total_uncertainty: None (only set when both uncertainties exist)
+            Union[pd.DataFrame, pd.Series]:
+                - Default: DataFrame with columns ``pred``, ``mean_predictions``,
+                  ``knowledge_uncertainty``, ``data_uncertainty`` (None), ``total_uncertainty``.
+                - If ``uncertainty_for_opt=True``: ``pd.Series`` of ``total_uncertainty``.
+
+        Raises:
+            ValueError: If ``return_quantiles=True`` (quantiles require a flow head).
+        """
+        if return_quantiles:
+            raise ValueError(
+                "Quantiles are only available for flow heads. The MLP head estimates "
+                "uncertainty via MC-dropout, which yields a predictive mean and std/IQR "
+                "but not a calibrated predictive distribution. Set return_quantiles=False."
+            )
+
+        index = X.index if isinstance(X, pd.DataFrame) else None
+
+        # Deterministic point prediction (dropout off).
+        point_pred = self.predict(X)
+
+        # Collect MC Dropout samples: shape (num_samples, n_datapoints, output_dim).
+        samples = self._mc_dropout_samples(X, num_samples)
+
+        mean_pred = samples.mean(axis=0)
+        if use_std:
+            uncertainty = samples.std(axis=0)
+        else:
+            uncertainty = np.percentile(samples, 75, axis=0) - np.percentile(samples, 25, axis=0)
+
+        results = pd.DataFrame(
+            {
+                "pred": _prepare_for_dataframe(point_pred),
+                "mean_predictions": _prepare_for_dataframe(mean_pred),
+                "knowledge_uncertainty": _prepare_for_dataframe(uncertainty),
+                "data_uncertainty": None,
+                "total_uncertainty": _prepare_for_dataframe(uncertainty),
+            },
+            index=index,
+        )
+
+        if uncertainty_for_opt:
+            return results.loc[:, "total_uncertainty"]
+
+        return results
+
+    def _mc_dropout_samples(self, X: pd.DataFrame, num_samples: int) -> npt.NDArray[np.float32]:
+        """Run ``num_samples`` stochastic forward passes with dropout active.
+
+        Returns an array of shape ``(num_samples, n_datapoints, output_dim)``.
         """
         # Convert to float32
         if isinstance(X, np.ndarray) and X.dtype == np.float64:
@@ -606,38 +687,19 @@ class MLPHeadRegressor(NeuralNetRegressor, BaseMLPHeadEstimator, AbstractMotherP
         X_tensor = X_tensor.to(device)
 
         # Enable dropout for inference (MC Dropout)
-        self.module_.train()  # Set to training mode to enable dropout
+        self.module_.train()
 
         predictions = []
         with torch.no_grad():
-            for _ in range(n_samples):
+            for _ in range(num_samples):
                 pred = self.module_(X_tensor)
                 predictions.append(pred.cpu().numpy())
 
         # Return to eval mode
         self.module_.eval()
 
-        # Stack predictions: shape (n_samples, n_datapoints, output_dim)
-        predictions = np.stack(predictions, axis=0)
-
-        # Compute statistics
-        mean_pred = predictions.mean(axis=0).flatten()
-        std_pred = predictions.std(axis=0).flatten()
-
-        # Create result DataFrame
-        result = pd.DataFrame(
-            {
-                "mean_predictions": mean_pred,
-                "knowledge_uncertainty": std_pred,
-                "data_uncertainty": None,
-                "total_uncertainty": None,  # Only set when both uncertainties exist
-            }
-        )
-
-        if isinstance(X, pd.DataFrame):
-            result.set_index(X.index, inplace=True)
-
-        return result
+        # Stack predictions: shape (num_samples, n_datapoints, output_dim)
+        return np.stack(predictions, axis=0)
 
 
 class MLPHeadClassifier(NeuralNetClassifier, BaseMLPHeadEstimator, AbstractMotherPipeline):
@@ -782,27 +844,56 @@ class MLPHeadClassifier(NeuralNetClassifier, BaseMLPHeadEstimator, AbstractMothe
             y = y.astype(np.int64)
         return super().fit(X, y, **fit_params)
 
-    def predict_uncertainty(self, X: pd.DataFrame, n_samples: int = 100, **kwargs: Any) -> pd.DataFrame:
+    def predict_uncertainty(
+        self,
+        X: pd.DataFrame,
+        return_quantiles: bool = False,
+        quantiles: List[float] = DEFAULT_QUANTILES,
+        uncertainty_for_opt: bool = False,
+        num_samples: int = 100,
+        use_std: bool = True,
+        **kwargs: Any,
+    ) -> pd.DataFrame:
         """
-        Predict with uncertainty estimates using MC Dropout.
+        Predict with uncertainty estimation using MC Dropout (Mother framework compatible).
 
-        This method enables dropout during inference and generates multiple predictions
-        to estimate uncertainty in class probabilities. The variance across predictions
-        provides an estimate of model uncertainty (epistemic uncertainty).
+        Multiple stochastic forward passes with dropout active produce per-class
+        probabilities; the entropy of the averaged probabilities is used as the
+        (epistemic) uncertainty. This matches the standardised interface of the other
+        Mother classifiers.
 
         Args:
-            X: Input features
-            n_samples: Number of MC dropout samples (default: 100)
-            **kwargs: Additional arguments (not used, for interface compatibility)
+            X: Input features.
+            return_quantiles: Not supported for MC-dropout heads. Quantiles are only
+                available for flow heads; passing True raises ``ValueError``.
+            quantiles: Accepted for interface compatibility but unused.
+            uncertainty_for_opt: If True, return only ``knowledge_uncertainty`` as a
+                single-column DataFrame for optimisation (default False).
+            num_samples: Number of MC Dropout forward passes (default 100).
+            use_std: Unused for classification; kept for interface compatibility.
+            **kwargs: Additional arguments (ignored).
 
         Returns:
-            DataFrame with columns:
-            - mean_predictions: Most likely class (mode of MC dropout predictions)
-            - knowledge_uncertainty: Entropy of average class probabilities
-            - data_uncertainty: None (not available for classification)
-            - total_uncertainty: None (only set when both uncertainties exist)
+            pd.DataFrame:
+                - Default: DataFrame with columns ``pred``, ``mean_predictions`` (None),
+                  ``knowledge_uncertainty`` (entropy), ``data_uncertainty`` (None),
+                  ``total_uncertainty`` (entropy).
+                - If ``uncertainty_for_opt=True``: single-column ``knowledge_uncertainty``
+                  DataFrame.
+
+        Raises:
+            ValueError: If ``return_quantiles=True`` (quantiles require a flow head).
         """
         from scipy.stats import entropy
+
+        if return_quantiles:
+            raise ValueError(
+                "Quantiles are only available for flow heads. The MLP classifier estimates "
+                "uncertainty via MC-dropout entropy, not a calibrated predictive distribution. "
+                "Set return_quantiles=False."
+            )
+
+        index = X.index if isinstance(X, pd.DataFrame) else None
 
         # Convert to float32
         if isinstance(X, np.ndarray) and X.dtype == np.float64:
@@ -823,11 +914,11 @@ class MLPHeadClassifier(NeuralNetClassifier, BaseMLPHeadEstimator, AbstractMothe
         X_tensor = X_tensor.to(device)
 
         # Enable dropout for inference (MC Dropout)
-        self.module_.train()  # Set to training mode to enable dropout
+        self.module_.train()
 
         probabilities = []
         with torch.no_grad():
-            for _ in range(n_samples):
+            for _ in range(num_samples):
                 logits = self.module_(X_tensor)
                 probs = torch.softmax(logits, dim=1)
                 probabilities.append(probs.cpu().numpy())
@@ -835,7 +926,7 @@ class MLPHeadClassifier(NeuralNetClassifier, BaseMLPHeadEstimator, AbstractMothe
         # Return to eval mode
         self.module_.eval()
 
-        # Stack probabilities: shape (n_samples, n_datapoints, n_classes)
+        # Stack probabilities: shape (num_samples, n_datapoints, n_classes)
         probabilities = np.stack(probabilities, axis=0)
 
         # Average probabilities across MC samples
@@ -847,20 +938,24 @@ class MLPHeadClassifier(NeuralNetClassifier, BaseMLPHeadEstimator, AbstractMothe
         # Compute uncertainty as entropy of average probabilities
         uncertainties = np.array([entropy(prob) for prob in mean_probs])
 
-        # Create result DataFrame
-        result = pd.DataFrame(
+        results = pd.DataFrame(
             {
-                "mean_predictions": mean_pred,
+                "pred": mean_pred,
+                "mean_predictions": None,
                 "knowledge_uncertainty": uncertainties,
                 "data_uncertainty": None,
-                "total_uncertainty": None,  # Only set when both uncertainties exist
-            }
+                "total_uncertainty": uncertainties,
+            },
+            index=index,
         )
 
-        if isinstance(X, pd.DataFrame):
-            result.set_index(X.index, inplace=True)
+        if uncertainty_for_opt:
+            return pd.DataFrame(
+                {"knowledge_uncertainty": results["knowledge_uncertainty"]},
+                index=index,
+            )
 
-        return result
+        return results
 
 
 # ============================================================================
@@ -1396,47 +1491,66 @@ class FlowHeadRegressor(NeuralNetRegressor, BaseFlowHeadEstimator, AbstractMothe
 
             return predictions
 
-    def predict_uncertainty(self, X: pd.DataFrame, num_samples: int = 1000, **kwargs: Any) -> pd.DataFrame:
+    def predict_uncertainty(
+        self,
+        X: pd.DataFrame,
+        return_quantiles: bool = False,
+        quantiles: List[float] = DEFAULT_QUANTILES,
+        uncertainty_for_opt: bool = False,
+        num_samples: int = 1000,
+        **kwargs: Any,
+    ) -> Union[pd.DataFrame, pd.Series, tuple[pd.DataFrame, npt.NDArray[np.float32]]]:
         """
-        Predict with uncertainty estimates (Mother framework compatible).
+        Predict with uncertainty estimation (Mother framework compatible).
 
-        For standalone Flow head (without dropout), this provides data uncertainty only
-        from the flow distribution using negative log-likelihood. This follows the same
-        approach as NODE with flow heads: uncertainty = -log_prob(mode).
-
-        The method:
-        1. Samples from the conditional flow p(y|x)
-        2. Finds the mode (sample with highest log probability)
-        3. Uses negative log-likelihood as uncertainty measure:
-           - High log_prob → low -log_prob (low uncertainty)
-           - Low log_prob → high -log_prob (high uncertainty)
+        For the standalone Flow head (no dropout), uncertainty is aleatoric and comes
+        directly from the conditional flow ``p(y|x)`` via negative log-likelihood:
+        ``uncertainty = -log_prob(mode)``. Because the flow is a full probabilistic model,
+        this head can also return genuine predictive quantiles sampled from the
+        distribution (unlike dropout-only heads which only expose a mean and std).
 
         Args:
-            X: Input features
-            num_samples: Number of samples from flow for finding mode. Default: 1000
-            **kwargs: Additional arguments (ignored)
+            X: Input features.
+            return_quantiles: If True, also return quantile predictions sampled from the
+                flow distribution (default False).
+            quantiles: List of quantiles to compute. Default ``[0.25, 0.5, 0.75]``
+                (``DEFAULT_QUANTILES``).
+            uncertainty_for_opt: If True, return only ``total_uncertainty`` as a Series
+                for optimisation / active learning (default False).
+            num_samples: Number of samples drawn from the flow for the mode and quantiles
+                (default 1000).
+            **kwargs: Additional arguments (ignored).
 
         Returns:
-            DataFrame with columns:
-            - mean_predictions: Mean of predictive distribution
-            - knowledge_uncertainty: None (no dropout in standalone head)
-            - data_uncertainty: Negative log-likelihood of mode (aleatoric uncertainty)
-            - total_uncertainty: Same as data_uncertainty (only source of uncertainty)
+            Union[pd.DataFrame, pd.Series, tuple[pd.DataFrame, np.ndarray]]:
+                - Default: DataFrame with columns ``pred``, ``mean_predictions``,
+                  ``knowledge_uncertainty`` (None), ``data_uncertainty`` (NLL),
+                  ``total_uncertainty`` (NLL).
+                - If ``return_quantiles=True``: ``(DataFrame, quantile_array)`` where the
+                  array has shape ``(n_samples, n_quantiles)`` (single target) or
+                  ``(n_samples, n_quantiles, output_dim)`` (multi-target).
+                - If ``uncertainty_for_opt=True``: ``pd.Series`` of ``total_uncertainty``.
 
         Example:
             >>> reg = FlowHeadRegressor(input_dim=10, output_dim=1)
             >>> reg.fit(X_train, y_train)
-            >>> uncertainties = reg.predict_uncertainty(X_test, num_samples=1000)
-            >>> print(uncertainties[["mean_predictions", "data_uncertainty"]].head())
+            >>> results = reg.predict_uncertainty(X_test, num_samples=1000)
+            >>> results, q = reg.predict_uncertainty(X_test, return_quantiles=True)
         """
+        index = X.index if isinstance(X, pd.DataFrame) else None
+
+        # Defensive copy; ensure DEFAULT_QUANTILES are included for consistency.
+        quantiles = list(quantiles)
+        for q in DEFAULT_QUANTILES:
+            if q not in quantiles:
+                quantiles.append(q)
+        quantiles = sorted(quantiles)
+
         self.module_.eval()
         with torch.no_grad():
             # Convert input to tensor
             if not isinstance(X, torch.Tensor):
-                if isinstance(X, pd.DataFrame):
-                    X_np = X.values
-                else:
-                    X_np = X
+                X_np = X.values if isinstance(X, pd.DataFrame) else X
                 X_tensor = torch.tensor(X_np, dtype=torch.float32)
             else:
                 X_tensor = X
@@ -1450,31 +1564,36 @@ class FlowHeadRegressor(NeuralNetRegressor, BaseFlowHeadEstimator, AbstractMothe
 
             # Use shared utility to compute mode and uncertainty
             mode_pred, data_uncertainty = compute_flow_mode_and_uncertainty(dist, num_samples)
-
-            # Convert to numpy
             mode_pred = mode_pred.cpu().numpy()
             data_uncertainty = data_uncertainty.cpu().numpy()
 
-            # For multi-target predictions, convert to appropriate format
-            if mode_pred.ndim == 1:
-                predictions_col = mode_pred
-            elif mode_pred.shape[1] == 1:
-                predictions_col = mode_pred.flatten()
-            else:
-                # Multi-target: convert rows to lists so each cell contains a vector
-                predictions_col = [row for row in mode_pred]
+            quantile_predictions = None
+            if return_quantiles:
+                # Sample the flow: (num_samples, n_datapoints, output_dim)
+                samples = dist.sample(torch.Size([num_samples]))
+                # (n_datapoints, n_quantiles, output_dim)
+                q_stack = torch.stack([torch.quantile(samples, q, dim=0) for q in quantiles], dim=1)
+                quantile_predictions = q_stack.cpu().numpy()
+                if quantile_predictions.shape[2] == 1:
+                    quantile_predictions = quantile_predictions.squeeze(axis=2)
 
-            # Create result DataFrame matching Mother's standard format
-            result = pd.DataFrame(
-                {
-                    "mean_predictions": predictions_col,
-                    "knowledge_uncertainty": None,  # No dropout in standalone head
-                    "data_uncertainty": data_uncertainty,  # Negative log-likelihood (aleatoric)
-                    "total_uncertainty": data_uncertainty,  # Only source of uncertainty
-                }
-            )
+        predictions_col = _prepare_for_dataframe(mode_pred)
 
-            if isinstance(X, pd.DataFrame):
-                result.set_index(X.index, inplace=True)
+        results = pd.DataFrame(
+            {
+                "pred": predictions_col,
+                "mean_predictions": predictions_col,
+                "knowledge_uncertainty": None,  # No dropout in standalone head
+                "data_uncertainty": data_uncertainty,  # Negative log-likelihood (aleatoric)
+                "total_uncertainty": data_uncertainty,  # Only source of uncertainty
+            },
+            index=index,
+        )
 
-            return result
+        if uncertainty_for_opt:
+            return results.loc[:, "total_uncertainty"]
+
+        if return_quantiles:
+            return results, quantile_predictions
+
+        return results

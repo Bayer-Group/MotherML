@@ -2088,9 +2088,9 @@ class NODERegressor(BaseNODEEstimator):
         Args:
             X: Input features.
             return_quantiles: If True, also return quantile predictions (default False).
-                For flow heads, quantiles are computed from flow distribution samples.
-                For non-flow heads, quantiles are computed from MC Dropout samples
-                (requires ``input_dropout > 0`` or ``tree_dropout > 0``).
+                Only supported for flow heads, where quantiles are sampled from the
+                learned conditional distribution. Requesting quantiles for a non-flow
+                (MC-dropout) head raises ``ValueError``.
             quantiles: List of quantiles to calculate the uncertainty.
                 Default: ``[0.25, 0.5, 0.75]`` (``DEFAULT_QUANTILES``).
             uncertainty_for_opt: If True, return only total uncertainty for
@@ -2142,6 +2142,14 @@ class NODERegressor(BaseNODEEstimator):
         if not is_flow_head:
             if hasattr(self.module_, "mlp_dropout") and self.module_.mlp_dropout > 0:
                 has_dropout = True
+
+        if return_quantiles and not is_flow_head:
+            raise ValueError(
+                "Quantiles are only available for flow heads (head_type='flow'). "
+                "Non-flow heads estimate uncertainty via MC-dropout, which yields a "
+                "mean and std/IQR but not a calibrated predictive distribution. "
+                "Set return_quantiles=False."
+            )
 
         index = X.index if isinstance(X, pd.DataFrame) else None
 
@@ -2204,6 +2212,7 @@ class NODERegressor(BaseNODEEstimator):
 
             results = pd.DataFrame(
                 {
+                    "pred": _prepare_for_dataframe(pred),
                     "mean_predictions": _prepare_for_dataframe(pred),
                     "knowledge_uncertainty": _prepare_for_dataframe(knowledge_unc),
                     "data_uncertainty": data_unc,  # Always scalar
@@ -2233,6 +2242,7 @@ class NODERegressor(BaseNODEEstimator):
 
             results = pd.DataFrame(
                 {
+                    "pred": _prepare_for_dataframe(predictions),
                     "mean_predictions": _prepare_for_dataframe(predictions),
                     "knowledge_uncertainty": None,
                     "data_uncertainty": uncertainties,  # Always scalar (1D array)
@@ -2241,34 +2251,21 @@ class NODERegressor(BaseNODEEstimator):
                 index=index,
             )
 
-        # Non-flow heads: use MC Dropout
+        # Non-flow heads: use MC Dropout (std/IQR only — no quantiles)
         else:
             predictions = self.predict(X)
 
-            # Get MC Dropout uncertainties (and quantiles if requested)
-            mc_result = super()._predict_uncertainty_mc_dropout(
+            uncertainties = super()._predict_uncertainty_mc_dropout(
                 X,
                 num_samples=num_samples,
-                quantiles=quantiles if return_quantiles else None,
-                return_dataframe=return_quantiles,
+                quantiles=None,
+                return_dataframe=False,
                 use_std=use_std,
             )
 
-            if return_quantiles:
-                # mc_result is a DataFrame with std/iqr and quantile columns
-                # Extract quantile columns to build the quantile array
-                q_cols = [c for c in mc_result.columns if c.startswith("q_")]
-                if q_cols:
-                    quantile_predictions = mc_result[q_cols].values  # (n_samples, n_quantiles)
-                else:
-                    quantile_predictions = None
-                uncertainty_key = "std" if use_std else "iqr"
-                uncertainties = mc_result[uncertainty_key].values if uncertainty_key in mc_result.columns else None
-            else:
-                uncertainties = mc_result
-
             results = pd.DataFrame(
                 {
+                    "pred": _prepare_for_dataframe(predictions),
                     "mean_predictions": _prepare_for_dataframe(predictions),
                     "knowledge_uncertainty": _prepare_for_dataframe(uncertainties),
                     "data_uncertainty": None,
@@ -2298,8 +2295,8 @@ class NODERegressor(BaseNODEEstimator):
 
         For **flow heads**, quantiles are computed by sampling from the learned
         conditional distribution $p(y \\mid x)$.
-        For **non-flow heads**, quantiles are computed via MC Dropout (requires
-        ``input_dropout > 0`` or ``tree_dropout > 0``).
+        Only supported for flow heads; non-flow heads raise ``ValueError`` because
+        they do not model a predictive distribution.
 
         Args:
             X: Input features.
@@ -2313,11 +2310,20 @@ class NODERegressor(BaseNODEEstimator):
             ``(n_samples, n_quantiles, n_targets)`` for multi-target regression.
 
         Example:
-            >>> reg = NODERegressor(head_type="mlp", input_dropout=0.1)
+            >>> reg = NODERegressor(head_type="flow", flow_type="NICE")
             >>> reg.fit(X_train, y_train)
             >>> q = reg.predict_quantiles(X_test, quantiles=[0.025, 0.5, 0.975])
             >>> lower, median, upper = q[:, 0], q[:, 1], q[:, 2]
         """
+        is_flow_head = (
+            hasattr(self, "module_") and hasattr(self.module_, "head_type") and self.module_.head_type == "flow"
+        )
+        if not is_flow_head:
+            raise ValueError(
+                "predict_quantiles() is only available for flow heads (head_type='flow'). "
+                "Non-flow heads do not model a predictive distribution."
+            )
+
         if quantiles is None:
             quantiles = [0.025, 0.25, 0.5, 0.75, 0.975]
 
@@ -2366,7 +2372,7 @@ class NODERegressor(BaseNODEEstimator):
                Data uncertainty = -log_prob(mode) from this non-dropout pass
             2. num_mc_samples forward passes WITH dropout → evaluate log_prob of that
                fixed mode point under each dropout mask
-            3. Knowledge uncertainty = IQR(-log_prob(mode)) across MC passes
+            3. Knowledge uncertainty = std(-log_prob(mode)) across MC passes
                Total = data + knowledge
 
         Args:
@@ -2551,7 +2557,7 @@ class NODERegressor(BaseNODEEstimator):
         predictions = mc_mean_predictions_tensor.mean(dim=0).detach().cpu().numpy()
 
         # Data uncertainty: -log_prob(mode) from the single non-dropout pass (fixed)
-        # Knowledge uncertainty: IQR of -log_prob(mode) across MC dropout passes
+        # Knowledge uncertainty: std of -log_prob(mode) across MC dropout passes
         data_uncertainty = data_uncertainty_base  # Always from non-dropout pass
 
         if (
@@ -2559,13 +2565,12 @@ class NODERegressor(BaseNODEEstimator):
             or input_dropout_rate > 0
             or any(getattr(m, "p", 0) > 0 for m in self.module_.modules() if isinstance(m, torch.nn.Dropout))
         ):
-            # Knowledge uncertainty = IQR of -log_prob(mode) across MC dropout passes
+            # Knowledge (epistemic) uncertainty = std of the negative log-likelihood
+            # of the fixed mode across MC-dropout passes.
             all_data_unc_tensor = torch.cat(all_data_uncertainties, dim=0)
             all_data_unc_array = all_data_unc_tensor.detach().cpu().numpy()
 
-            q75 = np.percentile(all_data_unc_array, 75, axis=0)
-            q25 = np.percentile(all_data_unc_array, 25, axis=0)
-            knowledge_uncertainty = q75 - q25
+            knowledge_uncertainty = np.std(all_data_unc_array, axis=0)
             total_uncertainty = data_uncertainty + knowledge_uncertainty
         else:
             knowledge_uncertainty = None
@@ -2980,9 +2985,9 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
 
         Args:
             X: Input features.
-            return_quantiles: If True, also return per-class quantile predictions
-                computed from MC Dropout samples (default False).
-            quantiles: List of quantiles to calculate (default ``[0.25, 0.5, 0.75]``).
+            return_quantiles: Not supported for classification. Quantiles are only
+                available for flow (regression) heads; passing True raises ``ValueError``.
+            quantiles: Accepted for interface compatibility but unused.
             uncertainty_for_opt: If True, return only ``knowledge_uncertainty``
                 for optimisation (default False).
             num_samples: Number of MC Dropout forward passes (default 100).
@@ -2990,18 +2995,26 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
             **kwargs: Additional keyword arguments (ignored, for pipeline compatibility).
 
         Returns:
-            Union[pd.DataFrame, tuple[pd.DataFrame, np.ndarray]]:
+            pd.DataFrame:
                 - If ``return_quantiles=False``: DataFrame with columns:
                     - ``'mean_predictions'``: Predicted probabilities (class 1 for binary,
                       argmax for multiclass).
                     - ``'knowledge_uncertainty'``: MC Dropout uncertainty.
                     - ``'data_uncertainty'``: ``None`` (not applicable for MC Dropout).
                     - ``'total_uncertainty'``: Same as ``knowledge_uncertainty``.
-                - If ``return_quantiles=True``: Tuple of (DataFrame, quantile_array)
-                    where quantile_array has shape ``(n_samples, n_quantiles * n_classes)``.
                 - If ``uncertainty_for_opt=True``: ``pd.DataFrame`` with 1 column
                     ``'knowledge_uncertainty'``.
+
+        Raises:
+            ValueError: If ``return_quantiles=True`` (quantiles require a flow head).
         """
+        if return_quantiles:
+            raise ValueError(
+                "Quantiles are only available for flow heads. NODE classification "
+                "estimates uncertainty via MC-dropout, not a calibrated predictive "
+                "distribution. Set return_quantiles=False."
+            )
+
         # Get predictions
         predictions = self.predict_proba(X)
 
@@ -3017,26 +3030,11 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
         # Get index from X if it's a DataFrame
         index = X.index if isinstance(X, pd.DataFrame) else None
 
-        # Build quantile array if requested
-        quantile_predictions = None
-        if return_quantiles:
-            # Ensure DEFAULT_QUANTILES are included
-            merged_q = sorted(set(quantiles) | set(DEFAULT_QUANTILES))
-            mc_df = self._predict_uncertainty_mc_dropout(
-                X,
-                num_samples=num_samples,
-                quantiles=merged_q,
-                return_dataframe=True,
-                use_std=use_std,
-            )
-            q_cols = [c for c in mc_df.columns if "_q_" in c]
-            if q_cols:
-                quantile_predictions = mc_df[q_cols].values
-
         # For binary classification, use class 1 probabilities
         if predictions.shape[1] == 2:
             results = pd.DataFrame(
                 {
+                    "pred": predictions.argmax(axis=1),
                     "mean_predictions": predictions[:, 1],
                     "knowledge_uncertainty": uncertainties[:, 1],
                     "data_uncertainty": None,
@@ -3048,6 +3046,7 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
             # For multiclass, return predicted class (argmax) as mean_predictions
             results = pd.DataFrame(
                 {
+                    "pred": predictions.argmax(axis=1),
                     "mean_predictions": predictions.argmax(axis=1),
                     "knowledge_uncertainty": uncertainties.max(axis=1),
                     "data_uncertainty": None,
@@ -3062,9 +3061,6 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
                 index=index,
             )
 
-        if return_quantiles:
-            return results, quantile_predictions
-
         return results
 
     def predict_quantiles(
@@ -3074,39 +3070,19 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
         num_samples: int = 200,
     ) -> npt.NDArray[np.float32]:
         """
-        Predict class-probability quantiles via MC Dropout.
+        Not supported for classification.
 
-        Performs multiple stochastic forward passes and returns the requested
-        quantiles of the per-class probability distribution.
+        Quantiles are only available for flow (regression) heads, which model a
+        predictive distribution. NODE classification estimates uncertainty via
+        MC-dropout entropy and therefore does not expose predictive quantiles.
 
-        Args:
-            X: Input features.
-            quantiles: List of quantiles in [0, 1] to compute.
-                If None, uses ``[0.025, 0.25, 0.5, 0.75, 0.975]``.
-            num_samples: Number of MC Dropout forward passes. Default: 200.
-
-        Returns:
-            DataFrame with per-class quantile columns (e.g. ``class_0_q_0.025``).
-
-        Example:
-            >>> clf = NODEClassifier(input_dropout=0.1)
-            >>> clf.fit(X_train, y_train)
-            >>> q_df = clf.predict_quantiles(X_test, quantiles=[0.025, 0.5, 0.975])
+        Raises:
+            ValueError: Always, because classification has no flow head.
         """
-        if quantiles is None:
-            quantiles = [0.025, 0.25, 0.5, 0.75, 0.975]
-
-        invalid = [q for q in quantiles if not 0 <= q <= 1]
-        if invalid:
-            raise ValueError(f"Quantiles must be in [0, 1]. Got invalid values: {invalid}")
-        quantiles = sorted(quantiles)
-
-        return self._predict_uncertainty_mc_dropout(
-            X,
-            num_samples=num_samples,
-            quantiles=quantiles,
-            return_dataframe=True,
-            use_std=True,
+        raise ValueError(
+            "predict_quantiles() is only available for flow heads (regression). "
+            "NODE classification does not model a predictive distribution; use "
+            "predict_uncertainty() for MC-dropout uncertainty instead."
         )
 
     def suggested_params_head(
