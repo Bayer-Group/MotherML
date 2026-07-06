@@ -77,11 +77,15 @@ import numpy.typing as npt
 import pandas as pd
 import torch
 import torch.nn as nn
-import zuko
 from optuna import Trial
 from skorch import NeuralNetClassifier, NeuralNetRegressor
 from skorch.callbacks import Callback, EarlyStopping, LRScheduler
 from skorch.dataset import ValidSplit
+
+try:
+    import zuko
+except ModuleNotFoundError:  # pragma: no cover - zuko is only needed for flow heads
+    zuko = None  # type: ignore[assignment]
 
 from mother.ml.core import AbstractMotherPipeline
 from mother.ml.models.m_head_utils import compute_flow_mode_and_uncertainty
@@ -155,25 +159,20 @@ class DimensionSetter(Callback):
             if hasattr(net, "classes_"):  # Classification task (skorch detected classes)
                 # Number of classes detected by skorch
                 output_dim = len(net.classes_)
-            elif isinstance(y, np.ndarray):
-                # Check unique values for classification
-                unique_vals = len(np.unique(y))
-                # If few unique integer values, likely classification
-                if unique_vals < 100 and np.issubdtype(y.dtype, np.integer):
-                    output_dim = unique_vals
-                elif len(y.shape) > 1:
-                    output_dim = y.shape[1]
+            elif isinstance(net, NeuralNetClassifier):
+                # Classification without pre-detected classes: infer the number of
+                # classes from the unique target values. This "few unique values"
+                # heuristic must NOT be applied to regressors, where an integer-valued
+                # target (e.g. counts) with few unique values would otherwise corrupt
+                # the regressor's output shape.
+                if isinstance(y, pd.DataFrame):
+                    output_dim = int(pd.Series(y.values.ravel()).nunique())
+                elif isinstance(y, pd.Series):
+                    output_dim = int(y.nunique())
                 else:
-                    output_dim = 1
-            elif isinstance(y, (pd.DataFrame, pd.Series)):
-                # Check if it's classification by looking at unique values
-                unique_vals = pd.Series(y).nunique() if isinstance(y, pd.DataFrame) else y.nunique()
-                # If few unique values, likely classification
-                if unique_vals < 100 and pd.api.types.is_integer_dtype(y):
-                    output_dim = unique_vals
-                else:
-                    output_dim = y.shape[1] if len(y.shape) > 1 else 1
+                    output_dim = int(len(np.unique(np.asarray(y))))
             elif hasattr(y, "shape"):
+                # Regression: output dimension is purely shape-based.
                 output_dim = y.shape[1] if len(y.shape) > 1 else 1
             else:
                 output_dim = 1
@@ -288,8 +287,11 @@ class MLPHead(nn.Module):
             # Skorch with DataFrames passes data as {'feature_0': tensor, 'feature_1': tensor, ...}
             # We need to concatenate them into a single tensor
             if kwargs:
-                # Get all tensors and concatenate them
-                tensors = [kwargs[k] for k in sorted(kwargs.keys()) if isinstance(kwargs[k], torch.Tensor)]
+                # Concatenate the per-column tensors in DataFrame column order.
+                # Iterate values() (insertion order) rather than sorted(keys()) so the
+                # column order matches the array input path and is not scrambled for
+                # names like 'feature_10' vs 'feature_2'.
+                tensors = [v for v in kwargs.values() if isinstance(v, torch.Tensor)]
                 if tensors:
                     # Each tensor is [batch_size] or [batch_size, 1], concatenate along feature dimension
                     # First ensure all are 2D
@@ -533,6 +535,14 @@ class MLPHeadRegressor(NeuralNetRegressor, BaseMLPHeadEstimator, AbstractMotherP
         """Get parameters, implementing AbstractMotherPipeline requirement with proper MRO."""
         # Use super() to follow MRO: NeuralNetRegressor -> BaseMLPHeadEstimator -> AbstractMotherPipeline
         params: dict = super().get_params(deep=deep)
+        # Re-expose module__<head_param> as bare constructor arguments so that
+        # sklearn.clone() (which rebuilds via __class__(**get_params())) preserves the
+        # head configuration instead of silently reverting to constructor defaults.
+        head_params: List[str] = ["input_dim", "output_dim", "hidden_dims", "dropout", "batch_norm", "activation"]
+        for name in head_params:
+            module_key = f"module__{name}"
+            if hasattr(self, module_key):
+                params[name] = getattr(self, module_key)
         # Remove module__* parameters to avoid conflicts during sklearn cloning
         params_to_remove: List[str] = [key for key in params.keys() if key.startswith("module__")]
         for key in params_to_remove:
@@ -686,8 +696,13 @@ class MLPHeadRegressor(NeuralNetRegressor, BaseMLPHeadEstimator, AbstractMotherP
         device = next(self.module_.parameters()).device
         X_tensor = X_tensor.to(device)
 
-        # Enable dropout for inference (MC Dropout)
-        self.module_.train()
+        # Enable dropout for inference (MC Dropout) while keeping BatchNorm layers in
+        # eval mode so their running statistics are not updated and predictions do not
+        # become batch-dependent during uncertainty sampling.
+        self.module_.eval()
+        for _m in self.module_.modules():
+            if isinstance(_m, nn.Dropout):
+                _m.train()
 
         predictions = []
         with torch.no_grad():
@@ -799,6 +814,14 @@ class MLPHeadClassifier(NeuralNetClassifier, BaseMLPHeadEstimator, AbstractMothe
         """Get parameters, implementing AbstractMotherPipeline requirement with proper MRO."""
         # Use super() to follow MRO: NeuralNetClassifier -> BaseMLPHeadEstimator -> AbstractMotherPipeline
         params: dict = super().get_params(deep=deep)
+        # Re-expose module__<head_param> as bare constructor arguments so that
+        # sklearn.clone() (which rebuilds via __class__(**get_params())) preserves the
+        # head configuration instead of silently reverting to constructor defaults.
+        head_params: List[str] = ["input_dim", "output_dim", "hidden_dims", "dropout", "batch_norm", "activation"]
+        for name in head_params:
+            module_key = f"module__{name}"
+            if hasattr(self, module_key):
+                params[name] = getattr(self, module_key)
         # Remove module__* parameters to avoid conflicts during sklearn cloning
         params_to_remove: List[str] = [key for key in params.keys() if key.startswith("module__")]
         for key in params_to_remove:
@@ -917,8 +940,13 @@ class MLPHeadClassifier(NeuralNetClassifier, BaseMLPHeadEstimator, AbstractMothe
         device = next(self.module_.parameters()).device
         X_tensor = X_tensor.to(device)
 
-        # Enable dropout for inference (MC Dropout)
-        self.module_.train()
+        # Enable dropout for inference (MC Dropout) while keeping BatchNorm layers in
+        # eval mode so their running statistics are not updated and predictions do not
+        # become batch-dependent during uncertainty sampling.
+        self.module_.eval()
+        for _m in self.module_.modules():
+            if isinstance(_m, nn.Dropout):
+                _m.train()
 
         probabilities = []
         with torch.no_grad():
@@ -1047,6 +1075,11 @@ class FlowHead(nn.Module):
         flow_components: int = 8,
     ) -> None:
         super().__init__()
+        if zuko is None:  # pragma: no cover - exercised only when the optional dep is absent
+            raise ModuleNotFoundError(
+                "zuko is required for FlowHead / FlowHeadRegressor. Install the optional "
+                "dependencies, e.g. `pip install mother-ml[node]`."
+            )
         self.input_dim = input_dim
         self.output_dim = output_dim
         self.flow_type = flow_type
@@ -1099,8 +1132,11 @@ class FlowHead(nn.Module):
             # Skorch with DataFrames passes data as {'feature_0': tensor, 'feature_1': tensor, ...}
             # We need to concatenate them into a single tensor
             if kwargs:
-                # Get all tensors and concatenate them
-                tensors = [kwargs[k] for k in sorted(kwargs.keys()) if isinstance(kwargs[k], torch.Tensor)]
+                # Concatenate the per-column tensors in DataFrame column order.
+                # Iterate values() (insertion order) rather than sorted(keys()) so the
+                # conditioning context matches the array input path and is not scrambled
+                # for names like 'feature_10' vs 'feature_2'.
+                tensors = [v for v in kwargs.values() if isinstance(v, torch.Tensor)]
                 if tensors:
                     # Each tensor is [batch_size] or [batch_size, 1], concatenate along feature dimension
                     # First ensure all are 2D
@@ -1336,6 +1372,23 @@ class FlowHeadRegressor(NeuralNetRegressor, BaseFlowHeadEstimator, AbstractMothe
         """Get parameters, implementing AbstractMotherPipeline requirement with proper MRO."""
         # Use super() to follow MRO: NeuralNetRegressor -> BaseFlowHeadEstimator -> AbstractMotherPipeline
         params: dict = super().get_params(deep=deep)
+        # Re-expose module__<head_param> as bare constructor arguments so that
+        # sklearn.clone() (which rebuilds via __class__(**get_params())) preserves the
+        # flow-head configuration instead of silently reverting to constructor defaults.
+        head_params: List[str] = [
+            "input_dim",
+            "output_dim",
+            "flow_type",
+            "flow_transforms",
+            "flow_bins",
+            "flow_degree",
+            "flow_signal",
+            "flow_components",
+        ]
+        for name in head_params:
+            module_key = f"module__{name}"
+            if hasattr(self, module_key):
+                params[name] = getattr(self, module_key)
         # Remove module__* parameters to avoid conflicts during sklearn cloning
         params_to_remove = [key for key in params.keys() if key.startswith("module__")]
         for key in params_to_remove:

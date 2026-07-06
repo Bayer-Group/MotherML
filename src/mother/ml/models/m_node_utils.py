@@ -43,7 +43,7 @@ def _roll_last(X: Tensor, dim: int) -> Tensor:
     if dim == -1:
         return X
     elif dim < 0:
-        dim = X.dim() - dim
+        dim = X.dim() + dim
 
     perm = [i for i in range(X.dim()) if i != dim] + [dim]
     return X.permute(perm)
@@ -737,7 +737,10 @@ class DenseODSTBlock(nn.Sequential):
             layer_inp = x
             if self.max_features is not None:
                 tail_features = min(self.max_features, layer_inp.shape[-1]) - initial_features
-                if tail_features != 0:
+                # Only trim when there is a positive tail to keep. A non-positive
+                # value (max_features <= initial_features) would turn the negative
+                # slice into a positive start index and corrupt the features.
+                if tail_features > 0:
                     layer_inp = torch.cat(
                         [
                             layer_inp[..., :initial_features],
