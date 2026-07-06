@@ -392,13 +392,14 @@ def test_fast_mother_tuner():
 
 
 def test_fast_dataframe_categorical():
-    """Fast test of DataFrame input with categorical feature detection.
+    """Fast test of DataFrame input with explicit categorical feature declaration.
 
-    Categorical columns are only detected if:
-    - User explicitly passes categorical_columns to InputOutputShapeSetter, OR
-    - Columns have dtype 'category' in the DataFrame
+    Categorical columns are NEVER auto-detected. They must be declared explicitly
+    via the ``cat_features`` constructor parameter (like CatBoost), or by passing
+    ``categorical_columns`` to a custom ``InputOutputShapeSetter`` callback.
 
-    Object/string dtype columns are NOT auto-detected as categorical.
+    Any non-numeric column (object/string OR 'category' dtype) that is not
+    declared categorical is rejected.
     """
     print("\n🚀 Fast DataFrame Categorical Test")
     print("=" * 50)
@@ -408,7 +409,7 @@ def test_fast_dataframe_categorical():
 
     from mother.ml.models.m_node import InputOutputShapeSetter
 
-    # Test 1: Object dtype without specification should be REJECTED
+    # Test 1: Object dtype without declaration should be REJECTED
     df_object = pd.DataFrame(
         {
             "age": [25, 35, 45, 55, 30, 40],
@@ -419,7 +420,7 @@ def test_fast_dataframe_categorical():
     )
     y = [0, 1, 1, 0, 1, 0]
 
-    print("Test 1: Object dtype without specification (should fail)...")
+    print("Test 1: Object dtype without declaration (should fail)...")
     clf = NODEClassifier(
         num_trees=16,
         num_layers=1,
@@ -430,13 +431,14 @@ def test_fast_dataframe_categorical():
     )
     try:
         clf.fit(df_object, y)
-        raise AssertionError("Should have raised ValueError for object dtype without specification")
+        raise AssertionError("Should have raised ValueError for undeclared categorical column")
     except ValueError as e:
-        assert "string/object dtype" in str(e), f"Expected string/object dtype error, got: {e}"
-        print("  ✓ Correctly rejected object dtype columns")
+        assert "declared categorical" in str(e), f"Expected 'declared categorical' error, got: {e}"
+        print("  ✓ Correctly rejected undeclared object dtype columns")
 
-    # Test 2: Using explicit 'category' dtype (auto-detected)
-    print("\nTest 2: Category dtype auto-detection...")
+    # Test 2: 'category' dtype without declaration should ALSO be REJECTED
+    # (no auto-detection anymore)
+    print("\nTest 2: Category dtype without declaration (should fail)...")
     df_category = pd.DataFrame(
         {
             "age": [25, 35, 45, 55, 30, 40],
@@ -446,6 +448,23 @@ def test_fast_dataframe_categorical():
         }
     )
 
+    clf_cat = NODEClassifier(
+        num_trees=16,
+        num_layers=1,
+        max_epochs=3,
+        batch_size=16,
+        device="cpu",
+        verbose=0,
+    )
+    try:
+        clf_cat.fit(df_category, y)
+        raise AssertionError("Should have raised ValueError for undeclared category dtype column")
+    except ValueError as e:
+        assert "declared categorical" in str(e), f"Expected 'declared categorical' error, got: {e}"
+        print("  ✓ Correctly rejected undeclared category dtype columns")
+
+    # Test 3: Explicit declaration via the cat_features constructor parameter
+    print("\nTest 3: Explicit cat_features constructor parameter...")
     clf2 = NODEClassifier(
         num_trees=16,
         num_layers=1,
@@ -453,6 +472,7 @@ def test_fast_dataframe_categorical():
         batch_size=16,
         device="cpu",
         verbose=0,
+        cat_features=["city", "education"],
     )
     clf2.fit(df_category, y)
     predictions = clf2.predict(df_category)
@@ -474,11 +494,11 @@ def test_fast_dataframe_categorical():
         f"Expected continuous {expected_continuous}, got {clf2.continuous_columns_}"
     )
 
-    print(f"  ✓ Detected continuous: {clf2.continuous_columns_}")
-    print(f"  ✓ Detected categorical: {clf2.categorical_columns_}")
+    print(f"  ✓ Declared continuous: {clf2.continuous_columns_}")
+    print(f"  ✓ Declared categorical: {clf2.categorical_columns_}")
 
-    # Test 3: Using explicit categorical_columns via callback
-    print("\nTest 3: Explicit categorical_columns via callback...")
+    # Test 4: Explicit categorical_columns via a custom callback still works
+    print("\nTest 4: Explicit categorical_columns via callback...")
     clf3 = NODEClassifier(
         num_trees=16,
         num_layers=1,
@@ -491,12 +511,13 @@ def test_fast_dataframe_categorical():
     clf3.fit(df_object, y)  # object dtype works with explicit specification
     predictions3 = clf3.predict(df_object)
     print(f"  ✓ Predictions shape: {predictions3.shape}")
-    print(f"  ✓ Detected categorical: {clf3.categorical_columns_}")
+    print(f"  ✓ Declared categorical: {clf3.categorical_columns_}")
 
     print("\n✅ DataFrame categorical test passed!")
-    print("  - Object dtype: correctly rejected without explicit specification")
-    print("  - Category dtype: auto-detected as categorical")
-    print("  - Explicit specification: works with object dtype")
+    print("  - Object dtype: correctly rejected without explicit declaration")
+    print("  - Category dtype: correctly rejected without explicit declaration")
+    print("  - cat_features parameter: declares categorical columns (like CatBoost)")
+    print("  - Explicit callback specification: still supported")
 
 
 def test_fast_explicit_categorical():

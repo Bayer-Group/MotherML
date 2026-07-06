@@ -184,11 +184,14 @@ class InputOutputShapeSetter(skorch.callbacks.Callback):
     Callback to auto-detect input/output dimensions and handle categorical features.
 
     Handles:
-    - Auto-detection of categorical vs continuous features from DataFrames
+    - Splitting features into categorical vs continuous based on the explicitly
+      declared ``categorical_columns`` (mirroring CatBoost's ``cat_features``).
+      No automatic detection is performed.
     - Setting input_dim and output_dim based on training data
     - Label encoding and embedding setup for categorical features
 
-    Continuous features must not contain strings or object dtype.
+    Categorical features must be declared explicitly. Any non-numeric column
+    that is not declared categorical raises an error.
     """
 
     def __init__(
@@ -209,38 +212,34 @@ class InputOutputShapeSetter(skorch.callbacks.Callback):
         self.feature_names_: List[str] = []
 
     def _detect_feature_types(self, X: Union[pd.DataFrame, npt.NDArray[np.float32]]) -> Tuple[List[str], List[str]]:
-        """Detect categorical vs continuous features from DataFrame."""
+        """Split features into continuous vs categorical based on explicit declaration.
+
+        Categorical columns must be declared explicitly via ``categorical_columns``
+        (mirroring CatBoost's ``cat_features``). No automatic detection is
+        performed: any non-numeric column that is not declared categorical raises
+        an error.
+        """
         if isinstance(X, pd.DataFrame):
             self.feature_names_ = list(X.columns)
 
-            categorical_cols: List[str]
-            continuous_cols: List[str]
+            # Only explicitly declared columns are categorical. Everything else is
+            # treated as continuous (no auto-detection).
             if self.categorical_columns is not None:
-                # Use explicit specification
                 categorical_cols = [col for col in self.categorical_columns if col in X.columns]
-                continuous_cols = [col for col in X.columns if col not in categorical_cols]
             else:
-                # Only auto-detect if dtype is explicitly 'category'
-                # Do NOT auto-detect based on object/string dtype
                 categorical_cols = []
-                continuous_cols = []
-                for col in X.columns:
-                    dtype = X[col].dtype
-                    # Only consider 'category' dtype as categorical
-                    # All other dtypes (including object/string) are treated as continuous
-                    if isinstance(dtype, pd.CategoricalDtype):
-                        categorical_cols.append(col)
-                    else:
-                        continuous_cols.append(col)
+            continuous_cols = [col for col in X.columns if col not in categorical_cols]
 
-            # CRITICAL VALIDATION: Ensure continuous columns don't contain string/object dtype
-            # This prevents silent errors where string features would be incorrectly treated as continuous
+            # CRITICAL VALIDATION: continuous columns must be numeric. Non-numeric
+            # columns (string/object or 'category' dtype) must be declared
+            # categorical — NODE never auto-detects them.
             for col in continuous_cols:
-                if _is_string_or_object_dtype(X[col]):
+                if _is_string_or_object_dtype(X[col]) or isinstance(X[col].dtype, pd.CategoricalDtype):
                     raise ValueError(
-                        f"Continuous feature '{col}' contains string/object dtype. "
-                        f"Continuous features must never contain strings. "
-                        f"Please either: 1) Specify '{col}' in categorical_columns parameter, or "
+                        f"Column '{col}' has a non-numeric dtype ({X[col].dtype}) but is not "
+                        f"declared categorical. NODE does not auto-detect categorical features. "
+                        f"Please either: 1) List '{col}' in the 'cat_features' parameter "
+                        f"(e.g. NODERegressor(cat_features=['{col}', ...])), or "
                         f"2) Convert '{col}' to numeric dtype before passing to NODE."
                     )
 
@@ -941,6 +940,7 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         flow_signal: int,
         flow_components: int,
         callbacks: Optional[List[Any]],
+        cat_features: Optional[List[str]] = None,
     ) -> None:
         """Persist all NODE-specific parameters as instance attributes.
 
@@ -972,6 +972,7 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         self.flow_degree = flow_degree
         self.flow_signal = flow_signal
         self.flow_components = flow_components
+        self.cat_features = cat_features
         self.callbacks = callbacks
         self._original_callbacks = callbacks
 
@@ -979,7 +980,8 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         """Ensure essential callbacks are present.
 
         Always injects:
-        - ``InputOutputShapeSetter`` – auto-detects input/output dimensions
+        - ``InputOutputShapeSetter`` – auto-detects input/output dimensions and
+          applies the declared ``cat_features`` as categorical columns
         - ``LossFunctionSetter`` – configures criterion based on head_type
 
         When a validation split is active (``train_split`` is not None),
@@ -991,7 +993,9 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         has_loss_setter = any(isinstance(cb, LossFunctionSetter) for cb in callbacks_list)
 
         if not has_shape_setter:
-            callbacks_list = [InputOutputShapeSetter()] + callbacks_list
+            callbacks_list = [
+                InputOutputShapeSetter(categorical_columns=getattr(self, "cat_features", None))
+            ] + callbacks_list
         if not has_loss_setter:
             callbacks_list = [LossFunctionSetter()] + callbacks_list
 
@@ -1634,13 +1638,19 @@ class NODERegressor(BaseNODEEstimator):
         - Automatic dimension detection for single/multi-target regression
         - Flow head: probabilistic predictions with sampling (head_type='flow')
         - MLP head: non-linear transformations (head_type='mlp')
-        - Mixed data types: continuous and categorical features
+        - Mixed data types: continuous and categorical features. Categorical
+          columns must be declared explicitly via ``cat_features`` (like
+          CatBoost); they are never auto-detected.
         - DataFrame and numpy array support
 
     Example:
         >>> reg = NODERegressor(num_trees=2048, depth=6, max_epochs=100)
         >>> reg.fit(X_train, y_train)
         >>> predictions = reg.predict(X_test)
+
+        >>> # Declare categorical columns explicitly:
+        >>> reg = NODERegressor(cat_features=["city", "education"], max_epochs=100)
+        >>> reg.fit(X_train_df, y_train)
 
         >>> # For probabilistic predictions with flow head:
         >>> # IMPORTANT: Flow heads require standardized targets for numerical stability
@@ -1710,6 +1720,7 @@ class NODERegressor(BaseNODEEstimator):
         target_type: str = "single_target",  # "single_target" or "multi_target"
         model_type: str = "regression",  # Model type for Mother framework
         task_weights: Optional[List[float]] = None,  # Weights for multi-task regression
+        cat_features: Optional[List[str]] = None,  # Column names to treat as categorical (like CatBoost)
         iterator_train__shuffle: bool = True,  # Shuffle training data
         train_split: Optional[Any] = None,  # Validation split (None = no validation)
         callbacks: Optional[List[Any]] = None,  # Additional Skorch callbacks
@@ -1755,6 +1766,7 @@ class NODERegressor(BaseNODEEstimator):
             flow_signal,
             flow_components,
             callbacks,
+            cat_features,
         )
 
         # Prepare callbacks list (inject EarlyStopping when val split active)
@@ -2691,7 +2703,9 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
 
     Key Features:
         - Auto dimension detection via InputOutputShapeSetter callback
-        - Mixed data types with categorical embeddings
+        - Mixed data types with categorical embeddings. Categorical columns must
+          be declared explicitly via ``cat_features`` (like CatBoost); they are
+          never auto-detected.
         - Head types: subset (default), linear, mlp
         - Uncertainty via Monte Carlo Dropout (requires input_dropout > 0)
 
@@ -2764,6 +2778,7 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
         # Framework Integration (Mother/Skorch compatibility)
         # ====================================================================
         model_type: str = "classification_binary",  # Model type for Mother framework
+        cat_features: Optional[List[str]] = None,  # Column names to treat as categorical (like CatBoost)
         iterator_train__shuffle: bool = True,  # Shuffle training data
         train_split: Optional[Any] = None,  # Validation split (None = no validation)
         callbacks: Optional[List[Any]] = None,  # Additional Skorch callbacks
@@ -2816,6 +2831,7 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
             flow_signal,
             flow_components,
             callbacks,
+            cat_features,
         )
 
         # Prepare callbacks list (inject EarlyStopping when val split active)
