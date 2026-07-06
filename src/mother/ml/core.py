@@ -2,12 +2,16 @@ import inspect
 import logging
 from abc import ABC, abstractmethod
 
+import numpy as np
 import pandas as pd
 from optuna.trial import Trial
 from sklearn import compose as skl_comp
 from sklearn import pipeline as skl_pipe
 
 module_logger = logging.getLogger(__name__)
+
+# Fields produced by predict_uncertainty for every target. Order mirrors the single-target schema.
+_UNCERTAINTY_SCHEMA = ("pred", "mean_predictions", "knowledge_uncertainty", "data_uncertainty", "total_uncertainty")
 
 
 class AbstractMotherPipeline(ABC):
@@ -44,15 +48,20 @@ class AbstractMotherPipeline(ABC):
 
     def predict_uncertainty(self, X: pd.DataFrame, **kwargs):
         """
-        This method needs to be implemented for the models that supports uncertainty.
-        Otherwise, the model will run self.predict(X).
+        Coordinating method for uncertainty prediction. This is a simple fallback for models
+        without a specialized predict_uncertainty implementation.
+
+        Models with specialized uncertainty estimation (e.g., CatBoost, TabPFN, RandomForest)
+        should override this method with their own implementations.
 
         Args:
-            X (pd.DataFrame): input features to predict target value
+            X (pd.DataFrame): Input features to predict target values
+            **kwargs: Additional keyword arguments
+
         """
         module_logger.warning(
-            f"Uncertainty quantification is not implemented for {self.__class__.__name__}."
-            "predict() function will be run."
+            f"Uncertainty quantification is not implemented for {self.__class__.__name__}. "
+            "predict() will be used as a fallback."
         )
         pred_res = self.predict(X)
 
@@ -62,22 +71,67 @@ class AbstractMotherPipeline(ABC):
             # single dim output
             pred_res = pd.DataFrame(
                 {
-                    "mean_predictions": pred_res,
+                    "pred": pred_res,
+                    "mean_predictions": None,
                     "knowledge_uncertainty": None,
                     "data_uncertainty": None,
                     "total_uncertainty": None,
                 },
             )
         elif (len(pred_res.shape) == 2) and (pred_res.shape[-1] == 1):
-            # 2D output with one col
+            # 2D output with one col - extract the single column using [:, 0]
+            single_col = pred_res.iloc[:, -1] if isinstance(pred_res, pd.DataFrame) else pred_res[:, -1]
             pred_res = pd.DataFrame(
                 {
-                    "mean_predictions": pred_res.iloc[:, -1] if isinstance(pred_res, pd.DataFrame) else pred_res[:, -1],
+                    "pred": single_col,
+                    "mean_predictions": None,
                     "knowledge_uncertainty": None,
                     "data_uncertainty": None,
                     "total_uncertainty": None,
                 },
             )
+
+        elif (len(pred_res.shape) == 2) and (pred_res.shape[-1] > 1):
+            # Multi-target output: one column per (target, field) pair, same field order as single-target.
+            # Only point predictions are available in this generic fallback.
+            # Ensemble means and uncertainty fields remain unset to match the single-target contract.
+            pred_array = np.asarray(pred_res)
+            n_targets = pred_array.shape[1]
+            pred_res = pd.DataFrame(
+                {
+                    f"target_{i}_{field}": (pred_array[:, i] if field == "pred" else None)
+                    for i in range(n_targets)
+                    for field in _UNCERTAINTY_SCHEMA
+                }
+            )
+
+        if isinstance(pred_res, pd.DataFrame) and hasattr(self, "predict_proba") and "pred" in pred_res.columns:
+            module_logger.warning(
+                f"Uncertainty quantification is not implemented for {self.__class__.__name__}. "
+                f"predict() predict_proba() will be used as a fallback "
+                f"with entropy-based uncertainty for classification tasks."
+            )
+            model_predictions_proba = self.predict_proba(X)  # type: ignore[attr-defined]
+            if hasattr(model_predictions_proba, "shape") and len(model_predictions_proba.shape) == 2:
+                # For classifiers, mean_predictions is intentionally unset in the uncertainty output.
+                pred_res["mean_predictions"] = None
+
+                n_classes = model_predictions_proba.shape[1]
+                prediction_columns_proba = [f"proba_{i}" for i in range(n_classes)]
+                proba_df = pd.DataFrame(
+                    data=model_predictions_proba, index=pred_res.index, columns=prediction_columns_proba
+                )
+
+                # Entropy (nats) as a default total uncertainty estimate for classifiers.
+                model_predictions_proba = np.clip(model_predictions_proba, 1e-10, 1.0)
+                pred_res["total_uncertainty"] = -np.sum(
+                    model_predictions_proba * np.log(model_predictions_proba), axis=1
+                )
+
+                # Keep output order aligned with CatBoost layout:
+                # pred, proba_*, then the remaining uncertainty columns.
+                remaining_cols = [col for col in pred_res.columns if col != "pred"]
+                pred_res = pd.concat([pred_res[["pred"]], proba_df, pred_res[remaining_cols]], axis=1)
 
         if isinstance(X, pd.DataFrame) and isinstance(pred_res, pd.DataFrame):
             pred_res.set_index(X.index, inplace=True)
@@ -130,7 +184,8 @@ class _SklComposeWithHyperparameterRooting(AbstractMotherPipeline):
     different steps of a pipeline or column transformer.
     """
 
-    iterative_steps: str = "steps"  # name of the attribute that contains the steps (different for Pipeline, and
+    # name of the attribute that contains the steps (different for Pipeline, and
+    iterative_steps: str = "steps"
     # ColumnTransformer)
 
     def _dict_concatenation_on_pipelinestep_method_with_prefix(

@@ -69,6 +69,11 @@ def use_multitarget(request):
     return request.param
 
 
+@pytest.fixture(params=[True, False])
+def return_estimators(request):
+    return request.param
+
+
 @pytest.fixture()
 def regression_pipeline(request) -> Pipeline:
     class LassoPipeline(Pipeline, BaseEstimator, AbstractMotherPipeline):
@@ -277,7 +282,17 @@ def test_optimize_and_train_mother_cv_regression(
     synthetic_data_regression,
     cv,
     use_multitarget,
+    return_estimators,
+    tmp_path,
+    monkeypatch,
 ):
+    # The LassoPipeline is not suited for multi-target regression, so we skip this test case.
+    if "Lasso" in regression_pipeline.__class__.__name__ and use_multitarget:
+        pytest.skip("LassoRegressorMother does not support multi-target regression.")
+
+    if return_estimators:
+        monkeypatch.chdir(tmp_path)
+
     X, y, y_multitask = synthetic_data_regression
 
     # Create a random number generator
@@ -289,7 +304,7 @@ def test_optimize_and_train_mother_cv_regression(
         index=X.index,
     )
 
-    cv_table = mother_cv(
+    result = mother_cv(
         regression_pipeline,
         tuner=tuner_regression,
         inner_cv=cv,
@@ -297,20 +312,35 @@ def test_optimize_and_train_mother_cv_regression(
         cv=cv,
         X=X,
         y=y if not use_multitarget else y_multitask,
+        return_estimators=return_estimators,
     )
+
+    if return_estimators:
+        cv_table, estimators = result
+    else:
+        cv_table = result
 
     assert cv_table.shape[0] == X.shape[0]
     assert np.sum(cv_table.columns.str.count("_proba").values) == 0
     assert len(np.unique(cv_table["iteration"])) == 2
     assert cv_table["test_index"].is_monotonic_increasing
 
+    if return_estimators:
+        assert "estimators" in estimators
+        assert "prediction_prefix" in estimators
+        assert "target_columns" in estimators
+        assert len(estimators["estimators"]) == cv.get_n_splits()
+
     if use_multitarget:
-        assert set(
-            ["pred_targetOne", "pred_targetTwo", "targetOne", "targetTwo", "cv_group", "iteration", "test_index"]
-        ).issubset(cv_table.columns)
+        assert {"targetOne", "targetTwo", "cv_group", "iteration", "test_index"}.issubset(cv_table.columns)
+        expected_pred_cols = {"pred_target_0_pred", "pred_target_0_mean_predictions"}
+        assert any(col in cv_table.columns for col in expected_pred_cols), (
+            f"No prediction columns found. Expected one of {expected_pred_cols}, got {list(cv_table.columns)}"
+        )
+
     else:
-        assert np.array_equal(cv_table["target"].values, np.ravel(y))
-        assert {"pred_target", "target", "cv_group", "iteration", "test_index"}.issubset(cv_table.columns)
+        assert np.array_equal(np.asarray(cv_table["target"].values), np.ravel(y))
+        assert {"target", "cv_group", "iteration", "test_index"}.issubset(cv_table.columns)
 
 
 def test_optimize_and_train_mother_cv_hyperparam_rooting(
@@ -318,7 +348,13 @@ def test_optimize_and_train_mother_cv_hyperparam_rooting(
     regression_pipeline_mother_hyperparam_rooting,
     synthetic_data_regression,
     cv,
+    return_estimators,
+    tmp_path,
+    monkeypatch,
 ):
+    if return_estimators:
+        monkeypatch.chdir(tmp_path)
+
     X, y, _ = synthetic_data_regression
 
     # Create a random number generator
@@ -329,7 +365,7 @@ def test_optimize_and_train_mother_cv_hyperparam_rooting(
         {"Groups": rng.choice(range(1, 6), size=X.shape[0], replace=True)}, index=X.index
     )
 
-    cv_table = mother_cv(
+    result = mother_cv(
         regression_pipeline_mother_hyperparam_rooting,
         tuner=tuner_regression,
         inner_cv=cv,
@@ -337,7 +373,14 @@ def test_optimize_and_train_mother_cv_hyperparam_rooting(
         cv=cv,
         X=X,
         y=y,
+        return_estimators=return_estimators,
     )
+
+    if return_estimators:
+        cv_table, estimators = result
+    else:
+        cv_table = result
+
     print(cv_table)
 
     assert cv_table.shape[0] == X.shape[0]
@@ -346,7 +389,13 @@ def test_optimize_and_train_mother_cv_hyperparam_rooting(
     assert cv_table["test_index"].is_monotonic_increasing
 
     assert np.array_equal(cv_table["target"].values, np.ravel(y))
-    assert set(["pred_target", "target", "cv_group", "iteration", "test_index"]).issubset(cv_table.columns)
+    assert {"target", "cv_group", "iteration", "test_index"}.issubset(cv_table.columns)
+
+    if return_estimators:
+        assert "estimators" in estimators
+        assert "prediction_prefix" in estimators
+        assert "target_columns" in estimators
+        assert len(estimators["estimators"]) == cv.get_n_splits()
 
 
 def test_optimize_and_train_mother_cv_classification(
@@ -354,83 +403,156 @@ def test_optimize_and_train_mother_cv_classification(
     classification_pipeline,
     synthetic_data_classification,
     cv,
+    return_estimators,
+    tmp_path,
+    monkeypatch,
 ):
+    if return_estimators:
+        monkeypatch.chdir(tmp_path)
+
     X, y, _ = synthetic_data_classification
 
-    cv_table = mother_cv(
+    result = mother_cv(
         classification_pipeline,
         tuner=tuner_classification,
         inner_cv=cv,
         cv=cv,
         X=X,
         y=y,
+        return_estimators=return_estimators,
     )
+
+    if return_estimators:
+        cv_table, estimators = result
+    else:
+        cv_table = result
 
     assert cv_table.shape[0] == X.shape[0]
     assert np.sum(cv_table.columns.str.count("_proba").values) == 2
     assert cv_table["test_index"].is_monotonic_increasing
 
+    if return_estimators:
+        assert "estimators" in estimators
+        assert "prediction_prefix" in estimators
+        assert "target_columns" in estimators
+        assert len(estimators["estimators"]) == cv.get_n_splits()
+
 
 def test_optimize_and_train_mother_cv_multiclassification(
-    tuner_classification, classification_pipeline_multitarget, synthetic_data_classification, cv
+    tuner_classification,
+    classification_pipeline_multitarget,
+    synthetic_data_classification,
+    cv,
+    return_estimators,
+    tmp_path,
+    monkeypatch,
 ):
-    X, _, y_multitarget = synthetic_data_classification
-    # outer_cv_split = KFold(n_splits=2, shuffle=True)
+    if return_estimators:
+        monkeypatch.chdir(tmp_path)
 
-    cv_table = mother_cv(
+    X, _, y_multitarget = synthetic_data_classification
+
+    result = mother_cv(
         classification_pipeline_multitarget,
         tuner=tuner_classification,
         inner_cv=cv,
         cv=cv,
         X=X,
         y=y_multitarget,
+        return_estimators=return_estimators,
     )
+
+    if return_estimators:
+        cv_table, estimators = result
+    else:
+        cv_table = result
 
     assert cv_table.shape[0] == X.shape[0]
     assert np.sum(cv_table.columns.str.count("_proba").values) == 2
     assert cv_table["test_index"].is_monotonic_increasing
 
+    if return_estimators:
+        assert len(estimators["estimators"]) == cv.get_n_splits()
 
+
+@pytest.mark.slow
 def test_mother_cv_all_classification_algorithms(
     tuner_classification,
     all_classification_algorithms,
     synthetic_data_classification,
     cv,
+    return_estimators,
+    tmp_path,
+    monkeypatch,
 ):
     """
     Test if mother_cv runs with all available classification algorithms
     """
+    if return_estimators:
+        monkeypatch.chdir(tmp_path)
+
     X, y, _ = synthetic_data_classification
 
-    mother_cv(
+    result = mother_cv(
         all_classification_algorithms,
         tuner=tuner_classification,
         inner_cv=cv,
         cv=cv,
         X=X,
         y=y,
+        return_estimators=return_estimators,
     )
 
+    if return_estimators:
+        cv_table, estimators = result
+        assert "estimators" in estimators
+        assert "prediction_prefix" in estimators
+        assert "target_columns" in estimators
+    else:
+        cv_table = result
+        assert cv_table.shape[0] == X.shape[0]
+        assert np.sum(cv_table.columns.str.count("_proba").values) == 2
+        assert cv_table["test_index"].is_monotonic_increasing
 
+
+@pytest.mark.slow
 def test_mother_cv_all_regression_algorithms(
     tuner_regression,
     all_regression_algorithms,
     synthetic_data_regression,
     cv,
+    return_estimators,
+    tmp_path,
+    monkeypatch,
 ):
     """
     Test if mother_cv runs with all available regression algorithms
     """
+    if return_estimators:
+        monkeypatch.chdir(tmp_path)
+
     X, y, _ = synthetic_data_regression
 
-    mother_cv(
+    result = mother_cv(
         all_regression_algorithms,
         tuner=tuner_regression,
         inner_cv=cv,
         cv=cv,
         X=X,
         y=y,
+        return_estimators=return_estimators,
     )
+
+    if return_estimators:
+        cv_table, estimators = result
+        assert "estimators" in estimators
+        assert "prediction_prefix" in estimators
+        assert "target_columns" in estimators
+    else:
+        cv_table = result
+        assert cv_table.shape[0] == X.shape[0]
+        assert np.sum(cv_table.columns.str.count("_proba").values) == 0
+        assert cv_table["test_index"].is_monotonic_increasing
 
 
 @pytest.mark.parametrize(
@@ -445,6 +567,7 @@ def test_mother_cv_raises_error_on_mismatched_group_index(
     data_fixture,
     cv,
     request,
+    return_estimators,
 ):
     """
     Test that mother_cv raises ValueError when groups have a different index than X
@@ -465,4 +588,52 @@ def test_mother_cv_raises_error_on_mismatched_group_index(
             X=X,
             y=y,
             groups=groups_mismatched,
+            return_estimators=return_estimators,
         )
+
+
+def test_mother_cv_raises_error_on_invalid_estimator_type(synthetic_data_regression, cv, return_estimators):
+    X, y, _ = synthetic_data_regression
+
+    with pytest.raises(
+        ValueError,
+        match="Estimator must be a PipelineWithHyperparameterRooting or AbstractMotherPipeline",
+    ):
+        mother_cv(
+            object(),
+            cv=cv,
+            X=X,
+            y=y,
+            return_estimators=return_estimators,
+        )
+
+
+def test_mother_cv_return_estimators_as_tuple(
+    regression_pipeline,
+    synthetic_data_regression,
+    cv,
+    tmp_path,
+    monkeypatch,
+):
+    X, y, _ = synthetic_data_regression
+    monkeypatch.chdir(tmp_path)
+
+    result = mother_cv(
+        regression_pipeline,
+        cv=cv,
+        X=X,
+        y=y,
+        return_estimators=True,
+    )
+
+    cv_table, estimators = result
+
+    assert isinstance(cv_table, pd.DataFrame)
+    assert isinstance(estimators, dict)
+    assert "estimators" in estimators
+    assert "prediction_prefix" in estimators
+    assert "target_columns" in estimators
+    assert isinstance(estimators["estimators"], list)
+    assert len(estimators["estimators"]) == cv.get_n_splits()
+    assert estimators["prediction_prefix"] == "pred_"
+    assert estimators["target_columns"] == ["target"]
