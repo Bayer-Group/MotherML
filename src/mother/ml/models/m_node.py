@@ -1399,14 +1399,19 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         # Prepare input - use the callback's data preparation (bound during fit)
         X = self._prepare_data_for_node(X)
 
-        # Set model to training mode to activate ALL configured dropouts
-        # (input_dropout, tree_dropout, mlp_dropout will all be active based on their configured values).
-        # Keep BatchNorm layers in eval mode so their running statistics are not
-        # updated and predictions stay batch-independent during MC-dropout sampling.
-        model.train()
+        # Keep the whole model in eval mode (so BatchNorm uses its running statistics
+        # and every other stateful layer stays deterministic) and then switch ON
+        # *only* the dropout mechanisms for MC-dropout. We deliberately do NOT put the
+        # entire model into training mode, which previously also enabled BatchNorm
+        # training and other train-only behaviour.
+        model.eval()
+        # tree_dropout is gated on the top module's own self.training flag.
+        model.training = True
         for _m in model.modules():
-            if isinstance(_m, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
-                _m.eval()
+            # input_dropout is gated on each DenseODSTBlock's self.training flag;
+            # mlp_dropout is implemented with standard nn.Dropout layers.
+            if isinstance(_m, (DenseODSTBlock, nn.Dropout)):
+                _m.training = True
 
         all_predictions = []
 
