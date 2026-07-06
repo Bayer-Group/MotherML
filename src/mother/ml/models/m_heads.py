@@ -858,9 +858,11 @@ class MLPHeadClassifier(NeuralNetClassifier, BaseMLPHeadEstimator, AbstractMothe
         Predict with uncertainty estimation using MC Dropout (Mother framework compatible).
 
         Multiple stochastic forward passes with dropout active produce per-class
-        probabilities; the entropy of the averaged probabilities is used as the
-        (epistemic) uncertainty. This matches the standardised interface of the other
-        Mother classifiers.
+        probabilities. The uncertainty is decomposed as CatBoost does (Malinin et al.):
+        ``total_uncertainty`` = entropy of the mean (predictive) probability;
+        ``data_uncertainty`` (aleatoric) = mean per-pass entropy (expected entropy);
+        ``knowledge_uncertainty`` (epistemic) = ``total - data`` (mutual information).
+        This matches the standardised interface of the other Mother classifiers.
 
         Args:
             X: Input features.
@@ -875,9 +877,11 @@ class MLPHeadClassifier(NeuralNetClassifier, BaseMLPHeadEstimator, AbstractMothe
 
         Returns:
             pd.DataFrame:
-                - Default: DataFrame with columns ``pred``, ``mean_predictions`` (None),
-                  ``knowledge_uncertainty`` (entropy), ``data_uncertainty`` (None),
-                  ``total_uncertainty`` (entropy).
+                - Default: DataFrame with columns ``pred``, ``mean_predictions``
+                  (mean-over-dropout probability of the reported class),
+                  ``knowledge_uncertainty`` (mutual information, total - data),
+                  ``data_uncertainty`` (mean per-pass entropy),
+                  ``total_uncertainty`` (entropy of the mean probability).
                 - If ``uncertainty_for_opt=True``: single-column ``knowledge_uncertainty``
                   DataFrame.
 
@@ -929,22 +933,34 @@ class MLPHeadClassifier(NeuralNetClassifier, BaseMLPHeadEstimator, AbstractMothe
         # Stack probabilities: shape (num_samples, n_datapoints, n_classes)
         probabilities = np.stack(probabilities, axis=0)
 
-        # Average probabilities across MC samples
+        # Predictive (mean) distribution across MC dropout passes.
         mean_probs = probabilities.mean(axis=0)  # shape: (n_datapoints, n_classes)
 
-        # Most likely class
+        # Most likely class.
         mean_pred = mean_probs.argmax(axis=1)
 
-        # Compute uncertainty as entropy of average probabilities
-        uncertainties = np.array([entropy(prob) for prob in mean_probs])
+        # Uncertainty decomposition matching CatBoost (Malinin et al.):
+        #   total     = entropy of the mean predictive distribution  H(mean_p)
+        #   data      = mean per-pass entropy (expected entropy)      E_t[H(p_t)]
+        #   knowledge = total - data (mutual information; 0 when dropout inactive)
+        total_uncertainty = entropy(mean_probs, axis=1)
+        per_pass_entropy = entropy(probabilities, axis=2)  # (num_samples, n_datapoints)
+        data_uncertainty = per_pass_entropy.mean(axis=0)
+        knowledge_uncertainty = total_uncertainty - data_uncertainty
+
+        # mean_predictions: mean-over-dropout probability of the reported class.
+        if mean_probs.shape[1] == 2:
+            mean_predictions = mean_probs[:, 1]
+        else:
+            mean_predictions = mean_probs.max(axis=1)
 
         results = pd.DataFrame(
             {
                 "pred": mean_pred,
-                "mean_predictions": None,
-                "knowledge_uncertainty": uncertainties,
-                "data_uncertainty": None,
-                "total_uncertainty": uncertainties,
+                "mean_predictions": mean_predictions,
+                "knowledge_uncertainty": knowledge_uncertainty,
+                "data_uncertainty": data_uncertainty,
+                "total_uncertainty": total_uncertainty,
             },
             index=index,
         )

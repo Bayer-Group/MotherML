@@ -2997,11 +2997,15 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
         Returns:
             pd.DataFrame:
                 - If ``return_quantiles=False``: DataFrame with columns:
-                    - ``'mean_predictions'``: Predicted probabilities (class 1 for binary,
-                      argmax for multiclass).
-                    - ``'knowledge_uncertainty'``: MC Dropout uncertainty.
-                    - ``'data_uncertainty'``: ``None`` (not applicable for MC Dropout).
-                    - ``'total_uncertainty'``: Same as ``knowledge_uncertainty``.
+                    - ``'mean_predictions'``: Mean-over-dropout probability of the
+                      reported class (class 1 for binary, predicted-class prob for
+                      multiclass).
+                    - ``'knowledge_uncertainty'``: Epistemic uncertainty — mutual
+                      information ``total - data`` (matches CatBoost).
+                    - ``'data_uncertainty'``: Aleatoric uncertainty — mean per-pass
+                      entropy (expected entropy) across MC-dropout passes.
+                    - ``'total_uncertainty'``: Entropy of the mean predictive
+                      distribution.
                 - If ``uncertainty_for_opt=True``: ``pd.DataFrame`` with 1 column
                     ``'knowledge_uncertainty'``.
 
@@ -3015,45 +3019,42 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
                 "distribution. Set return_quantiles=False."
             )
 
-        # Get predictions
-        predictions = self.predict_proba(X)
+        from scipy.stats import entropy
 
-        # Get uncertainty using MC Dropout
-        uncertainties = self._predict_uncertainty_mc_dropout(
-            X,
-            num_samples=num_samples,
-            quantiles=None,
-            return_dataframe=False,
-            use_std=use_std,
-        )
+        # Monte-Carlo dropout probability samples: (num_samples, n_datapoints, n_classes)
+        probabilities = self._mc_dropout_proba_samples(X, num_samples)
 
-        # Get index from X if it's a DataFrame
+        # Predictive (mean) distribution across MC passes.
+        mean_probs = probabilities.mean(axis=0)  # (n_datapoints, n_classes)
+        pred = mean_probs.argmax(axis=1)
+
+        # Uncertainty decomposition matching CatBoost (Malinin et al.):
+        #   total     = entropy of the mean predictive distribution  H(mean_p)
+        #   data      = mean per-pass entropy (expected entropy)      E_t[H(p_t)]
+        #   knowledge = total - data (mutual information; 0 when dropout inactive)
+        total_uncertainty = entropy(mean_probs, axis=1)
+        per_pass_entropy = entropy(probabilities, axis=2)  # (num_samples, n_datapoints)
+        data_uncertainty = per_pass_entropy.mean(axis=0)
+        knowledge_uncertainty = total_uncertainty - data_uncertainty
+
         index = X.index if isinstance(X, pd.DataFrame) else None
 
-        # For binary classification, use class 1 probabilities
-        if predictions.shape[1] == 2:
-            results = pd.DataFrame(
-                {
-                    "pred": predictions.argmax(axis=1),
-                    "mean_predictions": predictions[:, 1],
-                    "knowledge_uncertainty": uncertainties[:, 1],
-                    "data_uncertainty": None,
-                    "total_uncertainty": uncertainties[:, 1],
-                },
-                index=index,
-            )
+        # mean_predictions: mean-over-dropout probability of the reported class.
+        if mean_probs.shape[1] == 2:
+            mean_predictions = mean_probs[:, 1]
         else:
-            # For multiclass, return predicted class (argmax) as mean_predictions
-            results = pd.DataFrame(
-                {
-                    "pred": predictions.argmax(axis=1),
-                    "mean_predictions": predictions.argmax(axis=1),
-                    "knowledge_uncertainty": uncertainties.max(axis=1),
-                    "data_uncertainty": None,
-                    "total_uncertainty": uncertainties.max(axis=1),
-                },
-                index=index,
-            )
+            mean_predictions = mean_probs.max(axis=1)
+
+        results = pd.DataFrame(
+            {
+                "pred": pred,
+                "mean_predictions": mean_predictions,
+                "knowledge_uncertainty": knowledge_uncertainty,
+                "data_uncertainty": data_uncertainty,
+                "total_uncertainty": total_uncertainty,
+            },
+            index=index,
+        )
 
         if uncertainty_for_opt:
             return pd.DataFrame(
@@ -3062,6 +3063,43 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
             )
 
         return results
+
+    def _mc_dropout_proba_samples(
+        self, X: Union[pd.DataFrame, npt.NDArray[np.float32]], num_samples: int
+    ) -> npt.NDArray[np.float32]:
+        """Run ``num_samples`` MC-dropout forward passes and return class probabilities.
+
+        Dropout layers are kept active during inference so that each pass yields a
+        different probability vector. Uses sigmoid for multi-label (BCE) criteria and
+        softmax otherwise.
+
+        Returns:
+            Array of shape ``(num_samples, n_datapoints, n_classes)``.
+        """
+        model = self.module_
+        model.eval()
+        X_prep = self._prepare_data_for_node(X)
+
+        # Enable dropout for MC sampling.
+        model.train()
+
+        use_sigmoid = isinstance(self.criterion_, nn.BCEWithLogitsLoss)
+        all_probs = []
+        with torch.no_grad():
+            for _ in range(num_samples):
+                batch_probs = []
+                for batch in self.get_iterator(X_prep, training=False):
+                    Xi = batch[0] if isinstance(batch, (tuple, list)) else batch
+                    Xi = Xi.to(self.device)
+                    logits = model(Xi)
+                    probs = torch.sigmoid(logits) if use_sigmoid else torch.softmax(logits, dim=1)
+                    batch_probs.append(probs.detach().cpu().numpy())
+                all_probs.append(np.concatenate(batch_probs, axis=0))
+
+        # Restore eval mode.
+        model.eval()
+
+        return np.stack(all_probs, axis=0)
 
     def predict_quantiles(
         self,
