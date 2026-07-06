@@ -653,7 +653,7 @@ class NODEModel(nn.Module):
 
 
 class CompletePyTorchTabularNODE(nn.Module):
-    """
+    r"""
     Complete NODE module: Embedding → Dense ODST Blocks → Head → Output.
 
     This is the ``nn.Module`` instantiated by ``NODEClassifier`` and

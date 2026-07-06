@@ -2832,6 +2832,11 @@ clustering = [
     { name = "hdbscan" },
     { name = "kmedoids" },
 ]
+node = [
+    { name = "skorch" },
+    { name = "torch" },
+    { name = "zuko" },
+]
 report = [
     { name = "igraph" },
     { name = "ipywidgets" },
@@ -2916,12 +2921,15 @@ requires-dist = [
     { name = "scikit-learn", specifier = "<=1.5.0" },
     { name = "seaborn", marker = "extra == 'report'", specifier = ">=0.13.2,<0.14" },
     { name = "single-source", specifier = ">=0.4.0,<0.5" },
+    { name = "skorch", marker = "extra == 'node'", specifier = ">=1.4.0,<2" },
     { name = "tabpfn", marker = "extra == 'tabpfn'", specifier = "==2.1.0" },
+    { name = "torch", marker = "extra == 'node'", specifier = ">=2.3.0,<3" },
     { name = "torch", marker = "extra == 'tabpfn'", specifier = ">=2.3.0,<3" },
     { name = "torch", marker = "extra == 'torch'", specifier = ">=2.3.0,<3" },
     { name = "umap-learn", marker = "extra == 'report'", specifier = ">=0.5.7,<0.6" },
+    { name = "zuko", marker = "extra == 'node'", specifier = ">=1.6.0,<2" },
 ]
-provides-extras = ["torch", "report", "rna", "clustering", "tabpfn"]
+provides-extras = ["torch", "report", "rna", "clustering", "tabpfn", "node"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -5360,6 +5368,23 @@ wheels = [
 ]
 
 [[package]]
+name = "skorch"
+version = "1.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "scikit-learn" },
+    { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "tabulate" },
+    { name = "tqdm" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c1/c4/395ce13f1f22ff7feebb9be69e1f86b656500fe22d80f37542196d5fa00c/skorch-1.4.0.tar.gz", hash = "sha256:f7a5d3c13a3aecf0a0fe689ff25188be1145a95268f8fe81f01aaa9fbd7cead1", size = 252219, upload-time = "2026-05-14T13:03:26.606Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2d/1e/8c8890462354c2312c07c408505a7585ad66dc558cd912d7f41196127e1d/skorch-1.4.0-py3-none-any.whl", hash = "sha256:eed53db7a7d5e72df38ec518a24206ee8e87c0bffd4a0386da3261ff667690ed", size = 271588, upload-time = "2026-05-14T13:03:24.519Z" },
+]
+
+[[package]]
 name = "slicer"
 version = "0.0.8"
 source = { registry = "https://pypi.org/simple" }
@@ -5510,6 +5535,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/35/3a/a195dab09d94766b16837810ae8064079158193532923b96f22a95ed7024/tabpfn-2.1.0.tar.gz", hash = "sha256:bb74732d63a7cd419aaf71fbfeacd12c1a717b0a50342ae17f0736ddbad04dc5", size = 179399, upload-time = "2025-07-09T16:29:15.51Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/47/d6/dcec05d0e7d9f41d8501167f15c6a046b38e1d90bb34e6c91863915e9fe1/tabpfn-2.1.0-py3-none-any.whl", hash = "sha256:db99d7573626fa47ab27b7f03ee6a7a24e505b1dd6bfab66634fff96c1b0d436", size = 155495, upload-time = "2025-07-09T16:29:13.914Z" },
+]
+
+[[package]]
+name = "tabulate"
+version = "0.10.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/46/58/8c37dea7bbf769b20d58e7ace7e5edfe65b849442b00ffcdd56be88697c6/tabulate-0.10.0.tar.gz", hash = "sha256:e2cfde8f79420f6deeffdeda9aaec3b6bc5abce947655d17ac662b126e48a60d", size = 91754, upload-time = "2026-03-04T18:55:34.402Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/99/55/db07de81b5c630da5cbf5c7df646580ca26dfaefa593667fc6f2fe016d2e/tabulate-0.10.0-py3-none-any.whl", hash = "sha256:f0b0622e567335c8fabaaa659f1b33bcb6ddfe2e496071b743aa113f8774f2d3", size = 39814, upload-time = "2026-03-04T18:55:31.284Z" },
 ]
 
 [[package]]
@@ -6070,4 +6104,17 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/da/1d/01cf9e3ab2d85190278efc3fca9f68563de35ae30ee59e7640e3af98abe3/zarr-2.18.7.tar.gz", hash = "sha256:b2b8f66f14dac4af66b180d2338819981b981f70e196c9a66e6bfaa9e59572f5", size = 3604558, upload-time = "2025-04-09T07:59:28.482Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/5e/d8/9ffd8c237b3559945bb52103cf0eed64ea098f7b7f573f8d2962ef27b4b2/zarr-2.18.7-py3-none-any.whl", hash = "sha256:ac3dc4033e9ae4e9d7b5e27c97ea3eaf1003cc0a07f010bd83d5134bf8c4b223", size = 211273, upload-time = "2025-04-09T07:59:27.039Z" },
+]
+
+[[package]]
+name = "zuko"
+version = "1.6.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "torch" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8c/41/ddbe72cb64996d7826ba427c675252be0c38fbd9fbf8920d0fcdaf5d8e38/zuko-1.6.0.tar.gz", hash = "sha256:edc516e51bbbf9d64e7663b617cf9293c6e1e6bbfcb39559bc383383e6663b04", size = 45245, upload-time = "2026-03-10T08:38:19.646Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/95/10/ff159867f522cd98e039e748c5e9777446e8b797a79be691c6b730676094/zuko-1.6.0-py3-none-any.whl", hash = "sha256:5c073b613a84a7cd65470ddb94855169020ac49432f73b85f25207e377248a4a", size = 48033, upload-time = "2026-03-10T08:38:21.039Z" },
 ]
