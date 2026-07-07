@@ -2402,6 +2402,22 @@ class NODERegressor(BaseNODEEstimator):
             acquisition score computed by first aggregating each flow ``p_t`` into a
             single number ``H[p_t]`` and then subtracting from the mixture entropy.
 
+        Sources / lineage (name the right ones):
+            * MI decomposition: Houlsby et al. 2011 (BALD).
+            * MC-dropout ensemble approximation: Gal, Islam & Ghahramani 2017.
+            * Continuous / regression via differential entropy: Depeweg et al. 2018.
+            * Flow ensemble + *sampled* entropy ``H = -(1/S) Σ_s log p(y_s)`` combined
+              by subtraction: this is exactly the ``NFlows Out`` method of Berry &
+              Meger 2023 (AAAI 2023, pp. 6806-6814; arXiv:2308.13498). Werner &
+              Schmidt-Thieme 2025 (BALSA) label this baseline ``BALD_H``.
+            IMPORTANT attribution details:
+              - We estimate the entropy by SAMPLING (as ``NFlows Out`` does), NOT on a
+                fixed grid; the grid/trapezoidal variant is BALSA's own ``BALD_H``.
+              - Dropout lives in the NODE trunk / flow-head conditioner with RANDOM
+                masks (matches BALSA's stated setup), whereas ``NFlows Out`` uses FIXED
+                masks inside the flow's bijective transforms. The decomposition maths is
+                identical; only the location/type of the injected noise differs.
+
         Relation to BALSA (Bayesian Active Learning by Distribution Disagreement):
             BALSA (Werner & Schmidt-Thieme, 2025; arXiv:2501.01248) is an
             active-learning acquisition function that improves on BALD_H for

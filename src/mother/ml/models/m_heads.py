@@ -60,11 +60,22 @@ Usage Examples:
     samples = reg.predict_flow(X_test, num_samples=1000)  # Full distribution
 
 References:
-    NodeFlow Architecture:
+    NodeFlow Architecture (flow head):
         Wielopolski, P., Furman, O., & Zięba, M. (2024).
         NodeFlow: Towards End-to-end Flexible Probabilistic Regression on Tabular Data.
         Entropy, 26(7), 593.
         https://doi.org/10.3390/e26070593
+
+    Uncertainty decomposition (MC-dropout heads):
+        The classification MC-dropout split (predictive entropy = expected entropy +
+        mutual information) follows the CatBoost virtual-ensemble decomposition of
+        Malinin, Prokhorenkova & Ustimenko (2021), "Uncertainty in Gradient Boosting
+        via Ensembles" (arXiv:2006.10562) — itself the BALD mutual-information split of
+        Houlsby et al. (2011) approximated with MC-dropout (Gal, Islam & Ghahramani,
+        2017). The flow-head regression analogue (differential-entropy BALD over an
+        MC-dropout flow ensemble, entropy estimated by sampling) corresponds to the
+        ``NFlows Out`` method of Berry & Meger (2023); see ``m_node.py``
+        ``predict_with_combined_uncertainty`` for the full attribution.
 
 Authors: Julian Qian, Sergey Popov
 """
