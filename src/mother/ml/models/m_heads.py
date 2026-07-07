@@ -239,6 +239,10 @@ class MLPHead(nn.Module):
                 return nn.GELU()
             elif activation == "LeakyReLU":
                 return nn.LeakyReLU()
+            elif activation == "ELU":
+                return nn.ELU()
+            elif activation == "SiLU":
+                return nn.SiLU()
             else:
                 raise ValueError(f"Unsupported activation: {activation}")
 

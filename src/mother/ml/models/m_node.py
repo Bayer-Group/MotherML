@@ -1516,20 +1516,23 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         and ``NODEClassifier`` to include the head types they support.
         """
         suggested_params = {
-            prefix + "num_layers": trial.suggest_int(prefix + "num_layers", 1, 4, log=False),
-            prefix + "num_trees": trial.suggest_int(prefix + "num_trees", 256, 2048, step=256, log=False),
+            prefix + "num_layers": trial.suggest_int(prefix + "num_layers", 1, 6, log=False),
+            prefix + "num_trees": trial.suggest_int(prefix + "num_trees", 256, 4096, step=256, log=False),
             prefix + "additional_tree_output_dim": trial.suggest_int(
-                prefix + "additional_tree_output_dim", 0, 4, log=False
+                prefix + "additional_tree_output_dim", 0, 8, log=False
             ),
-            prefix + "depth": trial.suggest_int(prefix + "depth", 2, 8, log=False),
+            prefix + "depth": trial.suggest_int(prefix + "depth", 2, 10, log=False),
             prefix + "lr": trial.suggest_float(prefix + "lr", 1e-5, 1e-1, log=True),
         }
 
-        # Tune dropout parameters (architectural regularization)
+        # Tune dropout parameters (architectural regularization).
+        # Fine step (0.01) so Optuna can reach the low-dropout regime that
+        # normalizing-flow heads favour (best ~0.008-0.05; Werner & Schmidt-Thieme 2025);
+        # all three dropout knobs (input/tree/mlp) stay available.
         # input_dropout: Applied to combined features between ODST layers
-        suggested_params[prefix + "input_dropout"] = trial.suggest_float(prefix + "input_dropout", 0.0, 0.3, step=0.05)
+        suggested_params[prefix + "input_dropout"] = trial.suggest_float(prefix + "input_dropout", 0.0, 0.3, step=0.01)
         # tree_dropout: Applied after NODE layers, before head (architectural)
-        suggested_params[prefix + "tree_dropout"] = trial.suggest_float(prefix + "tree_dropout", 0.0, 0.3, step=0.05)
+        suggested_params[prefix + "tree_dropout"] = trial.suggest_float(prefix + "tree_dropout", 0.0, 0.3, step=0.01)
 
         # Head-specific tuning is delegated entirely to subclass overrides.
         # The base implementation is a no-op; NODERegressor / NODEClassifier
@@ -1569,11 +1572,11 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         )
         expected_input_dim = num_layers * num_trees * total_output_dim
 
-        # Determine number of MLP hidden layers (respect user's if set, else default 3)
+        # Determine number of MLP hidden layers (respect user's if set, else tune 1-4)
         if hasattr(self, "mlp_hidden_dims") and self.mlp_hidden_dims is not None:
             num_mlp_layers = len(self.mlp_hidden_dims)
         else:
-            num_mlp_layers = 3
+            num_mlp_layers = trial.suggest_int(prefix + "mlp_num_layers", 1, 4)
 
         # Tune first hidden layer (10-50% of NODE output), derive rest with 2x compression
         min_hidden = max(64, expected_input_dim // 10)
@@ -1591,7 +1594,7 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         suggested_params[prefix + "mlp_hidden_dims"] = mlp_hidden_dims
         suggested_params[prefix + "mlp_dropout"] = trial.suggest_float(prefix + "mlp_dropout", 0.0, 0.5, log=False)
         suggested_params[prefix + "mlp_activation"] = trial.suggest_categorical(
-            prefix + "mlp_activation", ("ReLU", "GELU", "LeakyReLU")
+            prefix + "mlp_activation", ("ReLU", "GELU", "LeakyReLU", "ELU", "SiLU")
         )
         return suggested_params
 
@@ -1635,7 +1638,7 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
             prefix + "additional_tree_output_dim": 3,
             prefix + "choice_function": "entmax15",
             prefix + "bin_function": "entmoid15",
-            prefix + "input_dropout": 0.1,
+            prefix + "input_dropout": 0.05,
             prefix + "tree_dropout": 0.0,
         }
 
@@ -1699,7 +1702,7 @@ class NODERegressor(BaseNODEEstimator):
         # ====================================================================
         # Dropout & Regularization (for uncertainty estimation)
         # ====================================================================
-        input_dropout: float = 0.1,  # Dropout on input features
+        input_dropout: float = 0.05,  # Dropout on input features (low: flow heads are dropout-sensitive)
         tree_dropout: float = 0.0,  # Dropout on trees (0.0 = off)
         mlp_dropout: float = 0.1,  # Dropout in MLP head (if head_type="mlp")
         embedding_dropout: float = 0.0,  # Dropout on categorical embeddings
@@ -2491,31 +2494,36 @@ class NODERegressor(BaseNODEEstimator):
         # IMPORTANT: dropout is enabled but the model stays in eval() so BatchNorm
         # keeps its running statistics (see MC-dropout notes).
         # ------------------------------------------------------------------
-        def enable_dropout(m: nn.Module) -> None:
-            if isinstance(m, nn.Dropout):
-                m.train()
-
-        tree_dropout_rate = getattr(self.module_, "tree_dropout", 0.0)
-        input_dropout_rate = getattr(self.module_, "input_dropout", 0.0)
-        use_training_mode = tree_dropout_rate > 0 or input_dropout_rate > 0
-
-        self.module_.eval()
-        self.module_.apply(enable_dropout)
-        original_training = self.module_.training
-        if use_training_mode:
-            self.module_.train()
-            self.module_.apply(enable_dropout)
+        # Enable MC-dropout WITHOUT enabling BatchNorm training: keep the whole
+        # model in eval() (so BatchNorm keeps using its running statistics and is
+        # never updated) and switch ON *only* the dropout mechanisms. Mirrors
+        # _predict_uncertainty_mc_dropout and keeps all three dropout paths active:
+        #   * tree_dropout   - gated on the top module's own `.training` flag
+        #   * input_dropout  - gated on each DenseODSTBlock's `.training` flag
+        #   * mlp_dropout    - standard nn.Dropout layers (flow-head conditioner)
+        model = self.module_
+        model.eval()
+        model.training = True
+        for _m in model.modules():
+            if isinstance(_m, (DenseODSTBlock, nn.Dropout)):
+                _m.training = True
 
         # Collect, per batch, the T stochastic flow distributions and S samples
         # drawn from each.  The distribution objects are stored so we can later
         # cross-evaluate log p_{t'}(y_{t,s}) for the mixture-entropy term.
+        # Call the module directly (not forward_iter) so skorch does not reset the
+        # training flags per batch, and iterate with training=False so the batch
+        # order is stable across the T passes (dists_by_batch[b] stays aligned).
         dists_by_batch = []  # dists_by_batch[b][t]
         samples_by_batch = []  # samples_by_batch[b][t] : (S, B, D)
 
         try:
             with torch.no_grad():
                 for t in range(num_mc_samples):
-                    for b, yp in enumerate(self.forward_iter(X, training=use_training_mode)):
+                    for b, batch in enumerate(self.get_iterator(X, training=False)):
+                        Xi = batch[0] if isinstance(batch, (tuple, list)) else batch
+                        Xi = Xi.to(self.device)
+                        yp = model(Xi)  # flow distribution for this dropout pass
                         if t == 0:
                             dists_by_batch.append([])
                             samples_by_batch.append([])
@@ -2523,10 +2531,7 @@ class NODERegressor(BaseNODEEstimator):
                         dists_by_batch[b].append(yp)
                         samples_by_batch[b].append(samp)
         finally:
-            if use_training_mode:
-                self.module_.train(original_training)
-            else:
-                self.module_.eval()
+            model.eval()
 
         T = num_mc_samples
         log_T = float(np.log(T))
