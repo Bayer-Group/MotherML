@@ -2241,10 +2241,13 @@ class NODERegressor(BaseNODEEstimator):
 
             with torch.no_grad():
                 for yp in self.forward_iter(X_prep, training=False):
-                    # Use shared utility: mode via max log_prob, uncertainty = -log_prob(mode)
-                    mode_pred, uncertainty = compute_flow_mode_and_uncertainty(yp, num_samples)
+                    # Point prediction = mode (max log_prob sample)
+                    mode_pred, _ = compute_flow_mode_and_uncertainty(yp, num_samples)
+                    # Data uncertainty = differential entropy H[p] (aleatoric)
+                    fsamples = yp.sample(torch.Size([num_samples]))
+                    entropy = -yp.log_prob(fsamples).mean(dim=0)
                     all_modes.append(mode_pred)
-                    data_unc_list.append(uncertainty)
+                    data_unc_list.append(entropy)
 
             # Concatenate and convert to numpy
             predictions = torch.cat(all_modes, 0).cpu().numpy()
@@ -2377,13 +2380,19 @@ class NODERegressor(BaseNODEEstimator):
 
         Flow-head only. Requires dropout > 0 for knowledge uncertainty.
 
-        Algorithm:
-            1. Single forward pass WITHOUT dropout → find mode (highest log_prob sample)
-               Data uncertainty = -log_prob(mode) from this non-dropout pass
-            2. num_mc_samples forward passes WITH dropout → evaluate log_prob of that
-               fixed mode point under each dropout mask
-            3. Knowledge uncertainty = std(-log_prob(mode)) across MC passes
-               Total = data + knowledge
+        Algorithm (information-theoretic / BALD decomposition):
+            Treat the ``num_mc_samples`` MC-dropout passes as an ensemble of flows
+            ``{p_t(y|x)}``. Using differential entropies estimated by Monte-Carlo
+            (``H[p] = -E_{y~p}[log p(y)] ≈ -(1/S) Σ_s log p(y_s)``, ``y_s ~ p``):
+
+            * ``data``  (aleatoric)  = ``(1/T) Σ_t H[p_t]``     — expected entropy
+            * ``total``              = ``H[(1/T) Σ_t p_t]``     — mixture entropy
+            * ``knowledge`` (epist.) = ``total - data``        — mutual information (≥ 0)
+
+            ``data`` and ``total`` are differential entropies (nats) and may be
+            negative for peaked flows; the mutual-information ``knowledge`` term is
+            provably non-negative (clamped at 0 to absorb Monte-Carlo noise) so the
+            identity ``total == data + knowledge`` holds exactly.
 
         Args:
             X: Input features [n_samples, n_features]
@@ -2422,8 +2431,9 @@ class NODERegressor(BaseNODEEstimator):
         # Prepare data
         X = self._prepare_data_for_node(X)
 
-        # If no dropout configured, only compute data uncertainty from 1-exp(log_prob)
-        # Knowledge uncertainty will be zero since we can't do MC Dropout
+        # If no dropout configured there is only a single flow p(y|x), so the
+        # epistemic (mutual-information) term is exactly 0. Data uncertainty is the
+        # flow's differential entropy H[p] = -E_{y~p}[log p(y)] (aleatoric).
         if not has_dropout:
             self.module_.eval()
 
@@ -2432,15 +2442,12 @@ class NODERegressor(BaseNODEEstimator):
 
             with torch.no_grad():
                 for yp in self.forward_iter(X, training=False):
-                    # Use shared utility to compute mode and data uncertainty
-                    mode_samples, uncertainty = compute_flow_mode_and_uncertainty(yp, num_flow_samples)
-
-                    # Compute mean for predictions
-                    mean_samples = yp.sample(torch.Size([num_flow_samples])).mean(dim=0)  # [batch, output_dim]
-                    all_means.append(mean_samples)
-
-                    # Data uncertainty from utility (already -log_prob)
-                    data_unc_list.append(uncertainty)
+                    samples = yp.sample(torch.Size([num_flow_samples]))  # [S, batch, output_dim]
+                    log_p = yp.log_prob(samples)  # [S, batch]
+                    # Differential entropy (Monte-Carlo estimate) = data uncertainty
+                    entropy = -log_p.mean(dim=0)  # [batch]
+                    all_means.append(samples.mean(dim=0))  # [batch, output_dim]
+                    data_unc_list.append(entropy)
 
             # Concatenate and convert to numpy
             predictions = torch.cat(all_means, 0).cpu().numpy()
@@ -2467,132 +2474,117 @@ class NODERegressor(BaseNODEEstimator):
             else:
                 return predictions, knowledge_uncertainty, data_uncertainty
 
-        # Use model's configured dropout settings for MC Dropout
-        # IMPORTANT: We need dropout enabled but NOT full training mode
-        # Training mode causes issues with batch norm (uses batch stats instead of running stats)
-        # Solution: Keep model in eval mode, but manually enable dropout layers
-
-        # Helper function to enable dropout in eval mode
+        # ------------------------------------------------------------------
+        # Flow + MC-dropout: information-theoretic (BALD) decomposition.
+        #
+        # Treat the T = num_mc_samples dropout passes as an ensemble of flows
+        # {p_t(y|x)}.  With differential entropies estimated by Monte-Carlo
+        # (H[p] = -E_{y~p}[log p(y)] ~= -(1/S) sum_s log p(y_s), y_s ~ p):
+        #
+        #     data  (aleatoric) = (1/T) sum_t H[p_t]            (expected entropy)
+        #     total             = H[(1/T) sum_t p_t]            (mixture entropy)
+        #     knowledge (epist.) = total - data                 (mutual information >= 0)
+        #
+        # data/total are DIFFERENTIAL entropies (nats) and may be negative for
+        # peaked flows; the mutual-information (knowledge) term is provably >= 0.
+        #
+        # IMPORTANT: dropout is enabled but the model stays in eval() so BatchNorm
+        # keeps its running statistics (see MC-dropout notes).
+        # ------------------------------------------------------------------
         def enable_dropout(m: nn.Module) -> None:
             if isinstance(m, nn.Dropout):
                 m.train()
 
-        # Step 1: Find mode value (single forward pass WITHOUT dropout)
-        self.module_.eval()
-
-        mode_values_list = []
-        data_unc_list = []
-
-        with torch.no_grad():
-            for yp in self.forward_iter(X, training=False):
-                # Use shared utility to compute mode and data uncertainty
-                mode_values, uncertainty = compute_flow_mode_and_uncertainty(yp, num_flow_samples)
-
-                mode_values_list.append(mode_values)
-                data_unc_list.append(uncertainty)
-
-        # Concatenate mode values: [total_samples, output_dim]
-        mode_values_fixed = torch.cat(mode_values_list, dim=0)
-
-        # Base data uncertainty (used only if no dropout is configured)
-        data_uncertainty_base = torch.cat(data_unc_list, dim=0).detach().cpu().numpy()
-
-        all_data_uncertainties = []
-
-        # Step 2: Evaluate fixed mode value WITH dropout (MC passes)
-        self.module_.apply(enable_dropout)
-
-        original_training = self.module_.training
         tree_dropout_rate = getattr(self.module_, "tree_dropout", 0.0)
         input_dropout_rate = getattr(self.module_, "input_dropout", 0.0)
+        use_training_mode = tree_dropout_rate > 0 or input_dropout_rate > 0
 
-        if tree_dropout_rate > 0 or input_dropout_rate > 0:
+        self.module_.eval()
+        self.module_.apply(enable_dropout)
+        original_training = self.module_.training
+        if use_training_mode:
             self.module_.train()
             self.module_.apply(enable_dropout)
 
+        # Collect, per batch, the T stochastic flow distributions and S samples
+        # drawn from each.  The distribution objects are stored so we can later
+        # cross-evaluate log p_{t'}(y_{t,s}) for the mixture-entropy term.
+        dists_by_batch = []  # dists_by_batch[b][t]
+        samples_by_batch = []  # samples_by_batch[b][t] : (S, B, D)
+
         try:
-            # Collect log_prob evaluations of fixed mode across MC passes
-            mc_mean_predictions = []
-            mc_uncertainties = []
-
-            n_samples = mode_values_fixed.shape[0]
-
-            for mc_idx in range(num_mc_samples):
-                batch_uncertainties = []
-                batch_means = []
-
-                use_training_mode = tree_dropout_rate > 0 or input_dropout_rate > 0
-                batch_start_idx = 0
-                for yp in self.forward_iter(X, training=use_training_mode):
-                    batch_end_idx = min(batch_start_idx + yp.batch_shape[0], n_samples)
-                    batch_mode_values = mode_values_fixed[batch_start_idx:batch_end_idx, :]
-
-                    # Evaluate log_prob of fixed mode under this dropout mask
-                    log_p = yp.log_prob(batch_mode_values)
-                    uncertainty = -log_p
-                    batch_uncertainties.append(uncertainty)
-
-                    # Mean prediction from flow samples
-                    samples = yp.sample(torch.Size([num_flow_samples]))
-                    mean_pred = samples.mean(dim=0)
-                    batch_means.append(mean_pred)
-
-                    batch_start_idx = batch_end_idx
-
-                # Concatenate batch uncertainties: [total_samples]
-                mc_uncertainty = torch.cat(batch_uncertainties, dim=0).unsqueeze(1)  # [total_samples, 1]
-                mc_uncertainties.append(mc_uncertainty)
-
-                # Also save for computing data uncertainty as median over all passes
-                all_data_uncertainties.append(torch.cat(batch_uncertainties, dim=0).unsqueeze(0))  # [1, total_samples]
-
-                # Concatenate batch means: [total_samples, output_dim]
-                mc_mean = torch.cat(batch_means, dim=0)  # [total_samples, output_dim]
-                mc_mean_predictions.append(mc_mean)
-
+            with torch.no_grad():
+                for t in range(num_mc_samples):
+                    for b, yp in enumerate(self.forward_iter(X, training=use_training_mode)):
+                        if t == 0:
+                            dists_by_batch.append([])
+                            samples_by_batch.append([])
+                        samp = yp.sample(torch.Size([num_flow_samples]))  # (S, B, D)
+                        dists_by_batch[b].append(yp)
+                        samples_by_batch[b].append(samp)
         finally:
-            # Restore original training state
-            if tree_dropout_rate > 0 or input_dropout_rate > 0:
+            if use_training_mode:
                 self.module_.train(original_training)
             else:
                 self.module_.eval()
 
-        # Compute statistics from MC dropout passes
-        mc_mean_predictions_tensor = torch.stack(mc_mean_predictions, dim=0)
-        mc_uncertainties_tensor = torch.stack(mc_uncertainties, dim=0)
+        T = num_mc_samples
+        log_T = float(np.log(T))
 
-        mc_unc_array = mc_uncertainties_tensor.detach().cpu().numpy()
+        data_list = []
+        total_list = []
+        pred_list = []
+        per_pass_entropy_list = []  # each (T, B) -> mc_uncertainties
+        per_pass_mean_list = []  # each (T, B, D) -> mc_means
 
-        # Prediction: mean across MC passes
-        predictions = mc_mean_predictions_tensor.mean(dim=0).detach().cpu().numpy()
+        with torch.no_grad():
+            for b in range(len(dists_by_batch)):
+                dists_b = dists_by_batch[b]  # list length T
+                samples_b = samples_by_batch[b]  # list length T of (S, B, D)
 
-        # Data uncertainty: -log_prob(mode) from the single non-dropout pass (fixed)
-        # Knowledge uncertainty: std of -log_prob(mode) across MC dropout passes
-        data_uncertainty = data_uncertainty_base  # Always from non-dropout pass
+                per_source_mix = []  # each (S, B): log p-bar(y_{t,s})
+                per_source_self = []  # each (S, B): log p_t(y_{t,s})
+                for t in range(T):
+                    samp_t = samples_b[t]  # (S, B, D)
+                    # log p_{t'}(y_{t,s}) for every t' -> (T, S, B)
+                    lp_stack = torch.stack([dists_b[tp].log_prob(samp_t) for tp in range(T)], dim=0)
+                    # Mixture density: log p-bar = logsumexp_t' log p_t'  - log T
+                    per_source_mix.append(torch.logsumexp(lp_stack, dim=0) - log_T)  # (S, B)
+                    per_source_self.append(lp_stack[t])  # (S, B)
 
-        if (
-            tree_dropout_rate > 0
-            or input_dropout_rate > 0
-            or any(getattr(m, "p", 0) > 0 for m in self.module_.modules() if isinstance(m, torch.nn.Dropout))
-        ):
-            # Knowledge (epistemic) uncertainty = std of the negative log-likelihood
-            # of the fixed mode across MC-dropout passes.
-            all_data_unc_tensor = torch.cat(all_data_uncertainties, dim=0)
-            all_data_unc_array = all_data_unc_tensor.detach().cpu().numpy()
+                mix_all = torch.stack(per_source_mix, dim=0)  # (T, S, B)
+                self_all = torch.stack(per_source_self, dim=0)  # (T, S, B)
 
-            knowledge_uncertainty = np.std(all_data_unc_array, axis=0)
-            total_uncertainty = data_uncertainty + knowledge_uncertainty
-        else:
-            knowledge_uncertainty = None
-            total_uncertainty = data_uncertainty
+                # Differential entropies (per sample in batch)
+                total_list.append(-mix_all.mean(dim=(0, 1)))  # (B,)
+                data_list.append(-self_all.mean(dim=(0, 1)))  # (B,)
 
-        # Flatten all uncertainties to [total_samples]
+                # Per-pass diagnostics
+                per_pass_entropy_list.append(-self_all.mean(dim=1))  # (T, B)
+                samp_stack = torch.stack(samples_b, dim=0)  # (T, S, B, D)
+                per_pass_mean_list.append(samp_stack.mean(dim=1))  # (T, B, D)
+
+                # Point prediction: mean over all pooled samples
+                pred_list.append(samp_stack.mean(dim=(0, 1)))  # (B, D)
+
+        data_uncertainty = torch.cat(data_list, dim=0).detach().cpu().numpy()  # (N,)
+        total_raw = torch.cat(total_list, dim=0).detach().cpu().numpy()  # (N,)
+        predictions = torch.cat(pred_list, dim=0).detach().cpu().numpy()  # (N, D)
+
+        # Knowledge = mutual information = total - data. Clamp at 0 (Monte-Carlo
+        # noise can push the Jensen gap slightly negative), then re-derive total so
+        # the additive identity total == data + knowledge holds exactly.
+        knowledge_uncertainty = np.maximum(total_raw - data_uncertainty, 0.0)
+        total_uncertainty = data_uncertainty + knowledge_uncertainty
+
+        # Per-pass diagnostics: (T, N) -> (num_mc, N, 1); means (num_mc, N, D)
+        mc_unc = torch.cat(per_pass_entropy_list, dim=1).unsqueeze(-1).detach().cpu().numpy()
+        mc_means = torch.cat(per_pass_mean_list, dim=1).detach().cpu().numpy()
+
+        # Flatten per-sample scores to 1D
         data_uncertainty = data_uncertainty.flatten()
-        if knowledge_uncertainty is not None:
-            knowledge_uncertainty = knowledge_uncertainty.flatten()
+        knowledge_uncertainty = knowledge_uncertainty.flatten()
         total_uncertainty = total_uncertainty.flatten()
-
-        mc_unc = mc_unc_array
 
         # Flatten predictions if single target
         output_dim = getattr(self.module_, "output_dim", 1)
@@ -2605,9 +2597,9 @@ class NODERegressor(BaseNODEEstimator):
                 "knowledge_uncertainty": knowledge_uncertainty,
                 "data_uncertainty": data_uncertainty,
                 "total_uncertainty": total_uncertainty,
-                "mc_means": mc_mean_predictions_tensor.detach().cpu().numpy(),  # [num_mc, total_samples, output_dim]
-                "mc_uncertainties": mc_unc,  # [num_mc, total_samples, 1] - new name
-                "mc_stds": mc_unc,  # [num_mc, total_samples, 1] - legacy name for backward compatibility
+                "mc_means": mc_means,  # [num_mc, total_samples, output_dim]
+                "mc_uncertainties": mc_unc,  # [num_mc, total_samples, 1] - per-pass entropy
+                "mc_stds": mc_unc,  # legacy alias for backward compatibility
             }
         else:
             return predictions, knowledge_uncertainty, data_uncertainty

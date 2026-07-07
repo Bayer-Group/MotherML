@@ -1067,10 +1067,12 @@ def test_predict_with_combined_uncertainty():
     assert pred.shape[0] == len(y_test), "Predictions should match test set size"
     assert knowledge_unc.shape == pred.shape, "Knowledge uncertainty shape should match predictions"
     assert data_unc.shape == pred.shape, "Data uncertainty shape should match predictions"
-    assert (knowledge_unc >= 0).all(), "Knowledge uncertainty should be non-negative (IQR)"
-    # Data uncertainty is -log_prob(mode) from the flow; when the flow fits well,
-    # log_prob can be > 0, making data_uncertainty negative.  This is expected
-    # behaviour — what matters is that the values are finite and vary across samples.
+    # Knowledge = mutual information (total - data) across the MC-dropout flow
+    # ensemble; it is provably non-negative (Jensen), clamped at 0.
+    assert (knowledge_unc >= 0).all(), "Knowledge uncertainty should be non-negative (mutual information)"
+    # Data uncertainty is the expected differential entropy (1/T) Σ_t H[p_t] of the
+    # flow ensemble.  Differential entropy can be negative for peaked flows, so
+    # negative values are expected — what matters is that they are finite and vary.
     assert np.isfinite(data_unc).all(), "Data uncertainty should be finite"
     assert knowledge_unc.mean() > 0, "Knowledge uncertainty should be non-zero (MC Dropout effect)"
     assert np.std(data_unc) > 0, "Data uncertainty should vary across samples"
@@ -1092,10 +1094,13 @@ def test_predict_with_combined_uncertainty():
     assert "mc_means" in stats, "Should return MC means"
     assert "mc_stds" in stats, "Should return MC stds"
 
-    # Total uncertainty should combine both sources
+    # Total = mixture entropy = data + knowledge (mutual information >= 0), so the
+    # additive identity holds and total >= data exactly.
     print(f"  ✓ Total uncertainty shape: {stats['total_uncertainty'].shape}")
     assert stats["total_uncertainty"] is not None, "Total uncertainty should combine both sources"
     assert (stats["total_uncertainty"] >= stats["data_uncertainty"]).all(), "Total should be >= data uncertainty"
+    additive_gap = np.abs(stats["total_uncertainty"] - stats["data_uncertainty"] - stats["knowledge_uncertainty"]).max()
+    assert additive_gap < 1e-4, "total == data + knowledge should hold (BALD additivity)"
 
     # Verify MC stats shape
     print(f"  ✓ MC means shape: {stats['mc_means'].shape}")
@@ -1142,10 +1147,10 @@ def test_predict_with_combined_uncertainty():
 
     print("\n✅ predict_with_combined_uncertainty test passed!")
     print("  - Decomposes uncertainty into epistemic (knowledge) and aleatoric (data)")
-    print("  - Knowledge uncertainty: std of predictions across MC samples")
-    print("  - Data uncertainty: -max log prob from flow distribution")
-    print("  - Both uncertainties are non-negative and positive on average")
-    print("  - total_uncertainty=None (different scales - use separately)")
+    print("  - Knowledge uncertainty: mutual information across the MC-dropout flow ensemble")
+    print("  - Data uncertainty: expected differential entropy (1/T) Σ_t H[p_t]")
+    print("  - Total = mixture entropy = data + knowledge (BALD additive identity)")
+    print("  - Differential entropies may be negative; knowledge (MI) is always >= 0")
     print("  - Raises error for non-flow heads")
 
 
