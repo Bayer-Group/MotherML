@@ -23,6 +23,7 @@ from mother.ml.models.m_node import (
     NODEClassifier,
     NODERegressor,
 )
+from mother.ml.models.m_node_utils import DenseODSTBlock
 
 # Import mother tuner for hyperparameter optimization
 from mother.optimization import MotherTuner
@@ -1607,6 +1608,104 @@ def test_tree_dropout_with_mc_dropout():
     print("  - Tree dropout is independent of input dropout")
     print("  - MC dropout with tree dropout works correctly")
     print("=" * 50)
+
+
+def test_dropout_variance_monotonic():
+    """Each MC-dropout mechanism produces variance that grows with the dropout rate.
+
+    A single NODE regressor is fitted once, then each dropout mechanism
+    (input_dropout, tree_dropout, mlp_dropout) is isolated at inference by
+    overriding the fitted module's dropout rates. Sweeping one mechanism while
+    holding the other two at 0 must yield a monotonically increasing mean
+    Monte-Carlo std through the public ``predict_uncertainty`` interface. With
+    all dropouts at 0, MC dropout must fall back to a deterministic prediction
+    (exactly zero variance).
+    """
+    print("\n🚀 Dropout Variance Monotonicity Test")
+    print("=" * 50)
+
+    np.random.seed(0)
+    torch.manual_seed(0)
+
+    def set_dropouts(est, *, input_dp, tree_dp, mlp_dp):
+        """Override dropout probabilities on an already-fitted NODE estimator."""
+        module = est.module_
+        # input_dropout: read on the estimator (has_dropout gate) and on every
+        # DenseODSTBlock (where it is actually applied in the forward pass).
+        est.input_dropout = input_dp
+        module.input_dropout = input_dp
+        for sub in module.modules():
+            if isinstance(sub, DenseODSTBlock):
+                sub.input_dropout = input_dp
+        # tree_dropout: gated on the top module's own attribute.
+        module.tree_dropout = tree_dp
+        # mlp_dropout: has_dropout gate plus every nn.Dropout layer in the head.
+        module.mlp_dropout = mlp_dp
+        for sub in module.modules():
+            if isinstance(sub, nn.Dropout):
+                sub.p = mlp_dp
+
+    def mean_mc_std(est, X, num_samples=40):
+        """Mean Monte-Carlo-dropout std across the test set (single target)."""
+        std = est._predict_uncertainty_mc_dropout(X, num_samples=num_samples, use_std=True)
+        return float(np.mean(std))
+
+    # --- Fit a single model with all three dropout paths active ----------
+    X, y = make_regression(n_samples=200, n_features=8, n_informative=6, noise=10.0, random_state=0)
+    X = X.astype("float32")
+    y = y.astype("float32")
+    X_train, X_test = X[:160], X[160:]
+    y_train = y[:160]
+
+    reg = NODERegressor(
+        head_type="mlp",
+        num_trees=32,
+        depth=4,
+        num_layers=1,
+        input_dropout=0.1,
+        tree_dropout=0.1,
+        mlp_dropout=0.1,
+        max_epochs=5,
+        lr=0.01,
+        batch_size=64,
+        device="cpu",
+        verbose=0,
+    )
+    reg.fit(X_train, y_train)
+
+    sweep = [0.0, 0.1, 0.3, 0.5]
+    mechanisms = {
+        "input_dropout": lambda p: dict(input_dp=p, tree_dp=0.0, mlp_dp=0.0),
+        "tree_dropout": lambda p: dict(input_dp=0.0, tree_dp=p, mlp_dp=0.0),
+        "mlp_dropout": lambda p: dict(input_dp=0.0, tree_dp=0.0, mlp_dp=p),
+    }
+
+    for name, cfg in mechanisms.items():
+        stds = []
+        for p in sweep:
+            set_dropouts(reg, **cfg(p))
+            stds.append(mean_mc_std(reg, X_test))
+        print(f"  {name:<14} " + "  ".join(f"p={p}:{s:.4f}" for p, s in zip(sweep, stds)))
+
+        # p=0 must give (numerically) zero variance for this isolated mechanism.
+        assert stds[0] < 1e-6, f"{name}: expected ~0 variance at p=0, got {stds[0]:.4g}"
+        # Variance must clearly increase from the smallest to the largest rate.
+        assert stds[-1] > stds[1] * 1.5, (
+            f"{name}: highest dropout ({sweep[-1]}) should give clearly more "
+            f"variance than the lowest active rate ({sweep[1]}); got {stds}"
+        )
+        # And the trend must be monotonically increasing (small tolerance for MC noise).
+        diffs = np.diff(stds)
+        tol = 0.05 * max(stds)
+        assert np.all(diffs > -tol), f"{name}: MC std should be non-decreasing with p; got {stds}"
+
+    # --- All-dropout-zero fallback must be deterministic -----------------
+    set_dropouts(reg, input_dp=0.0, tree_dp=0.0, mlp_dp=0.0)
+    zero_std = mean_mc_std(reg, X_test)
+    print(f"  all-zero fallback -> mean MC std = {zero_std:.4g}")
+    assert zero_std < 1e-6, f"All dropouts 0 must be deterministic, got std {zero_std:.4g}"
+
+    print("  ✅ All dropout mechanisms increase variance monotonically with rate")
 
 
 def test_fast_tune_head_parameter():
