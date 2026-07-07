@@ -2397,6 +2397,65 @@ class NODERegressor(BaseNODEEstimator):
             provably non-negative (clamped at 0 to absorb Monte-Carlo noise) so the
             identity ``total == data + knowledge`` holds exactly.
 
+            The ``knowledge`` term above is exactly BALD with continuous entropy
+            (``BALD_H`` in Werner & Schmidt-Thieme, 2025): a *scalar-entropy*
+            acquisition score computed by first aggregating each flow ``p_t`` into a
+            single number ``H[p_t]`` and then subtracting from the mixture entropy.
+
+        Relation to BALSA (Bayesian Active Learning by Distribution Disagreement):
+            BALSA (Werner & Schmidt-Thieme, 2025; arXiv:2501.01248) is an
+            active-learning acquisition function that improves on BALD_H for
+            normalizing-flow regression. The insight: collapsing each ``p_t`` to a
+            single entropy value throws away most of the distributional information,
+            and Shannon-entropy / std / least-confidence scores empirically pick poor
+            query points for flows. BALSA instead measures the *disagreement between
+            the flows directly* with a full distributional distance ``φ`` rather than
+            the ``H[mixture] - mean H`` subtraction:
+
+                BALD_H(x)  = Σ_t ( H[p̄] - H[p_t] )          (current code)
+                BALSA(x)   = Σ_t φ( p_t , p̄ )                (distribution distance)
+
+            with ``p̄ = (1/T) Σ_t p_t`` the mixture ("average") flow. Two variants of
+            ``φ`` and two ways to form ``p̄`` are proposed:
+
+            * ``BALSA_KL`` — φ = KL divergence between densities. Best performer
+              overall (``BALSA_KL Pair`` was SOTA across 4 datasets). Two flavours:
+                - *Grid*: normalise ``y`` to [0, 1], evaluate every ``p_t`` on a fixed
+                  grid (≈200 points) to get likelihood vectors, average them into
+                  ``p̄``, then Σ_t KL(p_t, p̄).
+                - *Pair*: skip ``p̄`` entirely and sum KL over the ``T-1`` consecutive
+                  i.i.d. dropout pairs, Σ_t KL(p_t, p_{t+1}).
+            * ``BALSA_EMD`` — φ = Earth-Mover's / Wasserstein distance over i.i.d.
+              samples of consecutive pairs, Σ_t EMD(y'_t, y'_{t+1}), y'_t ~ p_t
+              (pair-only, since EMD needs samples not grid densities).
+
+            Recommended MC-dropout rate for BALSA is low (~0.05), a full order of
+            magnitude below the classic 0.5 used for classification BALD.
+
+        Integrating BALSA into this estimator (not yet implemented):
+            All ingredients already exist in this method — no re-training needed:
+
+            * ``dists_by_batch[b][t]`` holds the ``T`` per-pass zuko flow objects and
+              ``samples_by_batch[b][t]`` the ``S`` samples drawn from each. The
+              ``lp_stack`` cross-evaluation (``log p_{t'}(y_{t,s})`` for all ``t'``)
+              already computes everything ``BALSA_KL Pair`` needs, because
+              ``KL(p_t, p_{t+1}) ≈ (1/S) Σ_s [log p_t(y_s) - log p_{t+1}(y_s)]``,
+              ``y_s ~ p_t`` — i.e. a cheap slice of the tensor we build for the
+              mixture-entropy term (essentially free).
+            * ``BALSA_KL Grid`` needs a fixed 1-D grid over the (normalised) target
+              range and ``flow.log_prob`` evaluated on it, then a mean over ``t`` and a
+              trapezoidal KL — a handful of extra tensor ops.
+            * ``BALSA_EMD`` needs ``scipy.stats.wasserstein_distance`` (or a sorted-
+              sample 1-D EMD) on the per-pass sample sets already stored.
+
+            Suggested surface: a sibling ``acquisition_score(X, method="balsa_kl_pair"
+            | "balsa_kl_grid" | "balsa_emd" | "bald")`` returning one score per row for
+            pool-based active-learning point selection. It would reuse this method's
+            MC-dropout collection loop and simply swap the final reduction. The
+            existing ``knowledge_uncertainty`` (BALD_H) already serves as the
+            ``"bald"`` baseline. Multi-target (D > 1) would need a per-dimension or
+            joint-grid extension, as the paper only covers scalar targets.
+
         Args:
             X: Input features [n_samples, n_features]
             num_mc_samples: MC Dropout forward passes (default: 50)
