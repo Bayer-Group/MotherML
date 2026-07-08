@@ -1516,13 +1516,13 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         and ``NODEClassifier`` to include the head types they support.
         """
         suggested_params = {
-            prefix + "num_layers": trial.suggest_int(prefix + "num_layers", 1, 6, log=False),
-            prefix + "num_trees": trial.suggest_int(prefix + "num_trees", 256, 4096, step=256, log=False),
+            prefix + "num_layers": trial.suggest_int(prefix + "num_layers", 1, 4, log=False),
+            prefix + "num_trees": trial.suggest_int(prefix + "num_trees", 256, 2048, step=256, log=False),
             prefix + "additional_tree_output_dim": trial.suggest_int(
-                prefix + "additional_tree_output_dim", 0, 8, log=False
+                prefix + "additional_tree_output_dim", 0, 4, log=False
             ),
-            prefix + "depth": trial.suggest_int(prefix + "depth", 2, 10, log=False),
-            prefix + "lr": trial.suggest_float(prefix + "lr", 1e-5, 1e-1, log=True),
+            prefix + "depth": trial.suggest_int(prefix + "depth", 3, 6, log=False),
+            prefix + "lr": trial.suggest_float(prefix + "lr", 1e-4, 5e-2, log=True),
         }
 
         # Tune dropout parameters (architectural regularization).
