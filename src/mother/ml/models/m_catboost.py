@@ -22,6 +22,7 @@ Classes:
 - CatboostRegressorMother: Extended CatBoostRegressor with uncertainty estimation and quantile support.
 - CatboostGaussianProcessRegressorMother: CatBoost-based Gaussian Process regressor for epistemic uncertainty.
 - CatboostClassifierMother: Unified classifier for binary and multiclass tasks with loss-specific tuning.
+- CatboostRankerMother: Extended CatBoostRanker with rank prediction, uncertainty estimation, and Optuna tuning support.
 
 All classes provide methods for Optuna-based hyperparameter optimization, uncertainty-aware prediction, and
 Mother framework compatibility.
@@ -29,7 +30,7 @@ Mother framework compatibility.
 
 import logging
 from functools import wraps
-from typing import Any, Callable, Optional, Union
+from typing import Any, Callable, Optional, Union, cast
 
 import catboost
 import numpy as np
@@ -57,6 +58,31 @@ def scores_to_ranks(scores: np.ndarray) -> np.ndarray:
     ranks = np.empty_like(order)
     ranks[order] = np.arange(1, scores.size + 1)
     return ranks
+
+
+def scores_matrix_to_ranks(score_matrix: np.ndarray) -> np.ndarray:
+    """Convert score matrix (n_samples, n_ensembles) to per-ensemble 1-based ranks."""
+    arr = np.asarray(score_matrix)
+    if arr.ndim != 2:
+        raise ValueError(f"Expected 2D score_matrix, got {arr.ndim}D.")
+    return np.column_stack([scores_to_ranks(arr[:, ensemble_idx]) for ensemble_idx in range(arr.shape[1])]).astype(
+        float
+    )
+
+
+def _validate_ranking_group_id(group_id: np.ndarray, n_samples: int) -> np.ndarray:
+    """Validate and normalise a group ID array to 1-D, aligned with X rows."""
+    group_arr = np.asarray(group_id).reshape(-1)
+    if group_arr.shape[0] != n_samples:
+        raise ValueError(
+            f"group_id length must match number of rows in X ({n_samples}), got {group_arr.shape[0]}."
+        )
+    return group_arr
+
+
+def _iter_ranking_group_indices(group_id: np.ndarray) -> list[np.ndarray]:
+    """Return stable, input-order index arrays (positional) for each unique group."""
+    return [np.flatnonzero(group_id == g) for g in pd.unique(group_id)]
 
 
 def ensure_metadata_routing(func: Callable) -> Callable:
@@ -1734,17 +1760,20 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
         ntree_end: int = 0,
         thread_count: int = -1,
         verbose: Optional[bool] = None,
-        ranks: bool = False,
+        use_ranks: bool = False,
         normalize_by_group_size: bool = False,
+        **kwargs,
     ) -> np.ndarray:
         """
         Predict scores or ranks for a single query group.
 
-        This `predict` assumes `X` contains only the rows for a single query group. When
-        `ranks` is False (default) the method returns raw scores as produced by CatBoost.
-        When `ranks` is True the method returns 1-based integer ranks where rank 1
-        corresponds to the highest score (descending order). The output order matches the
-        input row order.
+        When ``use_ranks`` is False (default) the method returns raw scores as produced
+        by CatBoost.  When ``use_ranks`` is True the method returns 1-based integer ranks
+        where rank 1 corresponds to the highest score (descending order).  The output
+        order matches the input row order.
+
+        For datasets containing multiple query groups, use the module-level helper
+        :func:`ranker_predict_for_groups` which calls this method per group.
 
         Note on Ranking Convention
         ---------------------------
@@ -1755,132 +1784,168 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
         Parameters
         ----------
         X : pd.DataFrame or array-like
-            Features for the samples of a single group (n_samples, n_features).
-        ntree_start, ntree_end, thread_count, verbose : passed to CatBoost `predict`.
-        ranks : bool
-            If True, return 1-based integer ranks within this group (rank 1 = highest score).
+            Features for the samples (n_samples, n_features).
+        ntree_start, ntree_end, thread_count, verbose : passed to CatBoost ``predict``.
+        use_ranks : bool
+            If True, return 1-based integer ranks (rank 1 = highest score).
         normalize_by_group_size : bool
-            If True and ``ranks`` is True, divide the ranks by ``len(X)`` so that values
-            fall in ``(0, 1]``, making them comparable across groups of different sizes.
-            Has no effect when ``ranks`` is False.
+            If True and ``use_ranks`` is True, divide ranks by ``len(X)``.
+            Has no effect when ``use_ranks`` is False.
+        **kwargs
+            Additional keyword arguments (currently unused; accepted for API consistency).
 
         Returns
         -------
         np.ndarray
-            If `ranks` is False: array of raw scores (floats) in the same order as `X`.
-            If `ranks` is True: array of integer ranks (1-based) corresponding to rows in `X`,
-            optionally normalised by group size.
+            If ``use_ranks`` is False: array of raw scores (floats) in the same order as ``X``.
+            If ``use_ranks`` is True: array of integer ranks (1-based) corresponding to rows
+            in ``X``, optionally normalised by group size.
         """
         preds = super().predict(
-            X, ntree_start=ntree_start, ntree_end=ntree_end, thread_count=thread_count, verbose=verbose
+            X, ntree_start=ntree_start, ntree_end=ntree_end, thread_count=thread_count, verbose=verbose, **kwargs
         )
 
-        if not ranks:
+        if not use_ranks:
             return preds
 
-        rank_values = scores_to_ranks(preds)
+        rank_values = scores_to_ranks(preds).astype(float)
         if normalize_by_group_size:
             return np.round(rank_values / len(X), 4)
-        return rank_values
+        return rank_values.astype(int)
 
     def predict_uncertainty(
         self,
         X: pd.DataFrame,
         n_ensembles: int = 10,
         n_threads: int = 1,
+        use_ranks: bool = False,
         uncertainty_for_opt: bool = False,
         normalize_by_group_size: bool = False,
+        return_quantiles: bool = False,
     ) -> pd.DataFrame:
         """
-        Estimate rank uncertainty for a single query group using staged predictions.
+        Estimate rank uncertainty using virtual ensembles.
 
-        Divides the tree sequence into ``n_ensembles`` equally-spaced snapshots via
-        ``staged_predict``, converts each snapshot's raw scores to 1-based ranks, then
-        summarises per-sample rank variability across snapshots.  The IQR of ranks is
-        used as the ``knowledge_uncertainty`` column, matching the convention used by the
-        other CatBoost Mother wrappers.
+        Uses CatBoost's ``virtual_ensembles_predict`` through the shared Mother utility.
+        Operates on a single ranking group; for multi-group datasets use the module-level
+        helper :func:`ranker_predict_uncertainty_for_groups`.
 
         Args:
             X : pd.DataFrame
-                Feature matrix for a single query group (n_samples, n_features).
+                Feature matrix (n_samples, n_features) for a single ranking group.
             n_ensembles : int, optional
-                Number of staged-predict snapshots (ensemble members) to collect.
-                The tree sequence is divided into ``n_ensembles`` equally-spaced checkpoints
-                via ``eval_period = tree_count // n_ensembles``.  Must be >= 3 because the
-                IQR (Q3 − Q1) requires at least three observations to be non-trivial —
-                with fewer snapshots the 25th and 75th percentiles collapse and the
-                uncertainty estimate becomes meaningless.  Raises ``ValueError`` if < 3.
+                Number of virtual ensembles used by CatBoost for uncertainty estimation.
+                Must be >= 1.
             n_threads : int, optional
-                Number of threads passed to ``staged_predict``.
+                Number of threads passed to ``virtual_ensembles_predict``.
+            use_ranks : bool, optional
+                If True, convert virtual-ensemble scores to per-ensemble ranks and
+                compute ``mean_predictions`` as the mean of those per-ensemble ranks,
+                with ``knowledge_uncertainty`` as their standard deviation.
+                If False (default), quantities stay on the raw score scale.
             uncertainty_for_opt : bool, optional
                 If True, return only ``knowledge_uncertainty`` for optimisation.
             normalize_by_group_size : bool, optional
-                If True, divide ``knowledge_uncertainty``, ``total_uncertainty``, and
-                ``mean_predictions`` by the number of samples in the group (``len(X)``).  This rescales the
-                IQR to the range ``[0, 1]``, making uncertainty values comparable across
-                groups of different sizes.  Default is ``False``.
+                If True, divide ``knowledge_uncertainty`` and ``mean_predictions``
+                by ``len(X)``.  Default is ``False``.
+            return_quantiles : bool, optional
+                If True, append score-quantile columns derived from
+                ``DEFAULT_QUANTILES`` (defaults: ``score_q25``, ``score_q50``,
+                ``score_q75``), computed across virtual ensembles on raw scores
+                when ``use_ranks=False`` and on ensemble ranks when
+                ``use_ranks=True``.
+                Ignored when ``uncertainty_for_opt=True``.  Default is ``False``.
 
         Returns:
-            pd.DataFrame: DataFrame with the same index as ``X`` and columns:
-                - ``pred``: 1-based rank from the full model.
-                - ``mean_predictions``: mean rank across snapshots (rounded to int);
-                  when ``normalize_by_group_size=True``, a float in ``(0, 1]`` rounded
-                  to 4 decimal places.
-                - ``knowledge_uncertainty``: IQR of ranks across snapshots (Q3 - Q1),
+            pd.DataFrame with the same index as ``X`` and columns:
+                - ``pred``: full-model prediction (raw score or 1-based rank).
+                - ``mean_predictions``: mean of per-ensemble scores (``use_ranks=False``)
+                  or mean of per-ensemble ranks (``use_ranks=True``).
+                - ``knowledge_uncertainty``: std of per-ensemble scores or ranks;
                   optionally normalised by group size.
                 - ``data_uncertainty``: ``None`` (not available for ranking).
-                - ``total_uncertainty``: same as ``knowledge_uncertainty``.
+                - ``total_uncertainty``: ``None`` (not available for ranking).
+                                - Quantile columns from ``DEFAULT_QUANTILES`` *(only when*
+                                    ``return_quantiles=True`` *; defaults: ``score_q25``,
+                                    ``score_q50``, ``score_q75``)*: empirical quantiles of score
+                                    or rank distributions.
         """
-        if n_ensembles < 3:
-            raise ValueError(f"n_ensembles must be >= 3 to compute a meaningful IQR, got {n_ensembles}.")
-        eval_period = max(1, self.tree_count_ // n_ensembles)
+        if n_ensembles < 1:
+            raise ValueError(f"n_ensembles must be >= 1, got {n_ensembles}.")
 
-        staged_preds = []
-        for stage_scores in self.staged_predict(
-            X,
-            eval_period=eval_period,
-            ntree_start=0,
-            ntree_end=self.tree_count_,
-            thread_count=n_threads,
-        ):
-            staged_preds.append(np.asarray(stage_scores))
+        result_index = X.index
 
-        if len(staged_preds) == 0:
-            raise RuntimeError("No staged predictions were produced. Check model/training configuration.")
-
-        if len(staged_preds) < 3:
-            raise ValueError(
-                f"Need at least 3 staged predictions to compute IQR, got {len(staged_preds)}. "
-                "Increase num_trees or decrease n_ensembles."
-            )
-
-        # Stack to (n_stages, n_samples) and convert each stage's scores to 1-based ranks
-        stacked = np.vstack(staged_preds)
-        n_stages, n_rows = stacked.shape
-        ranks = np.zeros((n_stages, n_rows), dtype=float)
-        for s in range(n_stages):
-            ranks[s, :] = scores_to_ranks(stacked[s]).astype(float)
-
-        mean_predictions = np.round(np.mean(ranks, axis=0)).astype(int)
-        knowledge_uncertainty = np.round(np.percentile(ranks, 75, axis=0) - np.percentile(ranks, 25, axis=0), 2)
-
-        if normalize_by_group_size:
-            knowledge_uncertainty = np.round(knowledge_uncertainty / len(X), 4)
-            mean_predictions = np.round(mean_predictions / len(X), 4)
+        quantile_levels = sorted({float(q) for q in DEFAULT_QUANTILES})
+        quantile_columns = [f"score_q{int(q * 100):02d}" for q in quantile_levels]
 
         if uncertainty_for_opt:
-            return pd.DataFrame({"knowledge_uncertainty": knowledge_uncertainty}, index=X.index)
+            result_df = pd.DataFrame(index=result_index, columns=["knowledge_uncertainty"])
+        else:
+            base_cols = ["pred", "mean_predictions", "knowledge_uncertainty", "data_uncertainty", "total_uncertainty"]
+            if return_quantiles:
+                base_cols += quantile_columns
+            result_df = pd.DataFrame(index=result_index, columns=base_cols)
 
-        return pd.DataFrame(
-            {
-                "pred": self.predict(X, ranks=True),
-                "mean_predictions": mean_predictions,
-                "knowledge_uncertainty": knowledge_uncertainty,
-                "data_uncertainty": None,
-                "total_uncertainty": knowledge_uncertainty,
-            },
-            index=X.index,
+        uncertainty_df, raw_scores = cast(
+            tuple[pd.DataFrame, np.ndarray],
+            utils.get_virtual_prediction(
+                X=X,
+                model=cast(Any, self),
+                virtual_ensembles_count=n_ensembles,
+                thread_count=n_threads,
+            ),
         )
+
+        mean_scores = np.asarray(uncertainty_df["mean_predictions"], dtype=float)
+
+        if use_ranks:
+            raw_scores_arr = np.asarray(raw_scores, dtype=float)
+            if raw_scores_arr.ndim != 2:
+                raise ValueError(f"Expected 2D raw_scores, got {raw_scores_arr.ndim}D.")
+
+            # Reuse the matrix helper, which internally applies scores_to_ranks per ensemble column.
+            rank_ensembles = scores_matrix_to_ranks(raw_scores_arr)
+            mean_predictions = rank_ensembles.mean(axis=1)
+            ddof = 1 if rank_ensembles.shape[1] > 1 else 0
+            knowledge_uncertainty = np.nan_to_num(rank_ensembles.std(axis=1, ddof=ddof), nan=0.0)
+            quantile_source = rank_ensembles
+        else:
+            mean_predictions = mean_scores
+            knowledge_uncertainty = np.asarray(uncertainty_df["knowledge_uncertainty"], dtype=float)
+            quantile_source = np.asarray(raw_scores, dtype=float)
+
+        if quantile_source.ndim != 2:
+            raise ValueError(f"Expected 2D quantile_source, got {quantile_source.ndim}D.")
+
+        if normalize_by_group_size:
+            n = len(X)
+            knowledge_uncertainty = np.round(knowledge_uncertainty / n, 4)
+            mean_predictions = np.round(mean_predictions / n, 4)
+
+        if uncertainty_for_opt:
+            result_df["knowledge_uncertainty"] = knowledge_uncertainty
+        else:
+            result_df["pred"] = self.predict(
+                X,
+                use_ranks=use_ranks,
+                normalize_by_group_size=normalize_by_group_size,
+            )
+            result_df["mean_predictions"] = mean_predictions
+            result_df["knowledge_uncertainty"] = knowledge_uncertainty
+            result_df["data_uncertainty"] = None
+            result_df["total_uncertainty"] = None
+
+            if return_quantiles:
+                quantile_values = np.percentile(quantile_source, [q * 100 for q in quantile_levels], axis=1)
+                for col_name, col_values in zip(quantile_columns, quantile_values):
+                    result_df[col_name] = col_values
+
+        # Keep numeric columns numeric after incremental assignment through loc.
+        for col in result_df.columns:
+            if col not in {"data_uncertainty", "total_uncertainty"}:
+                result_df[col] = pd.to_numeric(result_df[col], errors="coerce")
+
+        return result_df
 
     def suggested_params_loss(
         self,
@@ -2047,3 +2112,88 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
             defaults[prefix + "mode"] = "Classic"
 
         return defaults
+
+
+
+def ranker_predict_for_groups(
+    model: "CatboostRankerMother",
+    X: pd.DataFrame,
+    group_id: np.ndarray,
+    use_ranks: bool = False,
+    normalize_by_group_size: bool = False,
+) -> np.ndarray:
+    """Predict scores or ranks for a dataset containing multiple ranking groups.
+
+    Calls :meth:`CatboostRankerMother.predict` independently for each group so
+    that when ``use_ranks=True`` ranks are assigned within each group rather than
+    globally across the whole dataset.
+
+    Parameters
+    ----------
+    model : CatboostRankerMother
+        A fitted ranker.
+    X : pd.DataFrame
+        Feature matrix (n_samples, n_features).
+    group_id : np.ndarray
+        Group IDs aligned with ``X`` rows (one entry per row).
+    use_ranks : bool
+        Forwarded to :meth:`~CatboostRankerMother.predict`.
+    normalize_by_group_size : bool
+        Forwarded to :meth:`~CatboostRankerMother.predict`.
+
+    Returns
+    -------
+    np.ndarray
+        Predictions in the original row order of ``X``.
+    """
+    group_arr = _validate_ranking_group_id(group_id, len(X))
+    result = np.empty(len(X), dtype=float)
+
+    for idx in _iter_ranking_group_indices(group_arr):
+        X_group = X.iloc[idx] if isinstance(X, pd.DataFrame) else X[idx]
+        result[idx] = model.predict(
+            X_group,
+            use_ranks=use_ranks,
+            normalize_by_group_size=normalize_by_group_size,
+        )
+
+    return result
+
+
+def ranker_predict_uncertainty_for_groups(
+    model: "CatboostRankerMother",
+    X: pd.DataFrame,
+    group_id: np.ndarray,
+    **kwargs,
+) -> pd.DataFrame:
+    """Estimate uncertainty for a dataset containing multiple ranking groups.
+
+    Calls :meth:`CatboostRankerMother.predict_uncertainty` independently for
+    each group so that rank conversion and normalisation are applied within
+    group boundaries.
+
+    Parameters
+    ----------
+    model : CatboostRankerMother
+        A fitted ranker.
+    X : pd.DataFrame
+        Feature matrix (n_samples, n_features).
+    group_id : np.ndarray
+        Group IDs aligned with ``X`` rows.
+    **kwargs
+        Forwarded to :meth:`~CatboostRankerMother.predict_uncertainty`.
+
+    Returns
+    -------
+    pd.DataFrame
+        Concatenated uncertainty DataFrame in the original row order of ``X``,
+        with the same columns as :meth:`~CatboostRankerMother.predict_uncertainty`.
+    """
+    group_arr = _validate_ranking_group_id(group_id, len(X))
+    frames: list[pd.DataFrame] = []
+
+    for idx in _iter_ranking_group_indices(group_arr):
+        X_group = X.iloc[idx] if isinstance(X, pd.DataFrame) else X[idx]
+        frames.append(model.predict_uncertainty(X_group, **kwargs))
+
+    return pd.concat(frames).loc[X.index]
