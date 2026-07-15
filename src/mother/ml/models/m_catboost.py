@@ -74,9 +74,7 @@ def _validate_ranking_group_id(group_id: np.ndarray, n_samples: int) -> np.ndarr
     """Validate and normalise a group ID array to 1-D, aligned with X rows."""
     group_arr = np.asarray(group_id).reshape(-1)
     if group_arr.shape[0] != n_samples:
-        raise ValueError(
-            f"group_id length must match number of rows in X ({n_samples}), got {group_arr.shape[0]}."
-        )
+        raise ValueError(f"group_id length must match number of rows in X ({n_samples}), got {group_arr.shape[0]}.")
     return group_arr
 
 
@@ -2112,7 +2110,6 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
             defaults[prefix + "mode"] = "Classic"
 
         return defaults
-
 
 
 def ranker_predict_for_groups(
