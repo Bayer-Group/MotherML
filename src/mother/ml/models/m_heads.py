@@ -326,6 +326,55 @@ class MLPHead(nn.Module):
         return self.mlp(x)
 
 
+def _suggest_adaptive_hidden_dims(
+    trial: Trial,
+    input_dim: int,
+    *,
+    layers_key: str,
+    width_key: str,
+    max_layers: int = 4,
+) -> List[int]:
+    """Suggest an input-adaptive funnel MLP architecture.
+
+    Shared by the standalone MLP head (:class:`BaseMLPHeadEstimator`) and the flow
+    head's MLP trunk (:class:`BaseFlowHeadEstimator`) so both size their hidden
+    layers identically:
+
+    - **depth** ``[1, max_layers]`` (``layers_key``);
+    - **first-layer width** scaled to the input dimension (``width_key``): from
+      ``max(64, input_dim // 2)`` up to ``input_dim * 2``, step-aligned so Optuna
+      only proposes reachable values;
+    - **funnel**: each subsequent layer halves the previous width, floored at 32.
+
+    Args:
+        trial: Optuna trial used to suggest the depth and first-layer width.
+        input_dim: Number of input features (drives the width scaling).
+        layers_key: Full trial parameter name for the number of hidden layers.
+        width_key: Full trial parameter name for the first hidden-layer width.
+        max_layers: Maximum number of hidden layers (default 4).
+
+    Returns:
+        The list of hidden-layer sizes (the funnel architecture).
+    """
+    num_layers = trial.suggest_int(layers_key, 1, max_layers, log=False)
+
+    # First hidden layer scaled to the data with a generous floor so small
+    # datasets still get a usable trunk.
+    min_hidden = max(64, input_dim // 2)
+    max_hidden = max(min_hidden, input_dim * 2)
+    step = max(32, input_dim // 16)
+    # Ensure max_hidden is reachable from min_hidden with the chosen step.
+    max_hidden = min_hidden + ((max_hidden - min_hidden) // step) * step
+
+    first_hidden = trial.suggest_int(width_key, min_hidden, max_hidden, step=step, log=False)
+
+    # Funnel: each subsequent layer halves the previous width (floored at 32).
+    hidden_dims = [first_hidden]
+    for i in range(1, num_layers):
+        hidden_dims.append(max(32, first_hidden // (2**i)))
+    return hidden_dims
+
+
 class BaseMLPHeadEstimator:
     """
     Base mixin for MLP Head estimators with hyperparameter optimization support.
@@ -373,32 +422,15 @@ class BaseMLPHeadEstimator:
 
         # === ARCHITECTURE HYPERPARAMETERS ===
 
-        # Number of hidden layers (depth of network)
-        # Range: 1-4 layers
-        # More layers = more capacity but harder to train
-        num_hidden_layers = trial.suggest_int(prefix + "num_hidden_layers", 1, 4, log=False)
-
-        # First hidden layer size (controls overall capacity)
-        # Range: 10% to 200% of input dimension
-        # Adaptive to input size for better scaling
-        min_hidden = max(16, input_dim // 10)  # At least 16 units
-        max_hidden = input_dim * 2  # Up to 2x input size
-        step = max(16, input_dim // 32)  # Step size for suggestions
-
-        # Ensure max_hidden is reachable from min_hidden with step
-        max_hidden = min_hidden + ((max_hidden - min_hidden) // step) * step
-
-        hidden_dim_1 = trial.suggest_int(prefix + "hidden_dim_1", min_hidden, max_hidden, step=step, log=False)
-
-        # Derive subsequent layers with progressive compression (funnel architecture)
-        # Each layer is half the size of the previous layer
-        # This creates a natural information bottleneck
-        hidden_dims = [hidden_dim_1]
-        for i in range(1, num_hidden_layers):
-            compression_factor = 2**i
-            layer_dim = max(16, hidden_dim_1 // compression_factor)
-            hidden_dims.append(layer_dim)
-
+        # Depth + input-adaptive funnel widths, shared with the flow head's MLP
+        # trunk so both heads size their layers identically.
+        hidden_dims = _suggest_adaptive_hidden_dims(
+            trial,
+            input_dim,
+            layers_key=prefix + "num_hidden_layers",
+            width_key=prefix + "hidden_dim_1",
+            max_layers=4,
+        )
         suggested_params[prefix + "hidden_dims"] = hidden_dims
 
         # === REGULARIZATION HYPERPARAMETERS ===
@@ -1328,33 +1360,29 @@ class BaseFlowHeadEstimator:
 
         # === MLP ENCODER (conditioner placed BEFORE the flow) ===
         # The MLP trunk gives the flow richer conditioning features and — with
-        # dropout — provides MC-dropout epistemic uncertainty. Sizing is ADAPTIVE to
-        # the input dimension (mirrors the standalone MLP head), so wide feature sets
-        # (e.g. molecular fingerprints) get a wide trunk while small tabular problems
-        # stay compact. Tune depth, first-layer width and dropout.
+        # dropout — provides MC-dropout epistemic uncertainty. It is tuned with the
+        # SAME search space as the standalone MLP head (shared adaptive-sizing helper
+        # plus dropout / activation / batch-norm), so the two are fully aligned.
         if isinstance(X, pd.DataFrame):
             input_dim = X.shape[1]
         else:
             input_dim = X.shape[1] if hasattr(X, "shape") else len(X[0])
 
-        # Depth: 1-3 hidden layers (default architecture uses 2).
-        mlp_num_layers = trial.suggest_int(prefix + "mlp_num_layers", 1, 3)
-
-        # First hidden layer scaled to the data: from ~50% up to 2x the input width,
-        # with a generous floor so small datasets still get a usable trunk.
-        min_hidden = max(64, input_dim // 2)
-        max_hidden = max(min_hidden, input_dim * 2)
-        step = max(32, input_dim // 16)
-        # Ensure max_hidden is reachable from min_hidden with the chosen step.
-        max_hidden = min_hidden + ((max_hidden - min_hidden) // step) * step
-        first_hidden = trial.suggest_int(prefix + "mlp_hidden_dim_1", min_hidden, max_hidden, step=step, log=False)
-
-        # Funnel: each subsequent layer halves the previous width (floored at 32).
-        mlp_hidden_dims = [first_hidden]
-        for i in range(1, mlp_num_layers):
-            mlp_hidden_dims.append(max(32, first_hidden // (2**i)))
+        mlp_hidden_dims = _suggest_adaptive_hidden_dims(
+            trial,
+            input_dim,
+            layers_key=prefix + "mlp_num_layers",
+            width_key=prefix + "mlp_hidden_dim_1",
+            max_layers=4,
+        )
         suggested_params[prefix + "mlp_hidden_dims"] = mlp_hidden_dims
         suggested_params[prefix + "mlp_dropout"] = trial.suggest_float(prefix + "mlp_dropout", 0.0, 0.5, log=False)
+        suggested_params[prefix + "mlp_batch_norm"] = trial.suggest_categorical(
+            prefix + "mlp_batch_norm", (True, False)
+        )
+        suggested_params[prefix + "mlp_activation"] = trial.suggest_categorical(
+            prefix + "mlp_activation", ("ReLU", "GELU", "LeakyReLU")
+        )
 
         # === OPTIMIZATION HYPERPARAMETERS ===
 
