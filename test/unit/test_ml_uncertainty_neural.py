@@ -142,9 +142,9 @@ def test_flow_head_default_has_mlp_encoder_with_uncertainty():
     zuko = pytest.importorskip("zuko")  # noqa: F841
     X_train, X_test, y_train, _ = _regression_data()
 
-    # No mlp_* args -> default "auto" 2-layer encoder [128, 64] with 0.1 dropout.
+    # No mlp_* args -> default "auto" 2-layer encoder [256, 128] with 0.1 dropout.
     reg = FlowHeadRegressor(flow_type="NICE", max_epochs=6, lr=1e-2, device="cpu", verbose=0)
-    assert reg.get_params()["mlp_hidden_dims"] == [128, 64]
+    assert reg.get_params()["mlp_hidden_dims"] == [256, 128]
     assert reg.get_params()["mlp_dropout"] == 0.1
 
     reg.fit(X_train, y_train)
@@ -231,7 +231,7 @@ def test_flow_head_clone_preserves_architecture():
 
     # Default "auto" encoder resolves to a concrete list that must survive cloning.
     default = FlowHeadRegressor()
-    assert default.get_params()["mlp_hidden_dims"] == [128, 64]
+    assert default.get_params()["mlp_hidden_dims"] == [256, 128]
     assert snap(default) == snap(clone(default))
 
     # Non-default architectures, including batch-norm off and the flow-alone opt-outs.

@@ -1327,15 +1327,32 @@ class BaseFlowHeadEstimator:
             suggested_params[prefix + "flow_degree"] = trial.suggest_int(prefix + "flow_degree", 8, 32)
 
         # === MLP ENCODER (conditioner placed BEFORE the flow) ===
-        # A small MLP trunk gives the flow richer conditioning features and — with
-        # dropout — provides MC-dropout epistemic uncertainty. Tune 1-2 layers, the
-        # first-layer width and the dropout level (the latter also controls how much
-        # knowledge/epistemic uncertainty the head can express).
-        mlp_num_layers = trial.suggest_int(prefix + "mlp_num_layers", 1, 2)
-        first_hidden = trial.suggest_categorical(prefix + "mlp_hidden_dim_1", (64, 128, 256))
+        # The MLP trunk gives the flow richer conditioning features and — with
+        # dropout — provides MC-dropout epistemic uncertainty. Sizing is ADAPTIVE to
+        # the input dimension (mirrors the standalone MLP head), so wide feature sets
+        # (e.g. molecular fingerprints) get a wide trunk while small tabular problems
+        # stay compact. Tune depth, first-layer width and dropout.
+        if isinstance(X, pd.DataFrame):
+            input_dim = X.shape[1]
+        else:
+            input_dim = X.shape[1] if hasattr(X, "shape") else len(X[0])
+
+        # Depth: 1-3 hidden layers (default architecture uses 2).
+        mlp_num_layers = trial.suggest_int(prefix + "mlp_num_layers", 1, 3)
+
+        # First hidden layer scaled to the data: from ~50% up to 2x the input width,
+        # with a generous floor so small datasets still get a usable trunk.
+        min_hidden = max(64, input_dim // 2)
+        max_hidden = max(min_hidden, input_dim * 2)
+        step = max(32, input_dim // 16)
+        # Ensure max_hidden is reachable from min_hidden with the chosen step.
+        max_hidden = min_hidden + ((max_hidden - min_hidden) // step) * step
+        first_hidden = trial.suggest_int(prefix + "mlp_hidden_dim_1", min_hidden, max_hidden, step=step, log=False)
+
+        # Funnel: each subsequent layer halves the previous width (floored at 32).
         mlp_hidden_dims = [first_hidden]
         for i in range(1, mlp_num_layers):
-            mlp_hidden_dims.append(max(16, first_hidden // (2**i)))
+            mlp_hidden_dims.append(max(32, first_hidden // (2**i)))
         suggested_params[prefix + "mlp_hidden_dims"] = mlp_hidden_dims
         suggested_params[prefix + "mlp_dropout"] = trial.suggest_float(prefix + "mlp_dropout", 0.0, 0.5, log=False)
 
@@ -1356,7 +1373,7 @@ class BaseFlowHeadEstimator:
         - NICE flow (fast default)
         - 3 transformation layers (good balance)
         - 8 spline bins (good balance for NSF)
-        - A 2-layer MLP encoder ``[128, 64]`` with 0.1 dropout before the flow
+        - A 2-layer MLP encoder ``[256, 128]`` with 0.1 dropout before the flow
         - Learning rate of 0.001
 
         Args:
@@ -1368,7 +1385,7 @@ class BaseFlowHeadEstimator:
         return {
             prefix + "flow_type": "NICE",
             prefix + "flow_transforms": 3,
-            prefix + "mlp_hidden_dims": [128, 64],
+            prefix + "mlp_hidden_dims": [256, 128],
             prefix + "mlp_dropout": 0.1,
             prefix + "lr": 0.001,
         }
@@ -1404,7 +1421,7 @@ class FlowHeadRegressor(NeuralNetRegressor, BaseFlowHeadEstimator, AbstractMothe
         flow_signal: Hidden signal dimension for NAF/UNAF (default: 16)
         flow_components: Number of mixture components for GMM (default: 8)
         mlp_hidden_dims: Hidden sizes for the MLP encoder placed *before* the flow.
-            Default ``"auto"`` builds a reasonable 2-layer encoder ``[128, 64]`` so the
+            Default ``"auto"`` builds a reasonable 2-layer encoder ``[256, 128]`` so the
             standalone flow head has an MLP trunk and (with ``mlp_dropout`` > 0) MC-dropout
             uncertainty out of the box. Pass an explicit list to control the layers, or
             ``None`` / ``[]`` to condition the flow directly on the raw input (flow-alone,
@@ -1428,7 +1445,7 @@ class FlowHeadRegressor(NeuralNetRegressor, BaseFlowHeadEstimator, AbstractMothe
         >>> reg.fit(X_train, y_train)
         >>> predictions = reg.predict(X_test)  # Point predictions
         >>> samples = reg.predict_flow(X_test, num_samples=1000)  # Distribution
-        >>> # Default encoder ([128, 64], dropout 0.1) -> flow + MC-dropout uncertainties
+        >>> # Default encoder ([256, 128], dropout 0.1) -> flow + MC-dropout uncertainties
         >>> results = reg.predict_uncertainty(X_test)  # knowledge + data uncertainty
         >>> # Opt out of the MLP encoder for a pure flow (aleatoric only)
         >>> reg = FlowHeadRegressor(input_dim=20, mlp_hidden_dims=None)
@@ -1465,7 +1482,7 @@ class FlowHeadRegressor(NeuralNetRegressor, BaseFlowHeadEstimator, AbstractMothe
         if isinstance(mlp_hidden_dims, str):
             if mlp_hidden_dims != "auto":
                 raise ValueError(f"mlp_hidden_dims string must be 'auto', got {mlp_hidden_dims!r}.")
-            mlp_hidden_dims = [128, 64]
+            mlp_hidden_dims = [256, 128]
 
         # ── Sensible training defaults ──────────────────────────────────
         # AdamW provides proper weight-decay decoupling for better generalisation
