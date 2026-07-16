@@ -1326,6 +1326,19 @@ class BaseFlowHeadEstimator:
         if selected_flow_type == "BPF":
             suggested_params[prefix + "flow_degree"] = trial.suggest_int(prefix + "flow_degree", 8, 32)
 
+        # === MLP ENCODER (conditioner placed BEFORE the flow) ===
+        # A small MLP trunk gives the flow richer conditioning features and — with
+        # dropout — provides MC-dropout epistemic uncertainty. Tune 1-2 layers, the
+        # first-layer width and the dropout level (the latter also controls how much
+        # knowledge/epistemic uncertainty the head can express).
+        mlp_num_layers = trial.suggest_int(prefix + "mlp_num_layers", 1, 2)
+        first_hidden = trial.suggest_categorical(prefix + "mlp_hidden_dim_1", (64, 128, 256))
+        mlp_hidden_dims = [first_hidden]
+        for i in range(1, mlp_num_layers):
+            mlp_hidden_dims.append(max(16, first_hidden // (2**i)))
+        suggested_params[prefix + "mlp_hidden_dims"] = mlp_hidden_dims
+        suggested_params[prefix + "mlp_dropout"] = trial.suggest_float(prefix + "mlp_dropout", 0.0, 0.5, log=False)
+
         # === OPTIMIZATION HYPERPARAMETERS ===
 
         # Learning rate for optimizer
@@ -1343,6 +1356,7 @@ class BaseFlowHeadEstimator:
         - NICE flow (fast default)
         - 3 transformation layers (good balance)
         - 8 spline bins (good balance for NSF)
+        - A 2-layer MLP encoder ``[128, 64]`` with 0.1 dropout before the flow
         - Learning rate of 0.001
 
         Args:
@@ -1354,6 +1368,8 @@ class BaseFlowHeadEstimator:
         return {
             prefix + "flow_type": "NICE",
             prefix + "flow_transforms": 3,
+            prefix + "mlp_hidden_dims": [128, 64],
+            prefix + "mlp_dropout": 0.1,
             prefix + "lr": 0.001,
         }
 
@@ -1387,15 +1403,19 @@ class FlowHeadRegressor(NeuralNetRegressor, BaseFlowHeadEstimator, AbstractMothe
         flow_degree: Polynomial degree for BPF (default: 16)
         flow_signal: Hidden signal dimension for NAF/UNAF (default: 16)
         flow_components: Number of mixture components for GMM (default: 8)
-        mlp_hidden_dims: Optional list of hidden sizes for an MLP encoder placed
-            *before* the flow (default: None). When None the flow is conditioned on the
-            raw input (flow-alone, aleatoric uncertainty only). When provided the MLP is
-            defined exactly like the standalone :class:`MLPHeadRegressor`
+        mlp_hidden_dims: Hidden sizes for the MLP encoder placed *before* the flow.
+            Default ``"auto"`` builds a reasonable 2-layer encoder ``[128, 64]`` so the
+            standalone flow head has an MLP trunk and (with ``mlp_dropout`` > 0) MC-dropout
+            uncertainty out of the box. Pass an explicit list to control the layers, or
+            ``None`` / ``[]`` to condition the flow directly on the raw input (flow-alone,
+            aleatoric uncertainty only). When an MLP is used it is defined exactly like the
+            standalone :class:`MLPHeadRegressor`
             (``Linear -> BatchNorm -> activation -> Dropout`` per layer) with the flow
             attached afterwards, and — together with ``mlp_dropout`` > 0 — unlocks the
             same flow + MC-dropout uncertainty decomposition as the NODE flow head.
-        mlp_dropout: Dropout rate for the MLP encoder (default: 0.0). Must be > 0 to
-            obtain knowledge (epistemic) uncertainty via MC-dropout.
+        mlp_dropout: Dropout rate for the MLP encoder (default: 0.1). Must be > 0 to
+            obtain knowledge (epistemic) uncertainty via MC-dropout. Set to 0.0 for a
+            deterministic encoder (aleatoric uncertainty only).
         mlp_activation: Activation for the MLP encoder (default: "ReLU").
         mlp_batch_norm: Whether to use batch norm in the MLP encoder (default: True).
         max_epochs: Maximum training epochs (default: 100)
@@ -1408,10 +1428,10 @@ class FlowHeadRegressor(NeuralNetRegressor, BaseFlowHeadEstimator, AbstractMothe
         >>> reg.fit(X_train, y_train)
         >>> predictions = reg.predict(X_test)  # Point predictions
         >>> samples = reg.predict_flow(X_test, num_samples=1000)  # Distribution
-        >>> # MLP-before-flow with dropout -> flow + MC-dropout uncertainties
-        >>> reg = FlowHeadRegressor(input_dim=20, mlp_hidden_dims=[128, 64], mlp_dropout=0.1)
-        >>> reg.fit(X_train, y_train)
+        >>> # Default encoder ([128, 64], dropout 0.1) -> flow + MC-dropout uncertainties
         >>> results = reg.predict_uncertainty(X_test)  # knowledge + data uncertainty
+        >>> # Opt out of the MLP encoder for a pure flow (aleatoric only)
+        >>> reg = FlowHeadRegressor(input_dim=20, mlp_hidden_dims=None)
 
     Note:
         The default loss function for flow models is negative log-likelihood (NLL).
@@ -1428,8 +1448,8 @@ class FlowHeadRegressor(NeuralNetRegressor, BaseFlowHeadEstimator, AbstractMothe
         flow_degree: int = 16,
         flow_signal: int = 16,
         flow_components: int = 8,
-        mlp_hidden_dims: Optional[List[int]] = None,
-        mlp_dropout: float = 0.0,
+        mlp_hidden_dims: Union[str, List[int], None] = "auto",
+        mlp_dropout: float = 0.1,
         mlp_activation: str = "ReLU",
         mlp_batch_norm: bool = True,
         max_epochs: int = 100,
@@ -1439,6 +1459,13 @@ class FlowHeadRegressor(NeuralNetRegressor, BaseFlowHeadEstimator, AbstractMothe
         # Flow models use negative log-likelihood loss by default
         # Don't pass criterion as a method reference - Skorch will call it during forward
         # We'll override get_loss instead
+
+        # Resolve the "auto" architecture into a concrete, reasonable default encoder
+        # (2 hidden layers). None / [] keep the flow conditioned on the raw input.
+        if isinstance(mlp_hidden_dims, str):
+            if mlp_hidden_dims != "auto":
+                raise ValueError(f"mlp_hidden_dims string must be 'auto', got {mlp_hidden_dims!r}.")
+            mlp_hidden_dims = [128, 64]
 
         # ── Sensible training defaults ──────────────────────────────────
         # AdamW provides proper weight-decay decoupling for better generalisation
