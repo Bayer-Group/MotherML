@@ -74,7 +74,7 @@ def _default_chemeleon_embedder(
 
 
 class CheMeleonFingerprintTransformer(BaseEstimator, TransformerMixin):
-    """Sklearn-compatible transformer creating CheMeleon embeddings from SMILES."""
+    """Sklearn-compatible transformer creating CheMeleon embeddings from RDKit Mol objects."""
 
     def __init__(
         self,
@@ -90,7 +90,7 @@ class CheMeleonFingerprintTransformer(BaseEstimator, TransformerMixin):
         self.device = device
         self.embedder = embedder
 
-    def fit(self, X: Iterable[str], y=None) -> "CheMeleonFingerprintTransformer":
+    def fit(self, X: Iterable, y=None) -> "CheMeleonFingerprintTransformer":
         if self.embedder is None:
             self.embedder_ = _default_chemeleon_embedder(
                 checkpoint_path=self.checkpoint_path,
@@ -102,14 +102,7 @@ class CheMeleonFingerprintTransformer(BaseEstimator, TransformerMixin):
         self.is_fitted_ = True
         return self
 
-    def _to_smiles(self, value) -> Optional[str]:
-        if isinstance(value, str):
-            return value
-        if isinstance(value, Chem.Mol):
-            return Chem.MolToSmiles(value)
-        return None
-
-    def transform(self, X: Iterable[str]) -> np.ndarray:
+    def transform(self, X: Iterable) -> np.ndarray:
         check_is_fitted(self, "is_fitted_")
 
         values = np.array(list(X), dtype=object).reshape(-1)
@@ -117,20 +110,14 @@ class CheMeleonFingerprintTransformer(BaseEstimator, TransformerMixin):
         if len(values) == 0:
             return out
 
-        smiles = np.array([self._to_smiles(value) for value in values], dtype=object)
-        valid_mask = np.array(
-            [
-                isinstance(smiles_str, str) and smiles_str != "" and Chem.MolFromSmiles(smiles_str) is not None
-                for smiles_str in smiles
-            ],
-            dtype=bool,
-        )
+        valid_mask = np.array([isinstance(compound, Chem.Mol) for compound in values], dtype=bool)
 
         n_invalid = int((~valid_mask).sum())
         if n_invalid:
-            module_logger.info("Skipping %s invalid SMILES entries during CheMeleon featurization", n_invalid)
+            module_logger.info("Skipping %s invalid molecule entries during CheMeleon featurization", n_invalid)
 
-        valid_smiles = smiles[valid_mask].tolist()
+        valid_mols = values[valid_mask].tolist()
+        valid_smiles = [Chem.MolToSmiles(mol) for mol in valid_mols]
         if not valid_smiles:
             return out
 
