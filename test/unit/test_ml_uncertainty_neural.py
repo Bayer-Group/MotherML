@@ -118,7 +118,8 @@ def test_flow_head_alone_aleatoric_only():
     zuko = pytest.importorskip("zuko")  # noqa: F841
     X_train, X_test, y_train, _ = _regression_data()
 
-    reg = FlowHeadRegressor(flow_type="NICE", max_epochs=6, lr=1e-2, device="cpu", verbose=0)
+    # Opt out of the default MLP encoder to get a pure flow (flow-alone).
+    reg = FlowHeadRegressor(flow_type="NICE", mlp_hidden_dims=None, max_epochs=6, lr=1e-2, device="cpu", verbose=0)
     reg.fit(X_train, y_train)
 
     assert reg._flow_has_mc_dropout() is False
@@ -134,6 +135,24 @@ def test_flow_head_alone_aleatoric_only():
         pred["total_uncertainty"].to_numpy(dtype=float),
         pred["data_uncertainty"].to_numpy(dtype=float),
     )
+
+
+def test_flow_head_default_has_mlp_encoder_with_uncertainty():
+    """The standalone flow head defaults to an MLP encoder with dropout (epistemic uncertainty)."""
+    zuko = pytest.importorskip("zuko")  # noqa: F841
+    X_train, X_test, y_train, _ = _regression_data()
+
+    # No mlp_* args -> default "auto" 2-layer encoder [128, 64] with 0.1 dropout.
+    reg = FlowHeadRegressor(flow_type="NICE", max_epochs=6, lr=1e-2, device="cpu", verbose=0)
+    assert reg.get_params()["mlp_hidden_dims"] == [128, 64]
+    assert reg.get_params()["mlp_dropout"] == 0.1
+
+    reg.fit(X_train, y_train)
+    assert reg._flow_has_mc_dropout() is True
+
+    pred = reg.predict_uncertainty(X_test, num_samples=200, num_mc_samples=8)
+    # Epistemic uncertainty is available by default.
+    assert pred["knowledge_uncertainty"].notna().all()
 
 
 def test_flow_head_mlp_dropout_uncertainty_decomposition():
@@ -187,3 +206,59 @@ def test_flow_head_quantiles_available():
     assert q.shape == (len(X_test), 3)
     # Quantiles are monotonically non-decreasing per row.
     assert (np.diff(q, axis=1) >= -1e-4).all()
+
+
+def test_flow_head_clone_preserves_architecture():
+    """sklearn.clone() round-trips the full flow architecture, including the MLP encoder."""
+    from sklearn.base import clone
+
+    zuko = pytest.importorskip("zuko")  # noqa: F841
+
+    keys = [
+        "mlp_hidden_dims",
+        "mlp_dropout",
+        "mlp_activation",
+        "mlp_batch_norm",
+        "flow_type",
+        "flow_bins",
+        "input_dim",
+        "output_dim",
+    ]
+
+    def snap(est):
+        params = est.get_params()
+        return {k: params[k] for k in keys}
+
+    # Default "auto" encoder resolves to a concrete list that must survive cloning.
+    default = FlowHeadRegressor()
+    assert default.get_params()["mlp_hidden_dims"] == [128, 64]
+    assert snap(default) == snap(clone(default))
+
+    # Non-default architectures, including batch-norm off and the flow-alone opt-outs.
+    for kwargs in (
+        dict(
+            mlp_hidden_dims=[256, 128, 64],
+            mlp_dropout=0.3,
+            mlp_activation="GELU",
+            mlp_batch_norm=False,
+            flow_type="NSF",
+            flow_bins=12,
+        ),
+        dict(mlp_hidden_dims=None, mlp_dropout=0.0),
+        dict(mlp_hidden_dims=[], mlp_dropout=0.2),
+    ):
+        reg = FlowHeadRegressor(**kwargs)
+        assert snap(reg) == snap(clone(reg))
+        assert snap(reg) == snap(reg.__sklearn_clone__())
+
+    # A cloned (unfitted) copy rebuilds the module with the cloned params.
+    X_train, _, y_train, _ = _regression_data()
+    reg = FlowHeadRegressor(
+        mlp_hidden_dims=[32, 16], mlp_dropout=0.1, mlp_batch_norm=False, max_epochs=3, device="cpu", verbose=0
+    )
+    cloned = clone(reg)
+    cloned.fit(X_train, y_train)
+    encoder_types = {m.__class__.__name__ for m in cloned.module_.encoder.modules()}
+    assert cloned.module_.mlp_batch_norm is False
+    assert "BatchNorm1d" not in encoder_types
+    assert "Dropout" in encoder_types
