@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 from typing import Callable, Iterable, List, Optional, Sequence
 
 import numpy as np
@@ -24,45 +25,25 @@ def _default_chemeleon_embedder(
     output_dim: int = 2048,
     device: str = "cpu",
 ) -> Callable[[Sequence[str]], np.ndarray]:
-    """Build a default CheMeleon embedder callable from chemprop.
-
-    The public API of chemprop has changed across versions. We keep this logic
-    intentionally defensive and raise a clear error when the expected loader is
-    not available.
-    """
+    """Build a default CheMeleon embedder callable from current chemprop."""
     _check_chemprop()
-    import chemprop  # type: ignore
+    import torch
+    from chemprop.data import (  # type: ignore
+        MoleculeDatapoint,
+        MoleculeDataset,
+        collate_batch,
+    )
+    from chemprop.models import load_model  # type: ignore
 
-    model = None
-    load_fns = [
-        "load_model",
-        "load_checkpoint",
-        "load_from_checkpoint",
-    ]
-    for fn_name in load_fns:
-        loader = getattr(chemprop, fn_name, None)
-        if callable(loader):
-            kwargs = {}
-            loader_varnames = loader.__code__.co_varnames if hasattr(loader, "__code__") else ()
-            if checkpoint_path is not None:
-                if "checkpoint_path" in loader_varnames:
-                    kwargs["checkpoint_path"] = checkpoint_path
-                elif "path" in loader_varnames:
-                    kwargs["path"] = checkpoint_path
-            if "device" in loader_varnames:
-                kwargs["device"] = device
-            try:
-                model = loader(**kwargs) if kwargs else loader()
-                break
-            except TypeError:
-                # Loader exists but has different signature.
-                continue
+    if checkpoint_path is None:
+        raise ValueError("checkpoint_path is required for CheMeleon embeddings with the current chemprop API.")
 
-    if model is None:
-        raise RuntimeError(
-            "chemprop is installed but a supported model loader could not be found. "
-            "Please install a compatible chemprop>=2 release or provide a custom embedder."
-        )
+    model = load_model(path=Path(checkpoint_path))
+
+    if hasattr(model, "to"):
+        model = model.to(device)
+    if hasattr(model, "eval"):
+        model.eval()
 
     if not hasattr(model, "fingerprint"):
         raise RuntimeError(
@@ -70,7 +51,19 @@ def _default_chemeleon_embedder(
         )
 
     def _embed(smiles_batch: Sequence[str]) -> np.ndarray:
-        arr = np.asarray(model.fingerprint(smiles_batch), dtype=np.float32)
+        dataset = MoleculeDataset([MoleculeDatapoint.from_smi(smi) for smi in smiles_batch])
+        batch = collate_batch([dataset[i] for i in range(len(dataset))])
+        bmg, V_d, X_d, *_ = batch
+
+        bmg.to(device)
+        if V_d is not None:
+            V_d = V_d.to(device)
+        if X_d is not None:
+            X_d = X_d.to(device)
+
+        with torch.no_grad():
+            fps = model.fingerprint(bmg, V_d, X_d)
+        arr = np.asarray(fps.detach().cpu().numpy(), dtype=np.float32)
         if arr.ndim != 2:
             raise ValueError("CheMeleon embedder must return a 2D array.")
         if arr.shape[1] != output_dim:
