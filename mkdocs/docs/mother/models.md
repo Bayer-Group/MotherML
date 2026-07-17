@@ -2,9 +2,83 @@
 
 Although mother is build around catboost it basically supports other models from the ML community (like all sklearn estimators). For example, `RandomForest` is already supported. Furthermore, [own models](#providing-your-own-model) can be provided.
 
+## Currently supported models
+
+Mother discovers available model wrappers from `src/mother/ml/models/m_*.py`.
+At the moment, the built-in algorithm groups are:
+
+- `catboost`
+- `randomForest`
+- `lasso`
+- `tabpfn`
+
+You can always verify what is available in your environment:
+
+```python
+from mother import ml
+
+print(ml.get_available_algorithms())
+print(ml.get_supported_models())
+```
+
+### Built-in model classes
+
+| Algorithm key | Main model classes |
+|---|---|
+| `catboost` | `CatboostRegressorMother`, `CatboostGaussianProcessRegressorMother`, `CatboostClassifierMother`, `CatboostRankerMother` |
+| `randomForest` | `RandomForestRegressorMother`, `RandomForestClassifierMother` |
+| `lasso` | `LassoRegressorMother`, `LassoClassifierBinaryMother`, `LassoClassifierMulticlassMother` |
+| `tabpfn` | `TabPFNRegressorMother`, `TabPFNClassifierMother` |
+
+### Easy usage patterns
+
+The easiest way is to ask Mother for the model class by algorithm and task type, then instantiate it.
+
+```python
+from mother import ml
+
+# Regressor (catboost)
+reg_cls = ml.get_model_class_by_algorithm_and_type("catboost", "regression")
+reg = reg_cls()
+
+# Classifier (random forest)
+clf_cls = ml.get_model_class_by_algorithm_and_type("randomForest", "classification")
+clf = clf_cls()
+```
+
+Use an explicit subtype when needed:
+
+```python
+from mother import ml
+
+# Lasso multiclass classifier
+lasso_multi_cls = ml.get_model_class_by_algorithm_and_type(
+    "lasso", "classification_multiclass"
+)
+lasso_multi = lasso_multi_cls()
+```
+
+Or retrieve all classes for one algorithm and pick one:
+
+```python
+from mother import ml
+
+all_catboost_models = ml.get_model_class_by_algorithm("catboost")
+print([m.__name__ for m in all_catboost_models])
+```
+
+!!! tip
+
+    If you are unsure about exact class names or capabilities, use:
+
+    ```python
+    from mother import ml
+    print(ml.describe_model("RandomForestClassifierMother"))
+    ```
+
 ## Prediction and Uncertainty Interface
 
-Starting with the 1.1.x release line, model wrappers expose a more consistent prediction interface:
+Starting with the 1.0.1 release line, model wrappers expose a more consistent prediction interface:
 
 - `predict(...)` returns aligned outputs across model backends.
 - `predict_uncertainty(...)` provides uncertainty outputs for models that support it.
