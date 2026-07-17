@@ -2,6 +2,8 @@ import gc
 import json
 import logging
 import typing
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from functools import wraps
 
 import numpy as np
@@ -93,34 +95,27 @@ def handle_metadata_routing(func: typing.Callable) -> typing.Callable:
     return wrapper
 
 
-class MotherTuner:
-    """MotherTuner is a class that facilitates hyperparameter tuning using Optuna.
-
-    Attributes:
-        n_trials_optuna (int): Number of trials for Optuna optimization.
-        n_startup_trials (int): Number of startup trials for Optuna.
-        n_threads_optuna (int): Number of threads for Optuna optimization.
-        early_stopping_optuna (bool): Flag to enable early stopping in Optuna.
-        tuning_direction (StudyDirection or string): Direction of optimization (maximize or minimize).
-        scorer (typing.Callable): Scoring function or string identifier for scoring.
-        sampler (optuna.samplers.BaseSampler): Sampler for Optuna trials.
-        study (typing.Optional[Study]): Optuna study object.
-        **kwargs (Any): additional arguments for the scorer
-
-    Methods:
-        __init__(self, scorer, sampler=None, early_stopping_optuna=False, tuning_direction=StudyDirection.MAXIMIZE,
-            n_trials_optuna=100, n_threads_optuna=1, n_startup_trials=12, seed=42):
-            Initializes the MotherTuner with the given parameters.
-
-        get_callbacks(self):
-
-        optimize(self, estimator, X, y, cross_validation, groups=None, direction="maximize")
-             -> Pipeline:
+@dataclass
+class ObjectiveContext:
+    """
+    This is a dataclass to pass all arguments of `def optimize()` to
+    a customized `def objective()`.
     """
 
+    get_hyper_space: typing.Callable
+    estimator: Pipeline
+    X: pd.DataFrame
+    y: typing.Union[pd.DataFrame, pd.Series]
+    cross_validation: skl_model_sel.BaseCrossValidator
+    fit_kwargs: dict
+    groups_as_cross_val_args: bool
+    groups: typing.Optional[np.ndarray]
+    extras: dict[str, typing.Any] = field(default_factory=dict)
+
+
+class AbstractMotherTuner(ABC):
     def __init__(
         self,
-        scorer: typing.Union[typing.Callable, str],
         sampler: typing.Optional[optuna.samplers.BaseSampler] = None,
         early_stopping_optuna: bool = False,
         tuning_direction: typing.Union[StudyDirection, str] = StudyDirection.MAXIMIZE,
@@ -129,13 +124,12 @@ class MotherTuner:
         n_startup_trials: int = 12,
         seed: int = 42,
         **kwargs,
-    ):
+    ) -> None:
         self.n_trials_optuna: int = n_trials_optuna
         self.n_startup_trials: int = n_startup_trials
         self.n_threads_optuna: int = n_threads_optuna
         self.early_stopping_optuna: bool = early_stopping_optuna
         self.tuning_direction: typing.Union[StudyDirection, str] = tuning_direction
-        self.scorer: typing.Callable = skl_metrics.get_scorer(scorer)
         if sampler is None:
             module_logger.debug("Setting up default sampler TPE")
             self.sampler = optuna.samplers.TPESampler(
@@ -148,7 +142,7 @@ class MotherTuner:
         else:
             self.sampler = sampler
 
-        self.study: typing.Optional[Study] = None
+        self.study: typing.Optional[Study] | None = None
 
     def get_callbacks(self):
         """
@@ -175,6 +169,25 @@ class MotherTuner:
                 callbacks = [TerminatorCallback()]
         return callbacks
 
+    @abstractmethod
+    def objective(self, trial: optuna.trial.Trial, context: ObjectiveContext) -> float:
+        """
+        Placeholder to implement a customized objective function
+        This function is the func argument of optuna.study.optimize
+        https://optuna.readthedocs.io/en/stable/reference/generated/optuna.study.Study.html#optuna.study.Study.optimize
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def call_optimize(self, context: ObjectiveContext) -> None:
+        """
+        Placeholder to implement a customized function to
+        1. additional processing on data/model
+        2. call the Study().optimize() function with self.objective()
+        """
+
+        raise NotImplementedError
+
     @handle_metadata_routing
     def optimize(
         self,
@@ -188,6 +201,7 @@ class MotherTuner:
         ranking_groups: typing.Optional[np.ndarray] = None,
         fit_kwargs: typing.Optional[dict] = None,
         _groups_as_cross_val_args: bool = True,
+        **kwargs,
     ) -> Pipeline:
         """
         Takes an estimator as input and optimizes the hyperparameters according to
@@ -220,36 +234,18 @@ class MotherTuner:
         assert fit_kwargs is not None
         groups_as_cross_val_args = _groups_as_cross_val_args
 
-        def objective(trial: optuna.trial.Trial) -> float:
-            suggested_params_to_train: dict = get_hyper_space(trial=trial, X=X, y=y)
-            module_logger.debug("Cloning pipeline")
-            pipeline_cv: Pipeline = skl_base.clone(estimator)
-            pipeline_cv.set_params(**suggested_params_to_train)
-
-            cross_val_kwargs = {}
-            if groups_as_cross_val_args:
-                cross_val_kwargs["groups"] = groups
-
-            module_logger.debug("Perform cross validation scoring")
-            cv_score = skl_model_sel.cross_val_score(
-                estimator=pipeline_cv,
-                X=X,
-                y=utils.y_toArray(y),
-                cv=cross_validation,
-                scoring=self.scorer,
-                n_jobs=np.min([self.n_threads_optuna, cross_validation.get_n_splits()]),
-                pre_dispatch=np.min([self.n_threads_optuna, cross_validation.get_n_splits()]),
-                error_score="raise",  # only for debugging
-                params=fit_kwargs,
-                **cross_val_kwargs,
-            )
-
-            gc.collect()
-            module_logger.info(f"Trial {trial.number}, cv score: {cv_score}")
-            cv_score_not_na: np.ndarray = cv_score[~np.isnan(cv_score)]
-            report_cross_validation_scores(trial, list(cv_score_not_na))
-            mean_cv_score: float = cv_score_not_na.mean()
-            return mean_cv_score
+        # set ObjectiveContext
+        obj_context = ObjectiveContext(
+            get_hyper_space=get_hyper_space,
+            estimator=estimator,
+            X=X,
+            y=y,
+            cross_validation=cross_validation,
+            fit_kwargs=fit_kwargs,
+            groups_as_cross_val_args=groups_as_cross_val_args,
+            groups=groups,
+            extras=kwargs,
+        )
 
         module_logger.info(
             "Setting up Optuna to optimize hyperparameters with direction: %s",
@@ -273,12 +269,9 @@ class MotherTuner:
                 json.dumps(default_parameters, indent=4),
             )
             self.study.enqueue_trial(default_parameters)
-        self.study.optimize(
-            objective,
-            n_trials=self.n_trials_optuna,
-            gc_after_trial=True,
-            callbacks=self.get_callbacks(),
-        )
+
+        # call optuna study optimize
+        self.call_optimize(obj_context)
 
         if default_parameters != {}:
             module_logger.info("Check if the default parameters have been evaluated in the study")
@@ -306,3 +299,82 @@ class MotherTuner:
         module_logger.info("Training completed")
 
         return pipeline
+
+
+class MotherTuner(AbstractMotherTuner):
+    """MotherTuner is a class that facilitates hyperparameter tuning using Optuna.
+
+    Attributes:
+        scorer (typing.Callable): Scoring function or string identifier for scoring.
+        n_trials_optuna (int): Number of trials for Optuna optimization.
+        n_startup_trials (int): Number of startup trials for Optuna.
+        n_threads_optuna (int): Number of threads for Optuna optimization.
+        early_stopping_optuna (bool): Flag to enable early stopping in Optuna.
+        tuning_direction (StudyDirection or string): Direction of optimization (maximize or minimize).
+        sampler (optuna.samplers.BaseSampler): Sampler for Optuna trials.
+        study (typing.Optional[Study]): Optuna study object.
+        **kwargs (Any): additional arguments for the scorer
+
+    Methods:
+        __init__(self, scorer, sampler=None, early_stopping_optuna=False, tuning_direction=StudyDirection.MAXIMIZE,
+            n_trials_optuna=100, n_threads_optuna=1, n_startup_trials=12, seed=42):
+            Initializes the MotherTuner with the given parameters.
+
+        get_callbacks(self):
+
+        optimize(self, estimator, X, y, cross_validation, groups=None, direction="maximize")
+             -> Pipeline:
+    """
+
+    def __init__(self, scorer: typing.Union[typing.Callable, str], **kwargs):
+
+        self.scorer: typing.Callable = skl_metrics.get_scorer(scorer)
+        super().__init__(**kwargs)
+
+    def objective(self, trial: optuna.trial.Trial, context: ObjectiveContext) -> float:
+        suggested_params_to_train: dict = context.get_hyper_space(trial=trial, X=context.X, y=context.y)
+        module_logger.debug("Cloning pipeline")
+        pipeline_cv: Pipeline = skl_base.clone(context.estimator)
+        pipeline_cv.set_params(**suggested_params_to_train)
+
+        cross_val_kwargs = {}
+        if context.groups_as_cross_val_args:
+            cross_val_kwargs["groups"] = context.groups
+
+        module_logger.debug("Perform cross validation scoring")
+        cv_score = skl_model_sel.cross_val_score(
+            estimator=pipeline_cv,
+            X=context.X,
+            y=utils.y_toArray(context.y),
+            cv=context.cross_validation,
+            scoring=self.scorer,
+            n_jobs=np.min([self.n_threads_optuna, context.cross_validation.get_n_splits()]),
+            pre_dispatch=np.min([self.n_threads_optuna, context.cross_validation.get_n_splits()]),
+            error_score="raise",  # only for debugging
+            params=context.fit_kwargs,
+            **cross_val_kwargs,
+        )
+
+        gc.collect()
+        module_logger.info(f"Trial {trial.number}, cv score: {cv_score}")
+        cv_score_not_na: np.ndarray = cv_score[~np.isnan(cv_score)]
+        report_cross_validation_scores(trial, list(cv_score_not_na))
+        mean_cv_score: float = cv_score_not_na.mean()
+        return mean_cv_score
+
+    def call_optimize(self, context: ObjectiveContext) -> None:
+        """Call study.optimize() funtion.
+
+        Can be customised in the case of data processing needed for cross validation / optimisation
+
+        Args:
+            context (ObjectiveContext): optimize() function calls this function
+            with a ObjectiveContext object containing all necessary arguments.
+                self.call_optimize(obj_context)
+        """
+        self.study.optimize(
+            lambda trial: self.objective(trial, context=context),
+            n_trials=self.n_trials_optuna,
+            gc_after_trial=True,
+            callbacks=self.get_callbacks(),
+        )
