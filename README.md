@@ -4,26 +4,26 @@ A ML framework that takes care.
 
 Mother is a machine-learning framework for predicting properties from chemical molecules. The major features are:
 
-- :microscope: **SMILES** preprocessing
-- :floppy_disk: Generating of **feature vectors** from molecules
-- :chart_with_upwards_trend: Grouping and cross-validation, based on chemical similarity
-- :computer: Model Training: Standard catboost models, and feature selection methods
-- :bicyclist: Training, cross-validation, and hyperparameter optimization of machine-learning models
-- :cyclone: Handling Gene expression data from transcriptomics experiments including different normalisation techniques
-- :sparkles: <s> Explainability analysis with *SHAP* </s> (Currently not supported, will be added in a later release)
-- :blue_car: <s> Generative chemistry </s> (Currently not supported)
+- 🔬 **SMILES** preprocessing
+- 💾 Generating of **feature vectors** from molecules
+- 📈 Grouping and cross-validation, based on chemical similarity
+- 💻 Model Training: Standard catboost models, and feature selection methods
+- 🚴 Training, cross-validation, and hyperparameter optimization of machine-learning models
+- 🌀 Handling Gene expression data from transcriptomics experiments including different normalisation techniques
+- ✨ ~~Explainability analysis with *SHAP*~~ (Currently not supported, will be added in a later release)
+- 🚙 ~~Generative chemistry~~ (Currently not supported)
 
 
 Mother provides methods for each of these steps in the form of sklearn transformer objects. By that, all methods are designed to be easily accessible and usable in a modular way. The methods can be combined to ML workflows with [sklearn pipelines, column transformers, and feature unions](https://scikit-learn.org/dev/modules/compose.html).
 
-All methods can be used as sklearn `transformer` or `estimator`. Combination with other methods, or own methods and models (e.g. using mother preprocessing with other model) is therefore straightforward. To be as compatible as possible, every transformer can be constructed using a dictionary containing the required parameters. However, to provide some convenience to the users, a settings class [MotherSettings](../../src/mother/settings.py). This class can be used to store all relevant settings for your ML project.
+All methods can be used as sklearn `transformer` or `estimator`. Combination with other methods, or own methods and models (e.g. using mother preprocessing with other model) is therefore straightforward. To be as compatible as possible, every transformer can be constructed using a dictionary containing the required parameters. However, to provide some convenience to the users, a settings class [MotherSettings](https://github.com/Bayer-Group/MotherML/blob/main/src/mother/settings.py). This class can be used to store all relevant settings for your ML project.
 
 ## Usage
 
-A basic example can be found in the [example regression notebook](/examples/notebooks/example_regression.ipynb). Other
-examples are in the [examples folder](/examples/notebooks).
+A basic example can be found in the [example regression notebook](https://github.com/Bayer-Group/MotherML/blob/main/examples/notebooks/02_regression/01_basic_regression.ipynb). Other
+examples are in the [examples folder](https://github.com/Bayer-Group/MotherML/tree/main/examples/notebooks).
 
-### :microscope: SMILES preprocessing and mol-object generation
+### 🔬 SMILES preprocessing and mol-object generation
 
 SMILES preprocessing is done with the `StandardizerTransformer` class. The class is used to preprocess SMILES strings to construct a pipeline from SMILES to rdkit mol-objects with:
 
@@ -66,7 +66,7 @@ mol_data: pd.DataFrame = preprocessor.fit_transform(structure_data)
 
 Customize by changing the `flags` attribute.
 
-### :floppy_disk: Feature Generation
+### 💾 Feature Generation
 
 Mother provides three types of feature generators: `MaccsFingerprints`, `MorganFingerprints`, and `ChemicalDescriptors`:
 
@@ -92,7 +92,7 @@ features: pd.DataFrame = feature_generator.fit_transform(mol_data["Molecule"])
 
 The `FeatureUnion` class is used to combine the feature generators. Each feature generator can be configured.
 
-### :chart_with_upwards_trend: Grouping and Cross-Validation
+### 📈 Grouping and Cross-Validation
 
 For cross-validation, or test-set selection based on chemical similarity, mother provides a transformer-class for
 generating groups (`TanimotoGroupingFromMols`):
@@ -114,7 +114,7 @@ from sklearn.model_selection import GroupKFold
 cv = GroupKFold(n_splits=3)
 ```
 
-### :computer: Model Training
+### 💻 Model Training
 
 The standard model setup of Mother consists of a `feature selection`, and a classification- or regression
 model. Both are based on `Catboost`. The standard setup for a regression task would be:
@@ -174,7 +174,7 @@ model = ml.CatboostRegressorMother(target_type="single_target", logging_level="S
 
 Any other sklearn model, or own model can be used instead of `CatboostRegressorMother`. An example, on how a custom
 preprocessing step is added to the model, can be found in the
-[example notebook on custom preprocessing](/examples/notebooks/example_custom_preprocessing.ipynb).
+[example notebook on custom preprocessing](https://github.com/Bayer-Group/MotherML/blob/main/examples/notebooks/01_basics/03_custom_preprocessing.ipynb).
 
 ### Cross-validation
 
@@ -201,7 +201,7 @@ mother_takes_care.mother_cv(
 )
 ```
 
-### :bicyclist: Hyperparameter Optimization
+### 🚴 Hyperparameter Optimization
 
 The Mother object `MotherTuner` uses optuna to optimize hyperparameters:
 
@@ -227,9 +227,9 @@ The function `model.get_hyperparameter_space` returns the hyperparameter space f
 catboost model, and the `PipelineWithHyperparameterRooting` class, this is already implemented.
 
 For examples, on how to customize the hyperparameter optimization, or define hyperparameters for your own
-models, see the [example notebook](/examples/notebooks/custom_hyperparameter_optimization.ipynb).
+models, see the [example notebook](https://github.com/Bayer-Group/MotherML/blob/main/examples/notebooks/05_advanced/01_custom_hyperparameter_optimization.ipynb).
 
-### :cyclone: Handling Gene expression data from transcriptomics experiments including different normalisation techniques
+### 🌀 Handling Gene expression data from transcriptomics experiments including different normalisation techniques
 
 The RNA processing pipeline is implemented in the RNA class, which incorporates various preprocessing steps tailored for RNA sequencing data. All RNA code can be found in the rna.py file.
 
@@ -266,7 +266,7 @@ transformed_test_data: pd.DataFrame = rna_model.transform(rna_data_test)
 
 ```
 
-A complete walkthrough of the RNA functionality is found in the [example notebook](/examples/notebooks/example_rna_preprocessing.ipynb).
+A complete walkthrough of the RNA functionality is found in the [example notebook](https://github.com/Bayer-Group/MotherML/blob/main/examples/notebooks/04_feature_engineering/03_rna_preprocessing.ipynb).
 
 ## Install
 
