@@ -27,17 +27,14 @@ All classes provide methods for Optuna-based hyperparameter optimization, uncert
 Mother framework compatibility.
 """
 
+import copy
 import logging
-from functools import wraps
-from typing import Callable
 
 import catboost
 import numpy as np
 import pandas as pd
 from catboost import CatBoostClassifier, CatBoostRanker, CatBoostRegressor
 from optuna.trial import Trial
-from sklearn import get_config as skl_get_config
-from sklearn import set_config as skl_set_config
 from sklearn.base import BaseEstimator
 from sklearn.utils import check_X_y
 
@@ -50,37 +47,67 @@ module_logger = logging.getLogger(__name__)
 DEFAULT_QUANTILES: list[float] = [0.25, 0.5, 0.75]
 
 
-def ensure_metadata_routing(func: Callable) -> Callable:
-    """
-    Decorator to ensure metadata routing is enabled before executing a function.
+class _CatboostModelMotherBase(AbstractMotherPipeline):
+    def __sklearn_clone__(self):
+        """Custom clone that uses content equality instead of identity.
 
-    This decorator checks if sklearn's metadata routing is enabled and activates it
-    if necessary. It's particularly useful for initializing ranking models that require
-    metadata routing for passing additional parameters like group_id.
+        Newer CatBoost versions internally copy mutable constructor params
+        (cat_features, embedding_features, text_features, etc.), which breaks
+        sklearn.base.clone's identity check (``param1 is param2``).
+        This override reconstructs the estimator from its params directly,
+        bypassing that check.
 
-    Parameters
-    ----------
-    func : Callable
-        The function to be decorated (typically __init__ of a ranking model)
+        It also preserves any metadata routing requests (e.g.
+        ``set_fit_request(group_id=...)``), which are stored on the instance
+        and would otherwise be lost when constructing a fresh object.
+        """
+        klass: type = self.__class__
+        params: dict = self.get_params(deep=False)
+        new_params: dict = {k: copy.deepcopy(v) for k, v in params.items()}
+        new_obj = klass(**new_params)
 
-    Returns
-    -------
-    Callable
-        The wrapped function with metadata routing ensured
-    """
+        # Verify that mutable params were copied with equal content.
+        # Use explicit type-dispatch to avoid ambiguous truth-value errors from
+        # numpy arrays and pandas objects when using a plain `!=` comparison.
+        cloned_params = new_obj.get_params(deep=False)
+        for key, original_value in params.items():
+            cloned_value = cloned_params[key]
+            try:
+                if isinstance(original_value, np.ndarray) or isinstance(cloned_value, np.ndarray):
+                    # equal_nan=True: NaN values at the same position count as equal
+                    equal = np.array_equal(original_value, cloned_value, equal_nan=True)
+                elif isinstance(original_value, (pd.Series, pd.DataFrame)) and isinstance(
+                    cloned_value, type(original_value)
+                ):
+                    equal = original_value.equals(cloned_value)
+                else:
+                    equal = bool(original_value == cloned_value)
+                    if not equal:
+                        # NaN != NaN by IEEE 754; x != x is True only for NaN
+                        try:
+                            equal = original_value != original_value and cloned_value != cloned_value
+                        except Exception:
+                            pass
+            except Exception:
+                # Last resort: compare reprs (handles custom types with no __eq__)
+                equal = repr(original_value) == repr(cloned_value)
+            if not equal:
+                raise RuntimeError(
+                    f"Parameter '{key}' was not correctly cloned: original={original_value!r}, cloned={cloned_value!r}"
+                )
 
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        use_metadata_routing: bool = bool(skl_get_config().get("enable_metadata_routing", False))
-        if not use_metadata_routing:
-            module_logger.warning(
-                "Metadata routing is not enabled, enabling it now. This may cause issues in passing "
-                "training arguments to other sklearn objects."
-            )
-            skl_set_config(enable_metadata_routing=True)  # NOSONAR
-        return func(*args, **kwargs)
+        # Preserve metadata routing requests across clone
+        if hasattr(self, "_metadata_request"):
+            new_obj._metadata_request = copy.deepcopy(self._metadata_request)
+            # MetadataRequest does not implement __eq__, so compare via repr
+            if repr(self._metadata_request) != repr(new_obj._metadata_request):
+                raise RuntimeError(
+                    "Metadata routing requests were not correctly cloned: "
+                    f"original={self._metadata_request!r}, "
+                    f"cloned={new_obj._metadata_request!r}"
+                )
 
-    return wrapper
+        return new_obj
 
 
 class _CatboostHyperParams(AbstractMotherPipeline):
@@ -185,7 +212,7 @@ class _CatboostHyperParams(AbstractMotherPipeline):
         return suggested_params
 
 
-class CatboostRegressorMother(CatBoostRegressor, _CatboostHyperParams):
+class CatboostRegressorMother(CatBoostRegressor, _CatboostModelMotherBase, _CatboostHyperParams):
     """
     A custom implementation of CatBoostRegressor with extended functionality for hyperparameter tuning.
 
@@ -288,7 +315,7 @@ class CatboostRegressorMother(CatBoostRegressor, _CatboostHyperParams):
             kwargs["loss_function"] = "RMSEWithUncertainty"
         elif "loss_function" not in list(kwargs):
             # A specific loss not given. Use the default loss function
-            module_logger.warning("Specified loss does not exist. Using default loss function based on target type.")
+            module_logger.warning("No loss_function specified. Using default loss function based on target type.")
             kwargs["loss_function"] = utils.default_loss_function(self.model_type, self.target_type)
 
         # handle posterior_sampling for uncertainty
@@ -642,7 +669,7 @@ class CatboostRegressorMother(CatBoostRegressor, _CatboostHyperParams):
         return uncertainty_df
 
 
-class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostHyperParams):
+class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostModelMotherBase, _CatboostHyperParams):
     """
     Scikit-learn-compatible CatBoost Gaussian Process Regressor for Uncertainty Estimation.
 
@@ -1078,7 +1105,7 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostHyperPa
         super().__setstate__(state)
 
 
-class CatboostClassifierMother(CatBoostClassifier, _CatboostHyperParams, AbstractMotherPipeline):
+class CatboostClassifierMother(CatBoostClassifier, _CatboostModelMotherBase, _CatboostHyperParams):
     """
     Unified CatBoost classifier for binary and multiclass classification with Optuna hyperparameter tuning,
     uncertainty estimation, and active learning support, designed for integration with the Mother framework.
@@ -1384,14 +1411,14 @@ class CatboostClassifierMother(CatBoostClassifier, _CatboostHyperParams, Abstrac
         return uncertainty_df
 
 
-class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
+class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHyperParams, BaseEstimator):
     """
-    A custom implementation of CatBoostRanker with extended functionality for hyperparameter tuning
-    and automatic metadata routing enablement.
+    A custom implementation of CatBoostRanker with extended functionality for hyperparameter tuning.
 
     This class extends the CatBoostRanker and integrates with the Mother framework to provide
-    dynamic hyperparameter tuning using Optuna. It automatically enables sklearn's metadata routing
-    if not already enabled, which is required for passing group_id parameters during training.
+    dynamic hyperparameter tuning using Optuna. Callers are responsible for enabling sklearn's
+    metadata routing (``sklearn.set_config(enable_metadata_routing=True)``) before calling
+    ``fit()`` or ``tuner.optimize()``, as it is required for passing ``group_id`` during training.
 
     Attributes
     ----------
@@ -1411,12 +1438,10 @@ class CatboostRankerMother(CatBoostRanker, _CatboostHyperParams, BaseEstimator):
 
     Notes
     -----
-    The __init__ method is decorated with @ensure_metadata_routing to automatically enable
-    sklearn's metadata routing configuration, which is required for ranking models to accept
-    group_id parameters during training.
+    Pass ``group_id`` via ``fit_params`` (or via the ``params`` argument when sklearn
+    metadata routing is enabled) when using this model with cross-validation helpers.
     """
 
-    @ensure_metadata_routing
     def __init__(
         self,
         target_type: props.TargetType = "single_target",
