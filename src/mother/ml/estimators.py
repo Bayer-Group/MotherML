@@ -530,4 +530,23 @@ class MotherBorutaPy(SelectorMixin, BorutaPy):
         # For numpy arrays, sklearn convention is to NOT set feature_names_in_
         # This prevents warnings about mismatched feature names
 
+        # Always record n_features_in_ so that set_output(transform="pandas")
+        # can generate x0/x1/… column names even for numpy-array inputs.
+        self.n_features_in_ = X.shape[1]
+
         return super().fit(X, y)
+
+    def get_feature_names_out(self, input_features=None):
+        """Get output feature names, inferring n_features_in_ from support_ when necessary.
+
+        BorutaPy does not set ``n_features_in_``.  When a ``MotherBorutaPy``
+        instance is manually initialised (e.g. in tests) by directly setting
+        ``support_`` without calling ``fit()``, ``n_features_in_`` may be
+        absent.  sklearn's ``SelectorMixin.get_feature_names_out`` requires it
+        to generate ``x0/x1/…`` names.  We derive it from the length of
+        ``support_`` as a safe fallback.
+        """
+        check_is_fitted(self, ["support_"])
+        if not hasattr(self, "n_features_in_"):
+            self.n_features_in_ = len(self.support_)
+        return super().get_feature_names_out(input_features=input_features)

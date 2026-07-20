@@ -61,12 +61,16 @@ from sklearn.model_selection import (
 from sklearn.utils import check_array
 from sklearn.utils.validation import check_is_fitted
 from tabpfn import TabPFNClassifier, TabPFNRegressor
+from tabpfn.constants import ModelVersion
 from tabpfn.regressor import FullOutputDict
 
 from mother.ml.core import AbstractMotherPipeline
 from mother.ml.models import utils
 
 module_logger = logging.getLogger(__name__)
+
+# sklearn >= 1.8 is the minimum required version; `ensure_all_finite` is always available.
+_ALLOW_NAN_KWARG: dict = {"ensure_all_finite": "allow-nan"}
 DEFAULT_QUANTILES: list[float] = [0.25, 0.5, 0.75]
 
 
@@ -166,8 +170,8 @@ class _TabPFNHyperParams(AbstractMotherPipeline):
             raise ValueError("X and y must not be empty.")
 
         # ensure_2d is off because of the 1D case
-        check_array(X, ensure_2d=False, force_all_finite="allow-nan")
-        check_array(y, ensure_2d=False, dtype=None, force_all_finite="allow-nan")
+        check_array(X, ensure_2d=False, **_ALLOW_NAN_KWARG)
+        check_array(y, ensure_2d=False, dtype=None, **_ALLOW_NAN_KWARG)
 
 
 class TabPFNRegressorMother(TabPFNRegressor, _TabPFNHyperParams):
@@ -202,6 +206,12 @@ class TabPFNRegressorMother(TabPFNRegressor, _TabPFNHyperParams):
 
     def __init__(self, **kwargs):
         _TabPFNHyperParams.__init__(self)
+
+        # Default to commercially-licensed V2 model weights.
+        # Following the official recommendation:
+        #   TabPFNRegressor.create_default_for_version(ModelVersion.V2)
+        if "model_path" not in kwargs:
+            kwargs["model_path"] = TabPFNRegressor.create_default_for_version(ModelVersion.V2).model_path
 
         for key, val in self.default_parameters().items():
             if key not in list(kwargs):
@@ -359,6 +369,12 @@ class TabPFNClassifierMother(TabPFNClassifier, _TabPFNHyperParams):
 
     def __init__(self, **kwargs):
         _TabPFNHyperParams.__init__(self)
+
+        # Default to commercially-licensed V2 model weights.
+        # Following the official recommendation:
+        #   TabPFNClassifier.create_default_for_version(ModelVersion.V2)
+        if "model_path" not in kwargs:
+            kwargs["model_path"] = TabPFNClassifier.create_default_for_version(ModelVersion.V2).model_path
 
         for key, val in self.default_parameters().items():
             if key not in list(kwargs):
@@ -572,6 +588,11 @@ class TabPFNEmbeddingTransformer(BaseEstimator, TransformerMixin):
             models perform GroupKFold.
         only_best_embeddings : bool, default=False
             If True, selects the best embedding space from multiple ensembles.
+            When ``use_kfold=True`` the best estimator index is determined from
+            the out-of-fold embeddings of the fold models, then reused for the
+            full-data model stored in ``self.model``. This is an approximation:
+            estimator ranking may differ slightly between fold models and the
+            full-data model.
 
         Returns
         -------
@@ -671,6 +692,14 @@ class TabPFNEmbeddingTransformer(BaseEstimator, TransformerMixin):
                 self.train_embeddings_ = np.concatenate(
                     [np.expand_dims(emb, axis=1) for _, emb in embedding_chunks], axis=1
                 )
+
+                # Train a full-data model so transform() can embed unseen samples later.
+                self.model = model_class(
+                    device=self.device,
+                    ignore_pretraining_limits=self.ignore_pretraining_limits,
+                    **self.kwargs,
+                )
+                self.model.fit(X_array, y_array)
 
             else:
                 # Train main model on all data for transform of new data

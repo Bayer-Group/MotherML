@@ -4,7 +4,6 @@ from typing import Any, Dict, List, Optional, Union
 try:
     import anndata
     import scanpy as sc
-    from rnanorm import CPM, CUF, UQ
 except ImportError as import_error:
     from mother.errors import ExtrasDependencyImportError
 
@@ -17,9 +16,121 @@ from sklearn.base import BaseEstimator, OneToOneFeatureMixin, TransformerMixin
 from sklearn.feature_selection import SelectFromModel
 from sklearn.linear_model import LogisticRegressionCV
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler
+from sklearn.utils.validation import check_is_fitted
 
 # Set up module-level logger
 module_logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# RNA-seq normalizers (CPM, UQ, CUF) — pure numpy/sklearn implementations
+# that replace the unmaintained rnanorm package.
+# ---------------------------------------------------------------------------
+
+
+def _remove_allzero_genes(X: np.ndarray) -> np.ndarray:
+    """Remove gene columns that are zero across all samples."""
+    return X[:, X.sum(axis=0) > 0]
+
+
+class CPM(BaseEstimator, OneToOneFeatureMixin, TransformerMixin):
+    """Counts per million (CPM) normalization.
+
+    Divides each sample's counts by its library size and scales to 1e6.
+    This transformer is stateless: ``fit`` only records input shape/names
+    so that ``set_output(transform="pandas")`` works correctly inside a
+    sklearn Pipeline.
+    """
+
+    def fit(self, X: pd.DataFrame, y=None) -> "CPM":
+        X_arr = np.asarray(X, dtype=float)
+        self.n_features_in_ = X_arr.shape[1]
+        if hasattr(X, "columns"):
+            self.feature_names_in_ = np.asarray(X.columns, dtype=object)
+        return self
+
+    def transform(self, X: pd.DataFrame) -> np.ndarray:
+        check_is_fitted(self)
+        X_arr = np.asarray(X, dtype=float)
+        lib_size = X_arr.sum(axis=1)
+        if np.any(lib_size == 0):
+            raise ValueError(
+                "CPM normalization requires each sample to have a positive library size "
+                "(row sum > 0). Found one or more all-zero samples."
+            )
+        return X_arr / lib_size[:, np.newaxis] * 1e6
+
+
+class UQ(BaseEstimator, OneToOneFeatureMixin, TransformerMixin):
+    """Upper quartile (UQ) normalization.
+
+    Normalization procedure from Bullard et al. 2010
+    (https://doi.org/10.1186/1471-2105-11-94):
+
+    1. Remove genes that are zero in all samples.
+    2. Per sample: scaling factor = 75th-percentile count / library size.
+    3. Rescale factors so their geometric mean is 1.
+    4. Effective library size = library size * rescaled factor.
+    5. Return CPM with effective library size.
+
+    This matches the edgeR implementation that rnanorm was validated against.
+    """
+
+    def _raw_factors(self, X: np.ndarray) -> np.ndarray:
+        X_nz = _remove_allzero_genes(X)
+        if X_nz.shape[1] == 0:
+            raise ValueError(
+                "UQ/CUF normalization requires at least one gene with non-zero counts, "
+                "but all genes are zero across all samples."
+            )
+        lib_size = X_nz.sum(axis=1)
+        if np.any(lib_size == 0):
+            raise ValueError(
+                "UQ/CUF normalization requires each sample to have a positive library size "
+                "(row sum > 0 over expressed genes). Found one or more all-zero samples."
+            )
+        upper_q = np.percentile(X_nz, 75, axis=1)
+        factors = upper_q / lib_size
+        if np.any(factors == 0):
+            raise ValueError(
+                "UQ/CUF normalization produced a zero scaling factor for one or more samples "
+                "(75th-percentile count is zero). This would cause log(0) in fit(). "
+                "Check for samples with very sparse counts."
+            )
+        return factors
+
+    def fit(self, X: pd.DataFrame, y=None) -> "UQ":
+        X_arr = np.asarray(X, dtype=float)
+        self.n_features_in_ = X_arr.shape[1]
+        if hasattr(X, "columns"):
+            self.feature_names_in_ = np.asarray(X.columns, dtype=object)
+        factors = self._raw_factors(X_arr)
+        # geometric mean via log-space to avoid overflow
+        self.geometric_mean_: float = float(np.exp(np.mean(np.log(factors))))
+        return self
+
+    def transform(self, X: pd.DataFrame) -> np.ndarray:
+        check_is_fitted(self)
+        X_arr = np.asarray(X, dtype=float)
+        factors = self._raw_factors(X_arr) / self.geometric_mean_
+        lib_size = X_arr.sum(axis=1)
+        effective_lib_size = lib_size * factors
+        return X_arr / effective_lib_size[:, np.newaxis] * 1e6
+
+
+class CUF(UQ):
+    """Counts adjusted with Upper quartile factors (CUF) normalization.
+
+    Uses the same UQ scaling factors as :class:`UQ` but divides raw counts by
+    those factors directly instead of computing CPM, following Johnson &
+    Krishnan, 2022 (https://doi.org/10.1186/s13059-021-02568-9).
+    """
+
+    def transform(self, X: pd.DataFrame) -> np.ndarray:
+        check_is_fitted(self)
+        X_arr = np.asarray(X, dtype=float)
+        factors = self._raw_factors(X_arr) / self.geometric_mean_
+        return X_arr / factors[:, np.newaxis]
 
 
 class LogisticRegressionL1FeatureSelector(BaseEstimator, TransformerMixin, OneToOneFeatureMixin):
@@ -92,14 +203,26 @@ class LogisticRegressionL1FeatureSelector(BaseEstimator, TransformerMixin, OneTo
         X_scaled: np.ndarray = scaler.fit_transform(X)
         X = pd.DataFrame(X_scaled, columns=X.columns, index=X.index)
 
-        # Create feature selector with LogisticRegressionCV
+        # Create feature selector with LogisticRegressionCV.
+        # saga: only solver that supports l1/elastic-net regularisation; works
+        #       for both binary and multiclass.
+        # l1_ratios=(1,): pure L1 regularisation via the sklearn ≥1.8 API.
+        #   In sklearn 1.8, `penalty` was deprecated for LogisticRegressionCV.
+        #   The replacement is to set `l1_ratios` directly: l1_ratios=(1,) is
+        #   pure L1, l1_ratios=(0,) is pure L2. Do NOT also pass
+        #   penalty="elasticnet" — that raises a FutureWarning and will error
+        #   in sklearn 1.10 when the penalty parameter is removed.
+        # use_legacy_attributes=False: opt in to the simplified coef_ shape
+        #       introduced in sklearn 1.9 (becomes the default in 1.10).
         self.feature_selector = SelectFromModel(
             LogisticRegressionCV(
                 cv=self.cv,
                 random_state=self.random_state,
-                penalty="l1",
+                l1_ratios=(1,),
                 class_weight="balanced",
-                solver="liblinear",
+                solver="saga",
+                scoring="neg_log_loss",
+                use_legacy_attributes=False,
             ),
             threshold=threshold,  # Use n_features instead of threshold
             max_features=max_features,

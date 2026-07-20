@@ -2,7 +2,7 @@
 name = "mother-ml"
 version = "1.0.1"
 description = "A ML framework that takes care"
-requires-python = ">=3.10, <3.14"
+requires-python = ">=3.11, <3.15"
 license = { file = "LICENSE" }
 authors = [
   { name = "Thomas Wolf" },
@@ -22,18 +22,18 @@ authors = [
 ]
 
 dependencies = [
-  "catboost>=1.2.6,<=1.2.8",
+  "catboost>=1.2.9,<=1.2.10",
   "feature-engine>=1.8.0,<2",
   "numpy>=2.2,<2.3",
   "optuna>=4.2.0,<5",
   "pandas>=2.2,<3.0",
   "pydantic-settings>=2.4.0,<3",
   "rdkit>=2024.9.1",
-  "scikit-learn<=1.5.0",
+  "scikit-learn>=1.9.0,<1.10",
   "single-source>=0.4.0,<0.5",
   "colorama>=0.4.6,<0.5",
   "boruta>=0.4.3,<0.5",
-  "quantile-forest>=1.4.0,<2"
+  "quantile-forest>=1.4.2,<2"
 ]
 
 [project.urls]
@@ -51,7 +51,7 @@ torch = ["torch>=2.3.0,<3"]
 report = [
   "matplotlib>3.7.0",
   "seaborn>=0.13.2,<0.14",
-  "umap-learn>=0.5.7,<0.6",
+  "umap-learn>=0.5.12,<0.6",
   "plotly>=6.0.1,<7",
   "ipywidgets>=8.1.5,<9",
   "igraph>=0.11.8,<0.12",
@@ -62,18 +62,16 @@ report = [
 rna = [
   "anndata",
   "scanpy",
-  "rnanorm",
 ]
 
 ### Clustering block
 clustering = [
-  "hdbscan>=0.8.40,<0.9",
   "kmedoids>=0.5.3.1,<0.6",
 ]
 
 ### TabPFN
 tabpfn = [
-  "tabpfn==2.1.0",
+  "tabpfn==8.0.8",
   "torch>=2.3.0,<3",
 ]
 
@@ -358,4 +356,3 @@ module-name = "mother"
 [build-system]
 requires = ["uv_build>=0.11.1,<0.12.0","setuptools>=76.0.0"]
 build-backend = "uv_build"
-
