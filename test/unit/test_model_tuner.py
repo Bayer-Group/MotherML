@@ -1,4 +1,5 @@
 import numpy as np
+import optuna
 import pandas as pd
 import pytest
 from optuna.samplers import RandomSampler
@@ -239,6 +240,33 @@ class TestGetCallbacks:
             early_stopping_optuna=False,
         )
         assert tuner.get_callbacks() is None
+
+
+class TestDefaultSamplerSelection:
+    def test_gp_sampler_when_torch_available(self, monkeypatch):
+        """GPSampler should be selected when torch is available."""
+        monkeypatch.setattr("mother.optimization.core.torch_available", True)
+        tuner = MotherTuner(
+            scorer=make_scorer(mean_squared_error, greater_is_better=False),
+        )
+        assert isinstance(tuner.sampler, optuna.samplers.GPSampler)
+
+    def test_tpe_sampler_when_torch_unavailable(self, monkeypatch):
+        """TPESampler should be selected when torch is not available."""
+        monkeypatch.setattr("mother.optimization.core.torch_available", False)
+        tuner = MotherTuner(
+            scorer=make_scorer(mean_squared_error, greater_is_better=False),
+        )
+        assert isinstance(tuner.sampler, optuna.samplers.TPESampler)
+
+    def test_custom_sampler_used_directly(self):
+        """A user-provided sampler should be used as-is."""
+        custom = RandomSampler(seed=0)
+        tuner = MotherTuner(
+            scorer=make_scorer(mean_squared_error, greater_is_better=False),
+            sampler=custom,
+        )
+        assert tuner.sampler is custom
 
 
 @pytest.mark.slow
