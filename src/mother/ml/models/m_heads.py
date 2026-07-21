@@ -1011,8 +1011,10 @@ class MLPHeadClassifier(NeuralNetClassifier, BaseMLPHeadEstimator, AbstractMothe
         # Predictive (mean) distribution across MC dropout passes.
         mean_probs = probabilities.mean(axis=0)  # shape: (n_datapoints, n_classes)
 
-        # Most likely class.
-        mean_pred = mean_probs.argmax(axis=1)
+        # Most likely class — map the argmax *index* back to the real class label
+        # via skorch's ``classes_`` so that non-0..C-1 / string label sets are
+        # preserved (consistent with ``predict()`` and the other Mother classifiers).
+        mean_pred = self.classes_[mean_probs.argmax(axis=1)]
 
         # Uncertainty decomposition matching CatBoost (Malinin et al.):
         #   total     = entropy of the mean predictive distribution  H(mean_p)

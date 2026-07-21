@@ -18,7 +18,9 @@ Implements four acquisition methods:
 
 ``"balsa_kl_grid"``
     BALSA KL-Grid: ``Σ_t KL(p_t ∥ p̄)`` via an adaptive quantile grid and
-    trapezoidal quadrature. Zero MC variance; for D > 1 uses a per-marginal sum.
+    trapezoidal quadrature. Zero MC variance. **Single-target (D = 1) only** — it
+    integrates the joint density along a 1-D grid; for D > 1 use ``balsa_kl_pair``
+    or ``balsa_emd``.
 
 ``"balsa_emd"``
     BALSA EMD: ``Σ_{t=0}^{T-2} W₁(p_t, p_{t+1})`` via sorted samples (D=1)
@@ -77,6 +79,7 @@ import numpy.typing as npt
 import pandas as pd
 import torch
 import torch.nn as nn
+from sklearn.exceptions import NotFittedError
 
 logger = logging.getLogger(__name__)
 
@@ -213,10 +216,34 @@ def _collect_mc_flow_distributions(
     downstream reductions can iterate over chunks independently without loading
     the full dataset into GPU memory at once.
     """
-    if not (_is_node_flow(estimator) or _is_flow_head(estimator)):
+    # Validate the estimator *class* first (independent of fit state) so that an
+    # unfitted NODERegressor yields a clear NotFittedError below rather than a
+    # misleading TypeError.
+    try:
+        from mother.ml.models.m_node import NODERegressor  # type: ignore[import]
+    except ImportError:
+        NODERegressor = None  # type: ignore[assignment]
+    _is_node = NODERegressor is not None and isinstance(estimator, NODERegressor)
+
+    if not (_is_node or _is_flow_head(estimator)):
         raise TypeError(
             f"acquisition_score requires a NODERegressor (head_type='flow') or "
             f"FlowHeadRegressor, got {type(estimator).__name__!r}."
+        )
+
+    # Reject unfitted estimators up front: ``module_`` is created during ``fit``,
+    # and accessing it below would otherwise raise a cryptic AttributeError.
+    if getattr(estimator, "module_", None) is None:
+        raise NotFittedError(
+            f"{type(estimator).__name__} is not fitted yet. "
+            "Call `.fit(X, y)` before `acquisition_score`."
+        )
+
+    # A NODERegressor must use the flow head for flow-based acquisition scores.
+    if _is_node and getattr(estimator.module_, "head_type", None) != "flow":
+        raise ValueError(
+            "acquisition_score requires NODERegressor(head_type='flow'); "
+            f"got head_type={getattr(estimator.module_, 'head_type', None)!r}."
         )
 
     if not _has_any_dropout(estimator):
@@ -389,11 +416,14 @@ def _balsa_kl_grid(
 
     KL(p_t ∥ p̄) is integrated via the trapezoidal rule on a 1-D grid.
     When ``grid_range=None`` (default), the grid is built adaptively from
-    pooled samples — one quantile grid per batch item, per marginal — so it
-    self-locates wherever the flows' mass is without requiring a known target
-    range.  This makes it safe for OOD inputs.
+    pooled samples — one quantile grid per batch item — so it self-locates
+    wherever the flows' mass is without requiring a known target range.  This
+    makes it safe for OOD inputs.
 
-    For multi-target (D > 1), scores are summed over per-marginal KLs.
+    Single-target (D = 1) only: the score integrates the *joint* flow density
+    along a 1-D grid, which is not a valid per-marginal decomposition for
+    D > 1.  A ``NotImplementedError`` is raised for multi-target flows — use
+    ``method="balsa_kl_pair"`` or ``method="balsa_emd"`` instead.
     """
     out: List[torch.Tensor] = []
 
@@ -403,6 +433,13 @@ def _balsa_kl_grid(
             samples_b = samples_by_batch[b]
             T = len(dists_b)
             S, B, D = samples_b[0].shape
+            if D > 1:
+                raise NotImplementedError(
+                    "balsa_kl_grid supports single-target (D=1) flows only: it "
+                    "integrates the joint density on a 1-D grid, which is not a "
+                    "valid per-marginal KL for D>1. Use method='balsa_kl_pair' or "
+                    "method='balsa_emd' for multi-target flows."
+                )
             device = samples_b[0].device
             log_T = math.log(T)
 
@@ -634,10 +671,10 @@ def acquisition_score(
     >>> scores = acquisition_score(reg, X_pool, method="balsa_kl_pair")
     >>> top10 = scores.argsort()[::-1][:10]
 
-    **Standalone FlowHeadRegressor** (requires ``dropout > 0`` in the conditioner):
+    **Standalone FlowHeadRegressor** (requires ``mlp_dropout > 0`` in the MLP conditioner):
 
     >>> from mother.ml.models.m_heads import FlowHeadRegressor
-    >>> reg = FlowHeadRegressor(flow_type="NSF", dropout=0.05)
+    >>> reg = FlowHeadRegressor(flow_type="NSF", mlp_dropout=0.05)
     >>> reg.fit(X_train, y_train)
     >>>
     >>> scores = acquisition_score(reg, X_pool, method="bald")
