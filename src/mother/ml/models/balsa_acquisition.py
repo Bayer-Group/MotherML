@@ -463,8 +463,6 @@ def _balsa_kl_grid(
                     dim=-1,
                 )  # (G, B, D)
 
-            G = nodes.shape[0]
-
             # ------------------------------------------------------------------
             # Evaluate log p_t at every grid node for every expert t.
             # zuko distributions accept batched inputs; we flatten (G, B) → G*B
@@ -485,10 +483,8 @@ def _balsa_kl_grid(
             # ------------------------------------------------------------------
             # Trapezoidal KL(p_t ∥ p̄) integration over the grid axis.
             # Spacing: Δy shape (G−1, B) — per-input when using adaptive grid.
+            # D == 1 is guaranteed above, so dim 0 is the only (and correct) axis.
             # ------------------------------------------------------------------
-            # Use the first marginal (dim 0) for spacing; all marginals share the
-            # same node positions when D=1, and the per-marginal sums are identical
-            # in structure when D>1 via the joint log_prob.
             delta_y = (nodes[1:, :, 0] - nodes[:-1, :, 0]).abs()  # (G−1, B)
 
             kl_sum = torch.zeros(B, device=device)
@@ -617,10 +613,12 @@ def acquisition_score(
 
         ``"balsa_kl_grid"``
             Σ_t KL(p_t ∥ p̄) via an adaptive quantile grid and trapezoidal
-            integration.  Deterministic (zero MC variance).  For D > 1 the
-            score is a sum over per-marginal KLs (ignores cross-target
-            correlation).  Pass ``grid_range=(lo, hi)`` to use a fixed grid
-            instead of the adaptive per-query one.
+            integration.  Deterministic (zero MC variance).  **Single-target
+            (D = 1) only** — it integrates the joint density along a 1-D grid,
+            so multi-target flows raise ``NotImplementedError`` (use
+            ``"balsa_kl_pair"`` or ``"balsa_emd"`` instead).  Pass
+            ``grid_range=(lo, hi)`` to use a fixed grid instead of the adaptive
+            per-query one.
 
         ``"balsa_emd"``
             Σ_t W₁(p_t, p_{t+1}) via sorted samples (D=1) or
