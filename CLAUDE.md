@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `mother-ml` (imported as `mother`) is a scikit-learn-based ML framework for predicting properties from chemical molecules: SMILES preprocessing, molecular feature generation, chemical-similarity-aware cross-validation, model training/tuning, and RNA/transcriptomics preprocessing. Every capability is exposed as an sklearn `transformer` or `estimator`, so all methods compose via sklearn `Pipeline`, `ColumnTransformer`, and `FeatureUnion`.
 
-The build backend is `uv_build` with `module-name = "mother"`; source lives under `src/mother/`. Python 3.10–3.13.
+The build backend is `uv_build` with `module-name = "mother"`; source lives under `src/mother/`. Python 3.11–3.14.
 
 ## Commands
 

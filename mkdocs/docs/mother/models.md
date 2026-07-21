@@ -8,7 +8,7 @@ Mother discovers available model wrappers from `src/mother/ml/models/m_*.py`.
 At the moment, the built-in algorithm groups are:
 
 - `catboost`
-- `randomForest`
+- `randomforest`
 - `lasso`
 - `tabpfn`
 
@@ -26,7 +26,7 @@ print(ml.get_supported_models())
 | Algorithm key | Main model classes |
 |---|---|
 | `catboost` | `CatboostRegressorMother`, `CatboostGaussianProcessRegressorMother`, `CatboostClassifierMother`, `CatboostRankerMother` |
-| `randomForest` | `RandomForestRegressorMother`, `RandomForestClassifierMother` |
+| `randomforest` | `RandomForestRegressorMother`, `RandomForestClassifierMother` |
 | `lasso` | `LassoRegressorMother`, `LassoClassifierBinaryMother`, `LassoClassifierMulticlassMother` |
 | `tabpfn` | `TabPFNRegressorMother`, `TabPFNClassifierMother` |
 
