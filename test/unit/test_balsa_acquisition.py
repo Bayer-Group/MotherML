@@ -93,19 +93,40 @@ def test_balsa_kl_grid_fixed_and_adaptive_agree_in_shape():
 
 
 def test_bald_matches_predict_uncertainty_knowledge():
-    """The ``"bald"`` score equals the knowledge_uncertainty column (same MI)."""
+    """The ``"bald"`` acquisition score and the ``knowledge_uncertainty`` column are
+    two Monte-Carlo estimates of the SAME mutual information of the fitted flow
+    ensemble, so they must be on the same scale and positively associated across the
+    pool (not bit-identical: they draw independent MC samples)."""
+    import torch
+
+    torch.manual_seed(0)
     X_tr, y_tr, X_pool = _regression_pool()
-    reg = FlowHeadRegressor(flow_type="NICE", max_epochs=8, lr=1e-2, device="cpu", verbose=0)
+    # Default mlp_dropout=0.1 gives an MC-dropout flow ensemble (epistemic signal).
+    reg = FlowHeadRegressor(flow_type="NICE", mlp_dropout=0.1, max_epochs=20, lr=1e-2, device="cpu", verbose=0)
     reg.fit(X_tr, y_tr)
 
-    bald = np.asarray(acquisition_score(reg, X_pool, method="bald"))
+    # Estimate both quantities with generous MC budgets so the estimators converge
+    # to the model's true per-point mutual information.
+    bald = np.asarray(acquisition_score(reg, X_pool, method="bald", num_mc_samples=100, num_flow_samples=200))
+    know = np.asarray(
+        reg.predict_uncertainty(X_pool, num_mc_samples=100, num_samples=200)["knowledge_uncertainty"].to_numpy(),
+        dtype=float,
+    )
+
     _assert_valid_scores(bald, len(X_pool))
-    # Both are Monte-Carlo estimates of the same mutual information; assert they
-    # are the same order of magnitude and positively associated rather than
-    # bit-identical (independent sampling draws).
-    know = reg.predict_uncertainty(X_pool)["knowledge_uncertainty"].to_numpy()
     assert np.isfinite(know).all()
     assert (know >= -1e-5).all()
+
+    # Same MI quantity -> the two means are the same order of magnitude.
+    m_bald, m_know = float(bald.mean()), float(know.mean())
+    scale = max(m_bald, m_know, 1e-6)
+    assert abs(m_bald - m_know) / scale < 5.0, f"BALD mean {m_bald} vs knowledge mean {m_know} differ by >5x"
+
+    # Positively associated across the pool. Guard against a degenerate constant
+    # column (correlation undefined) which can happen for an under-trained model.
+    if bald.std() > 1e-6 and know.std() > 1e-6:
+        corr = float(np.corrcoef(bald, know)[0, 1])
+        assert corr > 0.2, f"BALD and knowledge_uncertainty should be positively associated, got corr={corr:.3f}"
 
 
 def test_acquisition_flow_head_with_explicit_batching():

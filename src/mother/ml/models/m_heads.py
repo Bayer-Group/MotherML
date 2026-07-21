@@ -1985,10 +1985,12 @@ class FlowHeadRegressor(NeuralNetRegressor, BaseFlowHeadEstimator, AbstractMothe
                     aleatoric), ``knowledge_uncertainty`` (mutual information, epistemic) and their
                     sum ``total_uncertainty`` (see :meth:`predict_with_combined_uncertainty`).
                 * **Flow alone / deterministic encoder** (set ``mlp_hidden_dims=None`` or ``[]``,
-                    and/or set ``mlp_dropout=0.0``): uncertainty is purely aleatoric and comes from
-                    the conditional flow ``p(y|x)`` via negative log-likelihood:
-                    ``data_uncertainty = -log_prob(mode)``, ``knowledge_uncertainty`` is ``None``.
-                    This is the backward-compatible behaviour.
+                    and/or set ``mlp_dropout=0.0``): uncertainty is purely aleatoric and is the
+                    flow's differential entropy ``H[p(y|x)]`` estimated by sampling
+                    (``data_uncertainty = -E_{y~p}[log p(y)]``, the NFlows-Out sampled-entropy
+                    definition from BALSA), with ``knowledge_uncertainty`` set to ``None``. This
+                    reports the same aleatoric quantity as
+                    :meth:`predict_with_combined_uncertainty` for the same configuration.
 
         Because the flow is a full probabilistic model, this head can also return genuine
         predictive quantiles sampled from the distribution (unlike dropout-only heads
@@ -2074,26 +2076,24 @@ class FlowHeadRegressor(NeuralNetRegressor, BaseFlowHeadEstimator, AbstractMothe
                 index=index,
             )
         else:
-            # Flow alone: aleatoric NLL of the mode (backward-compatible behaviour).
-            # ``pred`` is the mode (MAP, matching predict()); ``mean_predictions`` is the
-            # mean of the sampling distribution p(y|x).
-            self.module_.eval()
-            with torch.no_grad():
-                dist = self.module_(X_tensor)
-                mode_pred, data_uncertainty = compute_flow_mode_and_uncertainty(dist, num_samples)
-                samples = dist.sample(torch.Size([num_samples]))  # (S, N, D)
-                mean_pred = samples.mean(dim=0)  # (N, D)
-                mode_pred = mode_pred.cpu().numpy()
-                mean_pred = mean_pred.cpu().numpy()
-                data_uncertainty = data_uncertainty.cpu().numpy()
-
+            # Flow alone: the aleatoric term is the flow's differential entropy
+            # H[p(y|x)] estimated by sampling (-E_{y~p}[log p(y)], the NFlows-Out
+            # sampled-entropy definition from BALSA) — the SAME quantity that
+            # predict_with_combined_uncertainty reports for this configuration, so the
+            # two public helpers stay consistent. ``pred`` is the mode (MAP, matching
+            # predict()); ``mean_predictions`` is the mean of the sampling distribution.
+            stats = self.predict_with_combined_uncertainty(
+                X,
+                num_flow_samples=num_samples,
+                return_all=True,
+            )
             results = pd.DataFrame(
                 {
-                    "pred": _prepare_for_dataframe(mode_pred),
-                    "mean_predictions": _prepare_for_dataframe(mean_pred),
+                    "pred": _prepare_for_dataframe(stats["predictions"]),
+                    "mean_predictions": _prepare_for_dataframe(stats["mean_predictions"]),
                     "knowledge_uncertainty": None,  # No dropout in standalone head
-                    "data_uncertainty": data_uncertainty,  # Negative log-likelihood (aleatoric)
-                    "total_uncertainty": data_uncertainty,  # Only source of uncertainty
+                    "data_uncertainty": stats["data_uncertainty"],  # sampled differential entropy
+                    "total_uncertainty": stats["total_uncertainty"],  # == data (only source)
                 },
                 index=index,
             )
