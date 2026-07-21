@@ -1942,17 +1942,18 @@ class FlowHeadRegressor(NeuralNetRegressor, BaseFlowHeadEstimator, AbstractMothe
         """
         Predict with uncertainty estimation (Mother framework compatible).
 
-        The flow head reports uncertainty in one of two regimes:
+                The flow head reports uncertainty in one of two regimes:
 
-        * **Flow alone** (no MLP encoder, or ``mlp_dropout == 0``): uncertainty is purely
-          aleatoric and comes from the conditional flow ``p(y|x)`` via negative
-          log-likelihood: ``data_uncertainty = -log_prob(mode)``, ``knowledge_uncertainty``
-          is ``None``. This is the default, backward-compatible behaviour.
-        * **Flow + MLP encoder with dropout** (``mlp_hidden_dims`` set and
-          ``mlp_dropout > 0``): the same flow + MC-dropout decomposition as the NODE flow
-          head becomes available — ``data_uncertainty`` (expected differential entropy,
-          aleatoric), ``knowledge_uncertainty`` (mutual information, epistemic) and their
-          sum ``total_uncertainty`` (see :meth:`predict_with_combined_uncertainty`).
+                * **Flow + MLP encoder with dropout** (default; ``mlp_hidden_dims='auto'`` and
+                    ``mlp_dropout=0.1``): the same flow + MC-dropout decomposition as the NODE flow
+                    head becomes available — ``data_uncertainty`` (expected differential entropy,
+                    aleatoric), ``knowledge_uncertainty`` (mutual information, epistemic) and their
+                    sum ``total_uncertainty`` (see :meth:`predict_with_combined_uncertainty`).
+                * **Flow alone / deterministic encoder** (set ``mlp_hidden_dims=None`` or ``[]``,
+                    and/or set ``mlp_dropout=0.0``): uncertainty is purely aleatoric and comes from
+                    the conditional flow ``p(y|x)`` via negative log-likelihood:
+                    ``data_uncertainty = -log_prob(mode)``, ``knowledge_uncertainty`` is ``None``.
+                    This is the backward-compatible behaviour.
 
         Because the flow is a full probabilistic model, this head can also return genuine
         predictive quantiles sampled from the distribution (unlike dropout-only heads
