@@ -436,10 +436,11 @@ def _balsa_kl_grid(
             # ------------------------------------------------------------------
             log_p_list: List[torch.Tensor] = []
             for t in range(T):
-                # nodes: (G, B, D) → (G*B, D)
-                nodes_flat = nodes.reshape(G * B, D)
-                lp_flat = dists_b[t].log_prob(nodes_flat)  # (G*B,)
-                log_p_list.append(lp_flat.reshape(G, B))  # (G, B)
+                # nodes: (G, B, D). zuko broadcasts the leading (G, B) dims
+                # against the flow's batch_shape (B,), returning (G, B) —
+                # exactly as the sample-based methods evaluate (S, B, D) → (S, B).
+                lp = dists_b[t].log_prob(nodes)  # (G, B)
+                log_p_list.append(lp)
             log_p = torch.stack(log_p_list, dim=0)  # (T, G, B)
 
             # Mixture log-density: log p̄ = logsumexp_t(log p_t) − log T
