@@ -8,12 +8,12 @@ import numpy as np
 import optuna
 import optuna.logging
 import pandas as pd
+import sklearn
 import sklearn.base as skl_base
 import sklearn.metrics as skl_metrics
 import sklearn.model_selection as skl_model_sel
 from optuna.study import Study, StudyDirection
 from optuna.terminator import TerminatorCallback, report_cross_validation_scores
-from sklearn import get_config as skl_get_config
 from sklearn.pipeline import Pipeline
 
 from mother import utils as mother_utils
@@ -30,63 +30,70 @@ except ImportError:
 
 def handle_metadata_routing(func: typing.Callable) -> typing.Callable:
     """
-    Decorator to handle metadata routing configuration for optimization methods.
+    Decorator that routes ``ranking_groups`` / ``groups`` to the right arguments
+    of ``cross_val_score`` depending on whether the call is a ranking call.
 
-    This decorator manages the routing of groups and ranking_groups parameters based on
-    sklearn's metadata routing configuration. It automatically determines whether to pass
-    groups as cross-validation arguments or as fit kwargs, and ensures ranking groups
-    are properly routed when metadata routing is enabled.
+    **Non-ranking** (``ranking_groups`` is None)
+        If sklearn's global ``enable_metadata_routing`` is *off* (default),
+        CV-split groups are passed as a direct ``groups=`` kwarg to
+        ``cross_val_score``.  If routing is *on* (set by a prior ranking call),
+        sklearn 1.5+ rejects ``groups=`` as a direct kwarg, so the decorator
+        redirects groups into ``fit_kwargs`` (forwarded as ``params=``) instead.
 
-    The decorator expects the wrapped function to have the following parameters:
-    - groups: Optional[np.ndarray]
-    - ranking_groups: Optional[np.ndarray]
-    - fit_kwargs: Optional[dict]
+    **Ranking** (``ranking_groups`` is not None)
+        ``group_id`` (query groups) must reach *both* the ranker's ``fit()``
+        *and* the NDCG scorer's ``score()`` call.  sklearn only routes kwargs to
+        the scorer when ``enable_metadata_routing=True`` is set globally.
+        Therefore, for ranking:
+        - both ``groups`` (CV splitter) and ``group_id`` (ranker + scorer) are
+          injected into ``fit_kwargs`` and forwarded via ``params=``; and
+        - ``groups=`` is *not* passed as a direct kwarg.
+        The decorator raises ``RuntimeError`` early if routing is not enabled,
+        rather than silently producing incorrect ranking metrics.
 
-    It will modify fit_kwargs in place and return a tuple (fit_kwargs, groups_as_cross_val_args)
-    that can be used by the wrapped function.
-
-    Parameters
-    ----------
-    func : Callable
-        The function to be decorated (typically an optimize method)
-
-    Returns
-    -------
-    Callable
-        The wrapped function with metadata routing handled
+    The decorator also sets ``_groups_as_cross_val_args`` so ``optimize()``
+    knows which path was taken.
     """
 
     @wraps(func)
     def wrapper(*args, **kwargs):
-        # Extract relevant parameters
         groups = kwargs.get("groups")
         ranking_groups = kwargs.get("ranking_groups")
         fit_kwargs = kwargs.get("fit_kwargs")
 
-        if fit_kwargs is None:
-            fit_kwargs = {}
-            kwargs["fit_kwargs"] = fit_kwargs
+        # Shallow-copy so the decorator never mutates a caller-provided dict.
+        # Injected keys (group_id, groups) must not leak into subsequent calls
+        # that reuse the same fit_kwargs object.
+        fit_kwargs = dict(fit_kwargs) if fit_kwargs is not None else {}
+        kwargs["fit_kwargs"] = fit_kwargs
 
-        # Check metadata routing configuration
-        use_metadata_routing: bool = bool(skl_get_config().get("enable_metadata_routing", False))
+        routing_on: bool = sklearn.get_config()["enable_metadata_routing"]
 
-        # Determine how to pass groups
-        groups_as_cross_val_args: bool = True
-        if use_metadata_routing and groups is not None:
-            groups_as_cross_val_args = False
-            fit_kwargs["groups"] = groups
-
-        # Handle ranking groups
         if ranking_groups is not None:
-            if not use_metadata_routing:
-                raise AssertionError(
-                    "To use ranking groups please enable metadata routing in sklearn. "
-                    "Call sklearn.set_config(enable_metadata_routing=True)"
+            # Guard: routing must be enabled or group_id will never reach the
+            # NDCG scorer, producing silently wrong ranking metrics.
+            if not routing_on:
+                raise RuntimeError(
+                    "Ranking optimization requires sklearn metadata routing to be enabled. "
+                    "Call sklearn.set_config(enable_metadata_routing=True) before optimize()."
                 )
+            # Ranking: query groups must reach the ranker's fit() AND the
+            # NDCG scorer's score() — both via params= with routing enabled.
             fit_kwargs["group_id"] = ranking_groups
-
-        # Store the flag for use in the function
-        kwargs["_groups_as_cross_val_args"] = groups_as_cross_val_args
+            if groups is not None:
+                fit_kwargs["groups"] = groups
+            kwargs["_groups_as_cross_val_args"] = False
+        else:
+            if routing_on:
+                # sklearn 1.5+ raises ValueError when groups= is passed directly
+                # to cross_val_score while enable_metadata_routing=True.  Route
+                # via params= (fit_kwargs) instead so the CV splitter picks it up.
+                if groups is not None:
+                    fit_kwargs["groups"] = groups
+                kwargs["_groups_as_cross_val_args"] = False
+            else:
+                # Classic path: pass groups directly to cross_val_score.
+                kwargs["_groups_as_cross_val_args"] = True
 
         return func(*args, **kwargs)
 
@@ -324,7 +331,11 @@ class MotherTuner:
 
         module_logger.info("Running training")
         if not groups_as_cross_val_args:
-            fit_kwargs.pop("groups")
+            # Remove the "groups" key that was injected by the decorator for
+            # metadata-routing-based CV splits; it must not be forwarded to
+            # the final pipeline.fit() call. Use pop-with-default so this is
+            # safe even when groups was None and was therefore never injected.
+            fit_kwargs.pop("groups", None)
         pipeline.fit(X, utils.y_toArray(y), **fit_kwargs)
         module_logger.info("Training completed")
 
