@@ -30,7 +30,6 @@ dependencies = [
   "pydantic-settings>=2.4.0,<3",
   "rdkit>=2024.9.1",
   "scikit-learn>=1.9.0,<1.10",
-  "single-source>=0.4.0,<0.5",
   "colorama>=0.4.6,<0.5",
   "boruta>=0.4.3,<0.5",
   "quantile-forest>=1.4.2,<2"
@@ -336,6 +335,7 @@ dist-test = [
   { shell = "cd dist && ../test/test-dist.bash `uv run --with tomli python -c \"import tomli; print('mother_ml-' + tomli.load(open('../pyproject.toml','rb'))['project']['version'] + '-py3-none-any.whl')\"`", help = "check build package in its own environment" },
 ]
 docs = { shell = "cd mkdocs; mkdocs build", help = "Build documentation" }
+docs-python-fences = { cmd = "python scripts/check_docs_python_fences.py", help = "Execute python fenced code blocks in docs markdown" }
 format = { cmd = "ruff format src test examples", help = "Perform code style format" }
 install-hook = "pre-commit install"
 lint = { cmd = "ruff check src test --fix", help = "Run linter on src and test folder" }
