@@ -4,7 +4,7 @@ from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
-from catboost import CatBoost, CatBoostClassifier, CatBoostRegressor
+from catboost import CatBoost, CatBoostClassifier, CatBoostRanker, CatBoostRegressor
 from optuna.trial import Trial
 from scipy.sparse import csr_matrix, issparse
 from scipy.stats import rankdata
@@ -416,10 +416,11 @@ def get_virtual_prediction(
     model: typing.Union[
         CatBoostRegressor,
         CatBoostClassifier,
+        CatBoostRanker,
     ],
     virtual_ensembles_count: int = 10,
     thread_count: int = 1,
-) -> pd.DataFrame:
+) -> typing.Union[pd.DataFrame, typing.Tuple[pd.DataFrame, np.ndarray]]:
     """
     Generates virtual ensemble predictions using CatBoost's built-in uncertainty prediction.
 
@@ -430,21 +431,23 @@ def get_virtual_prediction(
     ----------
     X : pd.DataFrame
         DataFrame containing the features for prediction.
-    model : typing.Union[CatBoostRegressor, CatBoostClassifier]
-        Trained CatBoost model (either regressor or classifier).
+    model : typing.Union[CatBoostRegressor, CatBoostClassifier, CatBoostRanker]
+        Trained CatBoost model (regressor, classifier, or ranker).
     virtual_ensembles_count : int, optional
         Number of virtual ensembles to use for uncertainty estimation. Default is 10.
     thread_count : int, optional
         Number of threads is equal to the number of processor cores. Default is 1 (use all available threads).
-
     Returns
     -------
-    pd.DataFrame
-        A DataFrame containing the predictions and uncertainty components with the following columns:
-        - 'mean_predictions': Mean prediction values (None for classifiers)
-        - 'knowledge_uncertainty': Model's epistemic uncertainty (uncertainty in model parameters)
-        - 'data_uncertainty': Aleatoric uncertainty (inherent data noise/variability)
-        - 'total_uncertainty': Sum of knowledge and data uncertainty components
+    pd.DataFrame or tuple[pd.DataFrame, np.ndarray]
+        For ``CatBoostRegressor`` and ``CatBoostClassifier``: a DataFrame with columns
+        ``mean_predictions``, ``knowledge_uncertainty``, ``data_uncertainty``, ``total_uncertainty``.
+
+        For ``CatBoostRanker``: a tuple ``(uncertainty_df, raw_scores)`` where
+        ``uncertainty_df`` has the same columns as above and ``raw_scores`` is a float
+        array of shape ``(n_samples, virtual_ensembles_count)`` with the raw score from
+        each virtual ensemble.  Callers can apply ``scores_to_ranks`` column-wise to
+        ``raw_scores`` to obtain per-ensemble rank distributions.
 
     Notes:
     ---------
@@ -454,9 +457,42 @@ def get_virtual_prediction(
         only mean_predictions and knowledge_uncertainty will have values.
     Classification:
         Uncertainties are entropy-based as defined by CatBoost and are returned without transformation.
+    Ranking:
+        Returns mean raw ranking scores and epistemic uncertainty from virtual ensembles.
+        Knowledge uncertainty is converted from variance to standard deviation.
     """
 
     module_logger.info("Using catboost's builtin uncertainty prediction")
+
+    if isinstance(model, CatBoostRanker):
+        # For rankers, VirtEnsembles gives one score column per virtual ensemble
+        # (shape: n_samples × virtual_ensembles_count), which lets us compute
+        # mean and std directly without a separate TotalUncertainty call.
+        raw_scores = np.asarray(
+            model.virtual_ensembles_predict(
+                X,
+                prediction_type="VirtEnsembles",
+                ntree_end=0,
+                virtual_ensembles_count=virtual_ensembles_count,
+                thread_count=thread_count,
+                verbose=None,
+            )
+        ).squeeze(-1)  # (n_samples, virtual_ensembles_count, 1) → (n_samples, virtual_ensembles_count)
+
+        ddof = 1 if virtual_ensembles_count > 1 else 0
+        knowledge_uncertainty = np.nan_to_num(raw_scores.std(axis=1, ddof=ddof), nan=0.0)
+
+        uncertainty_df = pd.DataFrame(
+            {
+                "mean_predictions": raw_scores.mean(axis=1),
+                "knowledge_uncertainty": knowledge_uncertainty,
+                "data_uncertainty": None,
+                "total_uncertainty": None,
+            },
+            index=X.index,
+        )
+
+        return uncertainty_df, raw_scores
 
     virtual_prediction = model.virtual_ensembles_predict(
         X,
@@ -509,7 +545,7 @@ def get_virtual_prediction(
         )
 
     else:
-        raise ValueError("The model must inherit either CatboostClassifier or CatboostRegressor")
+        raise ValueError("The model must inherit CatBoostClassifier, CatBoostRegressor, or CatBoostRanker")
 
 
 def single_group_rank_pred(
