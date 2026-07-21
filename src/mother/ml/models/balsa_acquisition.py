@@ -202,6 +202,7 @@ def _collect_mc_flow_distributions(
     X: Union[pd.DataFrame, npt.NDArray],
     num_mc_samples: int,
     num_flow_samples: int,
+    batch_size: Optional[int] = None,
 ) -> Tuple[_DistsByBatch, _SamplesByBatch]:
     """Run *num_mc_samples* MC-dropout passes and collect distribution objects + samples.
 
@@ -283,22 +284,44 @@ def _collect_mc_flow_distributions(
 
         else:
             # ------------------------------------------------------------------
-            # FlowHeadRegressor path: single contiguous forward — no skorch iterator.
+            # FlowHeadRegressor path: collect in batches to avoid pool-size OOM.
+            # Prefer the estimator's own skorch iterator so batch_size/device
+            # semantics match training/predict; fall back to manual chunking.
             # ------------------------------------------------------------------
             X_np = _prepare_numpy(X)
             device = next(model.parameters()).device
-            X_tensor = _to_tensor(X_np, device)
             _enable_mc_dropout_flow_head(model)
 
-            dists_by_batch.append([])
-            samples_by_batch.append([])
+            flow_batches: List[torch.Tensor] = []
+            if batch_size is None:
+                try:
+                    dataset = estimator.get_dataset(X_np)
+                    for batch in estimator.get_iterator(dataset, training=False):
+                        Xi = batch[0] if isinstance(batch, (tuple, list)) else batch
+                        if not isinstance(Xi, torch.Tensor):
+                            Xi = torch.as_tensor(Xi)
+                        flow_batches.append(Xi)
+                except Exception:
+                    # Keep a robust fallback for custom/skipped skorch iterator paths.
+                    estimator_bs = getattr(estimator, "batch_size", None)
+                    batch_size = int(estimator_bs) if estimator_bs and int(estimator_bs) > 0 else len(X_np)
+
+            if batch_size is not None:
+                for start in range(0, len(X_np), batch_size):
+                    stop = min(start + batch_size, len(X_np))
+                    flow_batches.append(torch.as_tensor(X_np[start:stop], dtype=torch.float32))
 
             with torch.no_grad():
-                for _ in range(num_mc_samples):
-                    yp = model(X_tensor)
-                    samp = yp.sample(torch.Size([num_flow_samples]))  # (S, N, D)
-                    dists_by_batch[0].append(yp)
-                    samples_by_batch[0].append(samp)
+                for t in range(num_mc_samples):
+                    for b, Xi in enumerate(flow_batches):
+                        Xi = Xi.to(device=device, dtype=torch.float32)
+                        yp = model(Xi)
+                        samp = yp.sample(torch.Size([num_flow_samples]))  # (S, B, D)
+                        if t == 0:
+                            dists_by_batch.append([])
+                            samples_by_batch.append([])
+                        dists_by_batch[b].append(yp)
+                        samples_by_batch[b].append(samp)
 
     finally:
         _restore_eval(model)
@@ -580,6 +603,7 @@ def acquisition_score(
     method: str = "balsa_kl_pair",
     num_mc_samples: int = 50,
     num_flow_samples: int = 200,
+    batch_size: Optional[int] = None,
     grid_size: int = 200,
     grid_range: Optional[Tuple[float, float]] = None,
     reduction: str = "sum",
@@ -629,6 +653,11 @@ def acquisition_score(
         Number of MC-dropout forward passes T (default 50).
     num_flow_samples : int
         Samples drawn from each flow pass S (default 200).
+    batch_size : int or None
+        Optional batch size for FlowHeadRegressor pool scoring. If ``None``
+        (default), the estimator's own iterator / configured batch size is
+        used when available. For NODERegressor, batching always follows
+        ``estimator.get_iterator``.
     grid_size : int
         Number of grid nodes G for ``"balsa_kl_grid"`` (default 200).
     grid_range : (float, float) or None
@@ -696,7 +725,13 @@ def acquisition_score(
     if reduction not in ("sum", "mean"):
         raise ValueError(f"reduction must be 'sum' or 'mean', got {reduction!r}.")
 
-    dists_by_batch, samples_by_batch = _collect_mc_flow_distributions(estimator, X, num_mc_samples, num_flow_samples)
+    dists_by_batch, samples_by_batch = _collect_mc_flow_distributions(
+        estimator,
+        X,
+        num_mc_samples,
+        num_flow_samples,
+        batch_size=batch_size,
+    )
 
     if method == "bald":
         return _bald_score(dists_by_batch, samples_by_batch)

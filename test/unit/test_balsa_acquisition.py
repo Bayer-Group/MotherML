@@ -108,6 +108,19 @@ def test_bald_matches_predict_uncertainty_knowledge():
     assert (know >= -1e-5).all()
 
 
+def test_acquisition_flow_head_with_explicit_batching():
+    """FlowHeadRegressor path should support chunked pool scoring without OOM.
+
+    This exercises the explicit ``batch_size`` override used by acquisition_score.
+    """
+    X_tr, y_tr, X_pool = _regression_pool(n=120, n_pool=37)
+    reg = FlowHeadRegressor(flow_type="NICE", max_epochs=8, lr=1e-2, device="cpu", verbose=0)
+    reg.fit(X_tr, y_tr)
+
+    scores = acquisition_score(reg, X_pool, method="balsa_kl_pair", batch_size=8)
+    _assert_valid_scores(scores, len(X_pool))
+
+
 def test_invalid_method_raises():
     X_tr, y_tr, X_pool = _regression_pool()
     reg = FlowHeadRegressor(flow_type="NICE", max_epochs=5, lr=1e-2, device="cpu", verbose=0)
