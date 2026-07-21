@@ -235,8 +235,7 @@ def _collect_mc_flow_distributions(
     # and accessing it below would otherwise raise a cryptic AttributeError.
     if getattr(estimator, "module_", None) is None:
         raise NotFittedError(
-            f"{type(estimator).__name__} is not fitted yet. "
-            "Call `.fit(X, y)` before `acquisition_score`."
+            f"{type(estimator).__name__} is not fitted yet. Call `.fit(X, y)` before `acquisition_score`."
         )
 
     # A NODERegressor must use the flow head for flow-based acquisition scores.
