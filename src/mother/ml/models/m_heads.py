@@ -151,10 +151,14 @@ class DimensionSetter(Callback):
         # our overridden get_params() strips out.
         raw_params = super(type(net), net).get_params()
         current_input_dim = raw_params.get("module__input_dim", 1)
+        current_output_dim = raw_params.get("module__output_dim", 1)
 
-        # Only auto-detect if using default placeholder value
-        if current_input_dim != 1:
-            return  # Dimensions already set by user
+        # Auto-detect only the dimension(s) still at the placeholder value (1). If the
+        # user set BOTH input_dim and output_dim explicitly there is nothing to do;
+        # otherwise we still detect the missing one (e.g. a user who sets input_dim but
+        # leaves output_dim at 1 for multi-class classification).
+        if current_input_dim != 1 and current_output_dim != 1:
+            return  # Both dimensions already set by user
 
         # Get actual dimensions from data
         if isinstance(X, pd.DataFrame):
@@ -190,10 +194,17 @@ class DimensionSetter(Callback):
         else:
             output_dim = 1
 
-        # Update the network's module parameters and force re-initialization
-        net.set_params(module__input_dim=input_dim, module__output_dim=output_dim)
-        if net.initialized_:
-            net.initialize()
+        # Update only the placeholder dimensions and force re-initialization so a
+        # user-provided input_dim / output_dim is never overwritten by detection.
+        new_params: Dict[str, int] = {}
+        if current_input_dim == 1:
+            new_params["module__input_dim"] = input_dim
+        if current_output_dim == 1:
+            new_params["module__output_dim"] = output_dim
+        if new_params:
+            net.set_params(**new_params)
+            if net.initialized_:
+                net.initialize()
 
 
 # ============================================================================
@@ -1820,8 +1831,10 @@ class FlowHeadRegressor(NeuralNetRegressor, BaseFlowHeadEstimator, AbstractMothe
                 ``(predictions, knowledge_uncertainty, data_uncertainty)`` tuple.
 
         Returns:
-            Either a tuple ``(predictions, knowledge_uncertainty, data_uncertainty)`` or,
-            when ``return_all=True``, a dict with keys ``predictions``,
+            Either a tuple ``(predictions, knowledge_uncertainty, data_uncertainty)`` --
+            where ``predictions`` is the mode (MAP), matching :meth:`predict` -- or,
+            when ``return_all=True``, a dict with keys ``predictions`` (mode),
+            ``mean_predictions`` (mean of the sampling distribution),
             ``knowledge_uncertainty``, ``data_uncertainty``, ``total_uncertainty``,
             ``mc_means``, ``mc_uncertainties`` (per-pass entropy) and ``mc_stds`` (alias).
         """
@@ -1836,15 +1849,24 @@ class FlowHeadRegressor(NeuralNetRegressor, BaseFlowHeadEstimator, AbstractMothe
                 samples = dist.sample(torch.Size([num_flow_samples]))  # (S, N, D)
                 log_p = dist.log_prob(samples)  # (S, N)
                 data = -log_p.mean(dim=0)  # (N,)
-                predictions_t = samples.mean(dim=0)  # (N, D)
-            predictions = predictions_t.cpu().numpy()
+                # Point estimates from the SAME draws: ``mode`` is the MAP sample
+                # (consistent with predict()); ``mean`` is the sampling-distribution
+                # mean. Both are exposed so callers can pick either.
+                mean_pred_t = samples.mean(dim=0)  # (N, D)
+                best_idx = log_p.argmax(dim=0)  # (N,)
+                batch_arange = torch.arange(samples.shape[1], device=samples.device)
+                mode_pred_t = samples[best_idx, batch_arange, :]  # (N, D)
+            predictions = mode_pred_t.cpu().numpy()
+            mean_predictions = mean_pred_t.cpu().numpy()
             data_uncertainty = data.cpu().numpy()
             if output_dim == 1:
                 predictions = predictions.flatten()
+                mean_predictions = mean_predictions.flatten()
                 data_uncertainty = data_uncertainty.flatten()
             if return_all:
                 return {
                     "predictions": predictions,
+                    "mean_predictions": mean_predictions,
                     "knowledge_uncertainty": None,
                     "data_uncertainty": data_uncertainty,
                     "total_uncertainty": data_uncertainty,
@@ -1896,11 +1918,22 @@ class FlowHeadRegressor(NeuralNetRegressor, BaseFlowHeadEstimator, AbstractMothe
             per_pass_entropy = -self_all.mean(dim=1)  # (T, N)
             samp_stack = torch.stack(samples_list, dim=0)  # (T, S, N, D)
             per_pass_mean = samp_stack.mean(dim=1)  # (T, N, D)
-            predictions_t = samp_stack.mean(dim=(0, 1))  # (N, D)
+            # Mean of the MC sampling distribution (pooled over passes and draws).
+            mean_pred_t = samp_stack.mean(dim=(0, 1))  # (N, D)
+            # Mode = pooled MC sample with the highest mixture log-density p̄ (MAP),
+            # so the reported point estimate matches predict()'s mode convention.
+            n_batch = samp_stack.shape[2]
+            m_pool = samp_stack.shape[0] * samp_stack.shape[1]
+            mix_pooled = mix_all.reshape(m_pool, n_batch)  # (M, N)
+            samp_pooled = samp_stack.reshape(m_pool, n_batch, samp_stack.shape[3])  # (M, N, D)
+            best_idx = mix_pooled.argmax(dim=0)  # (N,)
+            batch_arange = torch.arange(n_batch, device=samp_pooled.device)
+            mode_pred_t = samp_pooled[best_idx, batch_arange, :]  # (N, D)
 
         data_uncertainty = data.detach().cpu().numpy()
         total_raw = total.detach().cpu().numpy()
-        predictions = predictions_t.detach().cpu().numpy()
+        predictions = mode_pred_t.detach().cpu().numpy()
+        mean_predictions = mean_pred_t.detach().cpu().numpy()
 
         # Knowledge = mutual information = total - data. Clamp at 0 (Monte-Carlo noise
         # can push the Jensen gap slightly negative), then re-derive total so the
@@ -1916,10 +1949,12 @@ class FlowHeadRegressor(NeuralNetRegressor, BaseFlowHeadEstimator, AbstractMothe
         total_uncertainty = total_uncertainty.flatten()
         if output_dim == 1:
             predictions = predictions.flatten()
+            mean_predictions = mean_predictions.flatten()
 
         if return_all:
             return {
                 "predictions": predictions,
+                "mean_predictions": mean_predictions,
                 "knowledge_uncertainty": knowledge_uncertainty,
                 "data_uncertainty": data_uncertainty,
                 "total_uncertainty": total_uncertainty,
@@ -1975,9 +2010,10 @@ class FlowHeadRegressor(NeuralNetRegressor, BaseFlowHeadEstimator, AbstractMothe
 
         Returns:
             Union[pd.DataFrame, pd.Series, tuple[pd.DataFrame, np.ndarray]]:
-                - Default: DataFrame with columns ``pred``, ``mean_predictions``,
-                  ``knowledge_uncertainty`` (``None`` unless MC-dropout is active),
-                  ``data_uncertainty`` and ``total_uncertainty``.
+                - Default: DataFrame with columns ``pred`` (mode / MAP, matching
+                  :meth:`predict`), ``mean_predictions`` (mean of the sampling
+                  distribution), ``knowledge_uncertainty`` (``None`` unless MC-dropout
+                  is active), ``data_uncertainty`` and ``total_uncertainty``.
                 - If ``return_quantiles=True``: ``(DataFrame, quantile_array)`` where the
                   array has shape ``(n_samples, n_quantiles)`` (single target) or
                   ``(n_samples, n_quantiles, output_dim)`` (multi-target).
@@ -2025,11 +2061,12 @@ class FlowHeadRegressor(NeuralNetRegressor, BaseFlowHeadEstimator, AbstractMothe
                 num_flow_samples=min(num_samples, 100),
                 return_all=True,
             )
-            predictions_col = _prepare_for_dataframe(stats["predictions"])
+            # ``pred`` is the mode (MAP, matching predict()); ``mean_predictions`` is the
+            # mean of the (MC) sampling distribution.
             results = pd.DataFrame(
                 {
-                    "pred": predictions_col,
-                    "mean_predictions": predictions_col,
+                    "pred": _prepare_for_dataframe(stats["predictions"]),
+                    "mean_predictions": _prepare_for_dataframe(stats["mean_predictions"]),
                     "knowledge_uncertainty": _prepare_for_dataframe(stats["knowledge_uncertainty"]),
                     "data_uncertainty": stats["data_uncertainty"],
                     "total_uncertainty": stats["total_uncertainty"],
@@ -2038,18 +2075,22 @@ class FlowHeadRegressor(NeuralNetRegressor, BaseFlowHeadEstimator, AbstractMothe
             )
         else:
             # Flow alone: aleatoric NLL of the mode (backward-compatible behaviour).
+            # ``pred`` is the mode (MAP, matching predict()); ``mean_predictions`` is the
+            # mean of the sampling distribution p(y|x).
             self.module_.eval()
             with torch.no_grad():
                 dist = self.module_(X_tensor)
                 mode_pred, data_uncertainty = compute_flow_mode_and_uncertainty(dist, num_samples)
+                samples = dist.sample(torch.Size([num_samples]))  # (S, N, D)
+                mean_pred = samples.mean(dim=0)  # (N, D)
                 mode_pred = mode_pred.cpu().numpy()
+                mean_pred = mean_pred.cpu().numpy()
                 data_uncertainty = data_uncertainty.cpu().numpy()
 
-            predictions_col = _prepare_for_dataframe(mode_pred)
             results = pd.DataFrame(
                 {
-                    "pred": predictions_col,
-                    "mean_predictions": predictions_col,
+                    "pred": _prepare_for_dataframe(mode_pred),
+                    "mean_predictions": _prepare_for_dataframe(mean_pred),
                     "knowledge_uncertainty": None,  # No dropout in standalone head
                     "data_uncertainty": data_uncertainty,  # Negative log-likelihood (aleatoric)
                     "total_uncertainty": data_uncertainty,  # Only source of uncertainty
