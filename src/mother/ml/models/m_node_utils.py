@@ -242,11 +242,13 @@ class ModuleWithInit(nn.Module):
 
     def __init__(self) -> None:
         super().__init__()
-        self._is_initialized_tensor = nn.Parameter(torch.tensor(0, dtype=torch.uint8), requires_grad=False)
+        # Persistent buffer (NOT an nn.Parameter): it is a bookkeeping flag, not a
+        # trainable weight, so it must stay out of model.parameters() / optimisers
+        # while still being saved in state_dict.
+        self.register_buffer("_is_initialized_tensor", torch.tensor(0, dtype=torch.uint8))
         self._is_initialized_bool: Optional[bool] = None
-        # Note: this module uses a separate flag self._is_initialized so as to achieve both
-        # * persistence: is_initialized is saved alongside model in state_dict
-        # * speed: model doesn't need to cache
+        # A cached python bool mirrors the buffer to avoid a tensor .item() sync on
+        # every forward call.
         # please DO NOT use these flags in child modules
 
     def initialize(self, *args: Any, **kwargs: Any) -> None:
