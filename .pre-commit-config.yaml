@@ -68,7 +68,7 @@ repos:
       - id: docs-python-fences
         name: docs python fences
         description: Execute python fenced code blocks in markdown docs
-        entry: .venv/bin/python scripts/check_docs_python_fences.py
+        entry: uv run poe docs-python-fences
         pass_filenames: false
         language: system
         files: ^mkdocs/docs/.*\.md$
