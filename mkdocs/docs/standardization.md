@@ -66,11 +66,13 @@ The **Mother** framework provides tools to automate standardisation largely foll
 The `StandardizerTransformer` is designed for use in scikit-learn pipelines:
 
 ```python
+import pandas as pd
 from mother.preprocessing import StandardizerTransformer
 
 # Example: Standardise and desalt SMILES strings
+smiles_data = pd.DataFrame({"smiles": ["CCO", "O=C([O-])c1ccccc1.[Na+]"]})
 standardizer = StandardizerTransformer(flags=["STANDARDIZE", "DESALT", "NEUTRALIZE"])
-standardised_smiles = standardizer.fit_transform(smiles_data)
+standardised_smiles = standardizer.fit_transform(smiles_data["smiles"])
 ```
 
 ### Using the Standardizer class directly
@@ -159,6 +161,11 @@ from mother.preprocessing.utils import StandardizationFlag
 # Start with basic standardization
 std = Standardizer(flag=StandardizationFlag.STANDARDIZE)
 
+smiles_batch1 = ["CCO", "CCN"]
+smiles_batch2 = ["CC(=O)O", "c1ccccc1"]
+smiles_batch3 = ["CC(=O)O", "O=C([O-])c1ccccc1.[Na+]"]
+smiles_batch4 = ["C[C@H](O)C", "C[C@@H](O)C"]
+
 # Process first batch
 batch1 = [std.standardize(smi) for smi in smiles_batch1]
 
@@ -221,7 +228,7 @@ After standardization, molecules contain additional properties:
 
 ### Standardizer Class
 
-```python
+```text
 class Standardizer:
     def __init__(
         self,
@@ -274,7 +281,7 @@ class Standardizer:
 
 Scikit-learn compatible transformer for pipeline integration.
 
-```python
+```text
 class StandardizerTransformer:
     def __init__(
         self,

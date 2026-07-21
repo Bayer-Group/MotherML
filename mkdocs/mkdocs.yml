@@ -69,7 +69,6 @@ nav:
       - Configurator: mother/configurator.md
       - Specifics:
           - Models: mother/models.md
-  - Report: report.md
   - Tutorials: examples.md
   - Basic Cheminformatics:
       - Introduction: chemistry.md

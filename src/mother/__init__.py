@@ -2,17 +2,26 @@
 A description of the package
 """
 
-from pathlib import Path
+from importlib.metadata import PackageNotFoundError, version
 
-from single_source import VersionNotFoundError, get_version
+_DISTRIBUTION_NAME = "mother-ml"
 
-# from mother.feature_generation.core import FeatureGenerator
-
-path_to_pyproject_dir = Path(__file__).parent.parent
 try:
-    __version__ = get_version(__name__, path_to_pyproject_dir, fail=True)
-except VersionNotFoundError:
-    pass
+    # Installed distributions expose the version via metadata generated from
+    # pyproject.toml at build time (bundled into the wheel's .dist-info).
+    __version__: str = version(_DISTRIBUTION_NAME)
+except PackageNotFoundError:
+    # Fallback for running from an uninstalled source checkout: read the
+    # version directly from pyproject.toml.
+    import tomllib
+    from pathlib import Path
+
+    _pyproject = Path(__file__).resolve().parent.parent.parent.joinpath("pyproject.toml")
+    try:
+        with _pyproject.open("rb") as _f:
+            __version__ = tomllib.load(_f)["project"]["version"]
+    except (OSError, KeyError):
+        __version__ = "0.0.0"
 
 
 class MotherModelException(Exception):
