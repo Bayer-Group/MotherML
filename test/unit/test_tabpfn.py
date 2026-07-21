@@ -265,3 +265,63 @@ class TestTabPFNEmbeddingTransformer:
             transformer1.fit_transform(self.X, self.regression_y).shape[1] * 4
             == transformer2.fit_transform(self.X, self.regression_y).shape[1]
         )
+
+    def test_kfold_transform_on_unseen_data(self):
+        """Regression test for the bug where transform() raised ValueError after
+        use_kfold=True fit because self.model was never assigned in the k-fold path."""
+        X_train, X_test = self.X.iloc[:15], self.X.iloc[15:]
+        y_train = self.regression_y.iloc[:15]
+
+        transformer = TabPFNEmbeddingTransformer(
+            model_type="regression",
+            use_kfold=True,
+            n_folds=3,
+            n_estimators=2,
+            random_state=42,
+        )
+        transformer.fit(X_train, y_train)
+
+        # Must not raise ValueError("Transformer hasn't been fitted...")
+        result = transformer.transform(X_test)
+        assert result.shape[0] == X_test.shape[0]
+        assert result.shape[1] == transformer._embedding_dim
+
+    def test_kfold_fit_transform_then_transform_unseen(self):
+        """fit_transform on train data followed by transform on held-out data must work
+        and produce embeddings with the same feature dimension."""
+        X_train, X_test = self.X.iloc[:15], self.X.iloc[15:]
+        y_train = self.regression_y.iloc[:15]
+
+        transformer = TabPFNEmbeddingTransformer(
+            model_type="regression",
+            use_kfold=True,
+            n_folds=3,
+            n_estimators=2,
+            random_state=42,
+        )
+        train_embeddings = transformer.fit_transform(X_train, y_train)
+        test_embeddings = transformer.transform(X_test)
+
+        assert train_embeddings.shape[0] == X_train.shape[0]
+        assert test_embeddings.shape[0] == X_test.shape[0]
+        assert train_embeddings.shape[1] == test_embeddings.shape[1]
+
+    def test_kfold_only_best_embeddings_transform_unseen(self):
+        """only_best_embeddings=True must work end-to-end when transforming unseen data
+        after a k-fold fit (best_estimator_idx reused on the full-data model)."""
+        X_train, X_test = self.X.iloc[:15], self.X.iloc[15:]
+        y_train = self.regression_y.iloc[:15]
+
+        transformer = TabPFNEmbeddingTransformer(
+            model_type="regression",
+            use_kfold=True,
+            n_folds=3,
+            n_estimators=4,
+            random_state=42,
+        )
+        train_embeddings = transformer.fit_transform(X_train, y_train, only_best_embeddings=True)
+        test_embeddings = transformer.transform(X_test, only_best_embeddings=True)
+
+        # With only_best_embeddings the dim should be 1/4 of the full embedding
+        assert train_embeddings.shape[1] == test_embeddings.shape[1]
+        assert transformer.best_estimator_idx is not None
