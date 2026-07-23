@@ -599,12 +599,13 @@ class ODST(ModuleWithInit):
         """
         assert len(input.shape) == 2
 
-        if input.shape[0] < 1000:
+        if input.shape[0] < 256:
             warn(
-                "Data-aware initialization is performed on less than 1000 data points. "
-                "This may cause instability. To avoid potential problems, run this model "
-                "on a data batch with at least 1000 data samples. You can do so manually "
-                "before training. Use with torch.no_grad() for memory efficiency."
+                "Data-aware initialization is performed on less than 256 data points. "
+                "This may reduce threshold initialization quality on some datasets. "
+                "Prefer at least 256 samples for stable initialization; 512+ can be more robust "
+                "when memory allows. You can run manual initialization before training, ideally "
+                "under torch.no_grad() for memory efficiency."
             )
 
         with torch.no_grad():
