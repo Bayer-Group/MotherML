@@ -1525,15 +1525,6 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
             prefix + "lr": trial.suggest_float(prefix + "lr", 1e-3, 1e-2, log=True),
         }
 
-        # Tune max_features only for single-layer NODE. For deeper NODE,
-        # aggressive truncation can trigger internal shape-mismatch paths.
-        if suggested_params[prefix + "num_layers"] == 1:
-            suggested_params[prefix + "max_features"] = trial.suggest_categorical(
-                prefix + "max_features", [None, 256, 512, 1024]
-            )
-        else:
-            suggested_params[prefix + "max_features"] = None
-
         # Tune dropout parameters (architectural regularization).
         # Fine step (0.01) so Optuna can reach the low-dropout regime that
         # normalizing-flow heads favour (best ~0.008-0.05; Werner & Schmidt-Thieme 2025);
