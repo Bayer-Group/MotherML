@@ -250,6 +250,7 @@ class TestDefaultSamplerSelection:
             scorer=make_scorer(mean_squared_error, greater_is_better=False),
         )
         assert isinstance(tuner.sampler, optuna.samplers.GPSampler)
+        assert isinstance(tuner.sampler._independent_sampler, optuna.samplers.TPESampler)
 
     def test_tpe_sampler_when_torch_unavailable(self, monkeypatch):
         """TPESampler should be selected when torch is not available."""
@@ -272,6 +273,32 @@ class TestDefaultSamplerSelection:
             scorer=make_scorer(mean_squared_error, greater_is_better=False),
         )
         assert isinstance(tuner.sampler, optuna.samplers.TPESampler)
+
+    def test_gp_sampler_warns_for_dynamic_search_space(self, caplog):
+        """GPSampler should warn that dynamic search spaces fall back to independent sampling."""
+        pytest.importorskip("torch")
+        pytest.importorskip("scipy")
+
+        sampler = optuna.samplers.GPSampler(
+            seed=0,
+            n_startup_trials=1,
+            warn_independent_sampling=True,
+        )
+        study = optuna.create_study(direction="minimize", sampler=sampler)
+
+        def objective(trial):
+            # Alternate parameter names across trials to force a dynamic search space.
+            x = trial.suggest_float("x", 0.0, 1.0)
+            if trial.number % 2 == 0:
+                trial.suggest_float("even_only", 0.0, 1.0)
+            else:
+                trial.suggest_float("odd_only", 0.0, 1.0)
+            return x
+
+        with caplog.at_level("WARNING", logger="optuna.samplers._gp.sampler"):
+            study.optimize(objective, n_trials=6)
+
+        assert "dynamic search space is not supported by GPSampler" in caplog.text
 
     def test_custom_sampler_used_directly(self):
         """A user-provided sampler should be used as-is."""

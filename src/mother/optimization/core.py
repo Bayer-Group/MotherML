@@ -145,6 +145,10 @@ class MotherTuner:
     ) -> optuna.samplers.GPSampler:
         return optuna.samplers.GPSampler(
             seed=seed,
+            independent_sampler=optuna.samplers.TPESampler(
+                seed=seed,
+                n_startup_trials=n_startup_trials,
+            ),
             n_startup_trials=n_startup_trials,
             deterministic_objective=False,
             # constant liar is always True for GPSampler,
