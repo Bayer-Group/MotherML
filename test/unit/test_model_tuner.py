@@ -18,6 +18,13 @@ from mother.ml.core import (
 )
 from mother.optimization.core import MotherTuner
 
+try:
+    import torch  # noqa: F401
+
+    _TORCH_AVAILABLE = True
+except ImportError:
+    _TORCH_AVAILABLE = False
+
 
 # define a simple model to run the tests with
 @pytest.fixture()
@@ -269,6 +276,10 @@ class TestTuneMotherModels:
         all(evaluated[k] == enqueued[k] for k in evaluated.keys() & enqueued.keys())
 
 
+@pytest.mark.skipif(
+    not _TORCH_AVAILABLE,
+    reason="Optuna early-stopping callback tests require the optional torch extra (mother[torch]).",
+)
 class TestGetCallbacks:
     def test_holdout_cv_disables_early_termination_callback(self, caplog):
         caplog.set_level("WARNING")

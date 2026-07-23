@@ -162,12 +162,15 @@ class MotherTuner:
         Prepares and returns a list of callbacks for early stopping in Optuna optimization.
 
         If early stopping with Optuna is enabled and PyTorch is available, this method
-        will return a list containing a TerminatorCallback instance. If PyTorch is not
-        available, it will log a warning and return None.
+        will return a list containing a TerminatorCallback instance.
+
+        It returns None in either of the following cases:
+        - PyTorch is not available (warning is logged)
+        - hold-out cross-validation is detected (fewer than 2 splits)
 
         Returns:
             typing.Optional[typing.List[TerminatorCallback]]: A list of TerminatorCallback
-            instances if early stopping is enabled and PyTorch is available, otherwise None.
+            instances when early stopping can be used, otherwise None.
         """
         callbacks: typing.Optional[typing.List[TerminatorCallback]] = None
         if self.early_stopping_optuna:
