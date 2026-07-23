@@ -101,7 +101,7 @@ docs = [
   "mkdocs-include-markdown-plugin",
   "mkdocs-material",
   "mkdocstrings[python]",
-  "markdown-exec[ansi]>=1.7.0,<2",
+  "markdown-exec[ansi]>=1.12.1,<2",
   "mkdocs-jupyter>=0.25.1,<0.26",
   "mkdocs-git-authors-plugin>=0.9.2,<0.10",
 ]
