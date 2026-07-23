@@ -1516,23 +1516,36 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         and ``NODEClassifier`` to include the head types they support.
         """
         suggested_params = {
-            prefix + "num_layers": trial.suggest_int(prefix + "num_layers", 1, 4, log=False),
-            prefix + "num_trees": trial.suggest_int(prefix + "num_trees", 256, 2048, step=256, log=False),
+            prefix + "num_layers": trial.suggest_int(prefix + "num_layers", 1, 3, log=False),
+            prefix + "num_trees": trial.suggest_int(prefix + "num_trees", 256, 1024, step=256, log=False),
             prefix + "additional_tree_output_dim": trial.suggest_int(
-                prefix + "additional_tree_output_dim", 0, 4, log=False
+                prefix + "additional_tree_output_dim", 1, 3, log=False
             ),
-            prefix + "depth": trial.suggest_int(prefix + "depth", 3, 6, log=False),
-            prefix + "lr": trial.suggest_float(prefix + "lr", 1e-4, 5e-2, log=True),
+            prefix + "depth": trial.suggest_int(prefix + "depth", 3, 5, log=False),
+            prefix + "lr": trial.suggest_float(prefix + "lr", 1e-3, 1e-2, log=True),
         }
+
+        # Tune max_features only for single-layer NODE. For deeper NODE,
+        # aggressive truncation can trigger internal shape-mismatch paths.
+        if suggested_params[prefix + "num_layers"] == 1:
+            suggested_params[prefix + "max_features"] = trial.suggest_categorical(
+                prefix + "max_features", [None, 256, 512, 1024]
+            )
+        else:
+            suggested_params[prefix + "max_features"] = None
 
         # Tune dropout parameters (architectural regularization).
         # Fine step (0.01) so Optuna can reach the low-dropout regime that
         # normalizing-flow heads favour (best ~0.008-0.05; Werner & Schmidt-Thieme 2025);
         # all three dropout knobs (input/tree/mlp) stay available.
         # input_dropout: Applied to combined features between ODST layers
-        suggested_params[prefix + "input_dropout"] = trial.suggest_float(prefix + "input_dropout", 0.0, 0.3, step=0.01)
+        suggested_params[prefix + "input_dropout"] = trial.suggest_float(
+            prefix + "input_dropout", 0.0, 0.15, step=0.01
+        )
         # tree_dropout: Applied after NODE layers, before head (architectural)
-        suggested_params[prefix + "tree_dropout"] = trial.suggest_float(prefix + "tree_dropout", 0.0, 0.3, step=0.01)
+        suggested_params[prefix + "tree_dropout"] = trial.suggest_float(
+            prefix + "tree_dropout", 0.0, 0.15, step=0.01
+        )
 
         # Head-specific tuning is delegated entirely to subclass overrides.
         # The base implementation is a no-op; NODERegressor / NODEClassifier
@@ -1631,15 +1644,16 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         ``NODERegressor`` and ``NODEClassifier``.
         """
         return {
-            prefix + "lr": 0.03,
-            prefix + "depth": 6,
-            prefix + "num_layers": 1,
-            prefix + "num_trees": 2048,
+            prefix + "lr": 0.005,
+            prefix + "depth": 4,
+            prefix + "num_layers": 2,
+            prefix + "num_trees": 512,
             prefix + "additional_tree_output_dim": 3,
             prefix + "choice_function": "entmax15",
             prefix + "bin_function": "entmoid15",
             prefix + "input_dropout": 0.05,
-            prefix + "tree_dropout": 0.0,
+            prefix + "tree_dropout": 0.05,
+            prefix + "max_features": None,
         }
 
 
@@ -1684,9 +1698,9 @@ class NODERegressor(BaseNODEEstimator):
         # ====================================================================
         # Core Architecture (most important parameters)
         # ====================================================================
-        num_trees: int = 2048,  # Number of trees in ensemble
-        depth: int = 6,  # Tree depth (complexity)
-        num_layers: int = 1,  # Number of NODE layers
+        num_trees: int = 512,  # Number of trees in ensemble
+        depth: int = 4,  # Tree depth (complexity)
+        num_layers: int = 2,  # Number of NODE layers
         # ====================================================================
         # Head Configuration (prediction layer)
         # ====================================================================
@@ -1710,8 +1724,8 @@ class NODERegressor(BaseNODEEstimator):
         # Training Configuration
         # ====================================================================
         max_epochs: int = 100,  # Number of training epochs
-        lr: float = 0.01,  # Learning rate
-        batch_size: int = 128,  # Batch size for training
+        lr: float = 0.005,  # Learning rate
+        batch_size: int = 256,  # Batch size for training
         optimizer: type = torch.optim.Adam,  # Optimizer class
         criterion: type = nn.MSELoss,  # Loss function
         device: str = "cuda" if torch.cuda.is_available() else "cpu",  # Device (cuda/cpu)
@@ -2818,9 +2832,9 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
         # ====================================================================
         # Core Architecture (most important parameters)
         # ====================================================================
-        num_trees: int = 2048,  # Number of trees in ensemble
-        depth: int = 6,  # Tree depth (complexity)
-        num_layers: int = 1,  # Number of NODE layers
+        num_trees: int = 512,  # Number of trees in ensemble
+        depth: int = 4,  # Tree depth (complexity)
+        num_layers: int = 2,  # Number of NODE layers
         # ====================================================================
         # Head Configuration (prediction layer)
         # ====================================================================
@@ -2838,8 +2852,8 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
         # Training Configuration
         # ====================================================================
         max_epochs: int = 100,  # Number of training epochs
-        lr: float = 0.01,  # Learning rate
-        batch_size: int = 128,  # Batch size for training
+        lr: float = 0.005,  # Learning rate
+        batch_size: int = 256,  # Batch size for training
         optimizer: type = torch.optim.Adam,  # Optimizer class
         criterion: type = nn.CrossEntropyLoss,  # Loss function
         device: str = "cuda" if torch.cuda.is_available() else "cpu",  # Device (cuda/cpu)

@@ -702,19 +702,31 @@ class DenseODSTBlock(nn.Sequential):
             Module: ODST class (or compatible) to use for each layer.
             **kwargs: Forwarded to each ``Module(...)`` constructor.
         """
+        # Ensure max_features never shrinks below the original input width.
+        # The dense forward path always preserves all original features, so
+        # allowing a smaller cap would make later ODST layers expect fewer
+        # features than they actually receive.
+        effective_max_features = max_features
+        if effective_max_features is not None and effective_max_features < input_dim:
+            warn(
+                f"max_features={effective_max_features} is smaller than input_dim={input_dim}; "
+                f"using max_features={input_dim} to keep dimensions consistent."
+            )
+            effective_max_features = input_dim
+
         layers = []
         for _ in range(num_layers):
             oddt = Module(input_dim, num_trees, tree_output_dim=tree_output_dim, flatten_output=True, **kwargs)
 
             # Cap dimension growth between layers (prevents memory issues)
-            input_dim = min(input_dim + num_trees * tree_output_dim, max_features or float("inf"))
+            input_dim = min(input_dim + num_trees * tree_output_dim, effective_max_features or float("inf"))
             layers.append(oddt)
 
         super().__init__(*layers)
         self.num_layers = num_layers
         self.layer_dim = num_trees
         self.tree_dim = tree_output_dim
-        self.max_features = max_features
+        self.max_features = effective_max_features
         self.flatten_output = flatten_output
         self.input_dropout = input_dropout
 
@@ -750,6 +762,9 @@ class DenseODSTBlock(nn.Sequential):
                         ],
                         dim=-1,
                     )
+                else:
+                    # Keep only original features when no tail fits the budget.
+                    layer_inp = layer_inp[..., :initial_features]
             if self.training and self.input_dropout:
                 # Apply dropout to combined features (continuous + categorical embeddings)
                 # This regularizes all input features, not just categorical
