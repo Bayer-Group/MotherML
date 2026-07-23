@@ -724,7 +724,8 @@ class DenseODSTBlock(nn.Sequential):
         if effective_max_features is None:
             max_prev_layers_kept = None
         else:
-            max_prev_layers_kept = max((effective_max_features - base_input_dim) // layer_output_width, 0)
+            # it should always select at least one previous layer, even if the budget is very tight
+            max_prev_layers_kept = max((effective_max_features - base_input_dim) // layer_output_width, 1)
 
         layers = []
         current_input_dim = base_input_dim
