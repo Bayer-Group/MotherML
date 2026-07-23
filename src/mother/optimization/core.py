@@ -137,7 +137,7 @@ class MotherTuner:
         tuning_direction: typing.Union[StudyDirection, str] = StudyDirection.MAXIMIZE,
         n_trials_optuna: int = 100,
         n_threads_optuna: int = 1,
-        n_startup_trials: int = 12,
+        n_startup_trials: int = 20,
         seed: int = 42,
         **kwargs,
     ):
