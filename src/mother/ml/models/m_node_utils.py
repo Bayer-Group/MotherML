@@ -673,6 +673,10 @@ class DenseODSTBlock(nn.Sequential):
 
     Stacks multiple ODST layers where each layer receives all previous outputs
     (like DenseNet). Supports dimension capping to prevent memory explosion.
+
+    Under ``max_features``, retention is layer-aligned: the block always keeps
+    all original input features plus as many *full* previous layer outputs as
+    fit in budget (newest-first). Partial layer slices are never retained.
     """
 
     def __init__(
@@ -715,19 +719,33 @@ class DenseODSTBlock(nn.Sequential):
             )
             effective_max_features = input_dim
 
-        layers = []
-        for _ in range(num_layers):
-            oddt = Module(input_dim, num_trees, tree_output_dim=tree_output_dim, flatten_output=True, **kwargs)
+        base_input_dim = input_dim
+        layer_output_width = num_trees * tree_output_dim
+        if effective_max_features is None:
+            max_prev_layers_kept = None
+        else:
+            max_prev_layers_kept = max((effective_max_features - base_input_dim) // layer_output_width, 0)
 
-            # Cap dimension growth between layers (prevents memory issues)
-            input_dim = min(input_dim + num_trees * tree_output_dim, effective_max_features or float("inf"))
+        layers = []
+        current_input_dim = base_input_dim
+        for layer_idx in range(num_layers):
+            oddt = Module(current_input_dim, num_trees, tree_output_dim=tree_output_dim, flatten_output=True, **kwargs)
             layers.append(oddt)
+
+            # Next layer input size under full-layer retention.
+            if max_prev_layers_kept is None:
+                current_input_dim = current_input_dim + layer_output_width
+            else:
+                kept_prev_layers = min(layer_idx + 1, max_prev_layers_kept)
+                current_input_dim = base_input_dim + kept_prev_layers * layer_output_width
 
         super().__init__(*layers)
         self.num_layers = num_layers
         self.layer_dim = num_trees
         self.tree_dim = tree_output_dim
         self.max_features = effective_max_features
+        self._layer_output_width = layer_output_width
+        self._max_prev_layers_kept = max_prev_layers_kept
         self.flatten_output = flatten_output
         self.input_dropout = input_dropout
 
@@ -751,11 +769,12 @@ class DenseODSTBlock(nn.Sequential):
         for layer in self:
             layer_inp = x
             if self.max_features is not None:
-                tail_features = min(self.max_features, layer_inp.shape[-1]) - initial_features
-                # Only trim when there is a positive tail to keep. A non-positive
-                # value (max_features <= initial_features) would turn the negative
-                # slice into a positive start index and corrupt the features.
-                if tail_features > 0:
+                prev_generated_width = max(layer_inp.shape[-1] - initial_features, 0)
+                prev_generated_layers = prev_generated_width // self._layer_output_width
+                keep_prev_layers = min(prev_generated_layers, self._max_prev_layers_kept or 0)
+
+                if keep_prev_layers > 0:
+                    tail_features = keep_prev_layers * self._layer_output_width
                     layer_inp = torch.cat(
                         [
                             layer_inp[..., :initial_features],
@@ -764,7 +783,7 @@ class DenseODSTBlock(nn.Sequential):
                         dim=-1,
                     )
                 else:
-                    # Keep only original features when no tail fits the budget.
+                    # Keep only original features when no full previous layer fits.
                     layer_inp = layer_inp[..., :initial_features]
             if self.training and self.input_dropout:
                 # Apply dropout to combined features (continuous + categorical embeddings)
