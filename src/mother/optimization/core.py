@@ -13,7 +13,11 @@ import sklearn.base as skl_base
 import sklearn.metrics as skl_metrics
 import sklearn.model_selection as skl_model_sel
 from optuna.study import Study, StudyDirection
-from optuna.terminator import TerminatorCallback, report_cross_validation_scores
+from optuna.terminator import (
+    Terminator,
+    TerminatorCallback,
+    report_cross_validation_scores,
+)
 from sklearn.pipeline import Pipeline
 
 from mother import utils as mother_utils
@@ -133,7 +137,7 @@ class MotherTuner:
         tuning_direction: typing.Union[StudyDirection, str] = StudyDirection.MAXIMIZE,
         n_trials_optuna: int = 100,
         n_threads_optuna: int = 1,
-        n_startup_trials: int = 12,
+        n_startup_trials: int = 20,
         seed: int = 42,
         **kwargs,
     ):
@@ -157,17 +161,20 @@ class MotherTuner:
 
         self.study: typing.Optional[Study] = None
 
-    def get_callbacks(self):
+    def get_callbacks(self, cross_validation: typing.Optional[skl_model_sel.BaseCrossValidator] = None):
         """
         Prepares and returns a list of callbacks for early stopping in Optuna optimization.
 
         If early stopping with Optuna is enabled and PyTorch is available, this method
-        will return a list containing a TerminatorCallback instance. If PyTorch is not
-        available, it will log a warning and return None.
+        will return a list containing a TerminatorCallback instance.
+
+        It returns None in either of the following cases:
+        - PyTorch is not available (warning is logged)
+        - hold-out cross-validation is detected (fewer than 2 splits)
 
         Returns:
             typing.Optional[typing.List[TerminatorCallback]]: A list of TerminatorCallback
-            instances if early stopping is enabled and PyTorch is available, otherwise None.
+            instances when early stopping can be used, otherwise None.
         """
         callbacks: typing.Optional[typing.List[TerminatorCallback]] = None
         if self.early_stopping_optuna:
@@ -179,7 +186,12 @@ class MotherTuner:
                     pip install mother[torch] or uv add mother[torch]"""
                 )
             else:
-                callbacks = [TerminatorCallback()]
+                if cross_validation is not None and cross_validation.get_n_splits() < 2:
+                    module_logger.warning(
+                        "Optuna early termination requires at least 2 CV splits; disabling callback for hold-out setup"
+                    )
+                    return None
+                callbacks = [TerminatorCallback(terminator=Terminator(min_n_trials=40))]
         return callbacks
 
     @handle_metadata_routing
@@ -254,7 +266,8 @@ class MotherTuner:
             gc.collect()
             module_logger.info(f"Trial {trial.number}, cv score: {cv_score}")
             cv_score_not_na: np.ndarray = cv_score[~np.isnan(cv_score)]
-            report_cross_validation_scores(trial, list(cv_score_not_na))
+            if len(cv_score_not_na) > 1:
+                report_cross_validation_scores(trial, list(cv_score_not_na))
             mean_cv_score: float = cv_score_not_na.mean()
             return mean_cv_score
 
@@ -284,7 +297,7 @@ class MotherTuner:
             objective,
             n_trials=self.n_trials_optuna,
             gc_after_trial=True,
-            callbacks=self.get_callbacks(),
+            callbacks=self.get_callbacks(cross_validation=cross_validation),
         )
 
         if default_parameters != {}:
