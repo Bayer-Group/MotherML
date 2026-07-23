@@ -157,7 +157,7 @@ class MotherTuner:
 
         self.study: typing.Optional[Study] = None
 
-    def get_callbacks(self):
+    def get_callbacks(self, cross_validation: typing.Optional[skl_model_sel.BaseCrossValidator] = None):
         """
         Prepares and returns a list of callbacks for early stopping in Optuna optimization.
 
@@ -179,6 +179,11 @@ class MotherTuner:
                     pip install mother[torch] or uv add mother[torch]"""
                 )
             else:
+                if cross_validation is not None and cross_validation.get_n_splits() < 2:
+                    module_logger.warning(
+                        "Optuna early termination requires at least 2 CV splits; disabling callback for hold-out setup"
+                    )
+                    return None
                 callbacks = [TerminatorCallback()]
         return callbacks
 
@@ -254,7 +259,8 @@ class MotherTuner:
             gc.collect()
             module_logger.info(f"Trial {trial.number}, cv score: {cv_score}")
             cv_score_not_na: np.ndarray = cv_score[~np.isnan(cv_score)]
-            report_cross_validation_scores(trial, list(cv_score_not_na))
+            if len(cv_score_not_na) > 1:
+                report_cross_validation_scores(trial, list(cv_score_not_na))
             mean_cv_score: float = cv_score_not_na.mean()
             return mean_cv_score
 
@@ -284,7 +290,7 @@ class MotherTuner:
             objective,
             n_trials=self.n_trials_optuna,
             gc_after_trial=True,
-            callbacks=self.get_callbacks(),
+            callbacks=self.get_callbacks(cross_validation=cross_validation),
         )
 
         if default_parameters != {}:
