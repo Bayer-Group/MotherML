@@ -259,6 +259,20 @@ class TestDefaultSamplerSelection:
         )
         assert isinstance(tuner.sampler, optuna.samplers.TPESampler)
 
+    def test_tpe_sampler_fallback_when_gp_sampler_init_fails(self, monkeypatch):
+        """If GPSampler init fails, MotherTuner should fall back to TPESampler."""
+
+        def _raise_gp_init_error(*args, **kwargs):
+            raise RuntimeError("gp init failed")
+
+        monkeypatch.setattr("mother.optimization.core.torch_available", True)
+        monkeypatch.setattr("optuna.samplers.GPSampler", _raise_gp_init_error)
+
+        tuner = MotherTuner(
+            scorer=make_scorer(mean_squared_error, greater_is_better=False),
+        )
+        assert isinstance(tuner.sampler, optuna.samplers.TPESampler)
+
     def test_custom_sampler_used_directly(self):
         """A user-provided sampler should be used as-is."""
         custom = RandomSampler(seed=0)
