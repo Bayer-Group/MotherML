@@ -22,7 +22,7 @@ try:
     import torch  # noqa: F401
 
     _TORCH_AVAILABLE = True
-except ImportError:
+except (ImportError, OSError):
     _TORCH_AVAILABLE = False
 
 
