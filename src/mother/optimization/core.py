@@ -125,6 +125,36 @@ class MotherTuner:
              -> Pipeline:
     """
 
+    @staticmethod
+    def _build_tpe_sampler(
+        seed: int,
+        n_startup_trials: int,
+    ) -> optuna.samplers.TPESampler:
+        return optuna.samplers.TPESampler(
+            multivariate=True,
+            group=True,
+            constant_liar=True,
+            seed=seed,
+            n_startup_trials=n_startup_trials,
+        )
+
+    @staticmethod
+    def _build_gp_sampler(
+        seed: int,
+        n_startup_trials: int,
+    ) -> optuna.samplers.GPSampler:
+        return optuna.samplers.GPSampler(
+            seed=seed,
+            independent_sampler=optuna.samplers.TPESampler(
+                seed=seed,
+                n_startup_trials=n_startup_trials,
+            ),
+            n_startup_trials=n_startup_trials,
+            deterministic_objective=False,
+            # constant liar is always True for GPSampler,
+            # so we don't need to set it explicitly
+        )
+
     def __init__(
         self,
         scorer: typing.Union[typing.Callable, str],
@@ -143,15 +173,30 @@ class MotherTuner:
         self.early_stopping_optuna: bool = early_stopping_optuna
         self.tuning_direction: typing.Union[StudyDirection, str] = tuning_direction
         self.scorer: typing.Callable = skl_metrics.get_scorer(scorer)
+
         if sampler is None:
-            module_logger.debug("Setting up default sampler TPE")
-            self.sampler = optuna.samplers.TPESampler(
-                multivariate=kwargs.get("multivariate", True),
-                group=True,
-                constant_liar=True,
-                seed=seed,
-                n_startup_trials=n_startup_trials,
-            )
+            if torch_available:
+                try:
+                    module_logger.debug("torch available — using GPSampler as default")
+                    self.sampler = self._build_gp_sampler(
+                        seed=seed,
+                        n_startup_trials=n_startup_trials,
+                    )
+                except Exception as gpsampler_error:
+                    module_logger.warning(
+                        "GPSampler initialization failed (%s). Falling back to TPESampler.",
+                        gpsampler_error,
+                    )
+                    self.sampler = self._build_tpe_sampler(
+                        seed=seed,
+                        n_startup_trials=n_startup_trials,
+                    )
+            else:
+                module_logger.debug("torch not available — falling back to TPESampler")
+                self.sampler = self._build_tpe_sampler(
+                    seed=seed,
+                    n_startup_trials=n_startup_trials,
+                )
         else:
             self.sampler = sampler
 
