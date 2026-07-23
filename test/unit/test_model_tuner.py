@@ -250,6 +250,8 @@ class TestGetCallbacks:
 class TestDefaultSamplerSelection:
     def test_gp_sampler_when_torch_available(self, monkeypatch):
         """GPSampler should be selected when torch is available."""
+        pytest.importorskip("torch")
+        pytest.importorskip("scipy")
         monkeypatch.setattr("mother.optimization.core.torch_available", True)
         tuner = MotherTuner(
             scorer=make_scorer(mean_squared_error, greater_is_better=False),
