@@ -13,7 +13,7 @@ import sklearn.base as skl_base
 import sklearn.metrics as skl_metrics
 import sklearn.model_selection as skl_model_sel
 from optuna.study import Study, StudyDirection
-from optuna.terminator import TerminatorCallback, report_cross_validation_scores
+from optuna.terminator import Terminator, TerminatorCallback, report_cross_validation_scores
 from sklearn.pipeline import Pipeline
 
 from mother import utils as mother_utils
@@ -187,7 +187,7 @@ class MotherTuner:
                         "Optuna early termination requires at least 2 CV splits; disabling callback for hold-out setup"
                     )
                     return None
-                callbacks = [TerminatorCallback()]
+                callbacks = [TerminatorCallback(terminator=Terminator(min_n_trials=40))]
         return callbacks
 
     @handle_metadata_routing
