@@ -8,7 +8,7 @@ from sklearn.base import BaseEstimator
 from sklearn.datasets import make_blobs, make_classification
 from sklearn.linear_model import Lasso
 from sklearn.metrics import accuracy_score, make_scorer, mean_squared_error
-from sklearn.model_selection import GroupKFold, KFold, PredefinedSplit
+from sklearn.model_selection import GroupKFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import MinMaxScaler
 
@@ -210,36 +210,41 @@ def test_tune_mother_model_classification_with_catboost(
 
 
 class TestGetCallbacks:
-    def test_hold_out_returns_none_with_warning(self, caplog):
-        """get_callbacks must return None and warn when n_splits < 2 (hold-out)."""
+    def test_early_stopping_enabled_returns_callback_when_torch_available(self, monkeypatch):
+        """get_callbacks should return terminator callback when enabled and torch is available."""
+        monkeypatch.setattr("mother.optimization.core.torch_available", True)
         tuner = MotherTuner(
             scorer=make_scorer(mean_squared_error, greater_is_better=False),
             early_stopping_optuna=True,
         )
-        hold_out_cv = PredefinedSplit(test_fold=[-1, -1, -1, -1, -1, 0, 0, 0, 0, 0])
+
+        callbacks = tuner.get_callbacks()
+
+        assert callbacks is not None
+        assert len(callbacks) == 1
+
+    def test_early_stopping_disabled_returns_none(self):
+        tuner = MotherTuner(
+            scorer=make_scorer(mean_squared_error, greater_is_better=False),
+            early_stopping_optuna=False,
+        )
+
+        callbacks = tuner.get_callbacks()
+
+        assert callbacks is None
+
+    def test_early_stopping_enabled_torch_missing_returns_none_with_warning(self, monkeypatch, caplog):
+        monkeypatch.setattr("mother.optimization.core.torch_available", False)
+        tuner = MotherTuner(
+            scorer=make_scorer(mean_squared_error, greater_is_better=False),
+            early_stopping_optuna=True,
+        )
+
         with caplog.at_level("WARNING"):
-            callbacks = tuner.get_callbacks(cross_validation=hold_out_cv)
-        assert callbacks is None
-        assert "hold-out" in caplog.text.lower() or "n_splits" in caplog.text
+            callbacks = tuner.get_callbacks()
 
-    def test_multi_fold_cv_does_not_skip(self):
-        """get_callbacks must not skip early stopping for a proper k-fold CV."""
-        tuner = MotherTuner(
-            scorer=make_scorer(mean_squared_error, greater_is_better=False),
-            early_stopping_optuna=False,
-        )
-        kfold_cv = KFold(n_splits=5)
-        callbacks = tuner.get_callbacks(cross_validation=kfold_cv)
-        # early_stopping_optuna=False → always None regardless of CV
         assert callbacks is None
-
-    def test_no_cv_argument_does_not_raise(self):
-        """get_callbacks without cross_validation argument must not raise."""
-        tuner = MotherTuner(
-            scorer=make_scorer(mean_squared_error, greater_is_better=False),
-            early_stopping_optuna=False,
-        )
-        assert tuner.get_callbacks() is None
+        assert "Torch not installed" in caplog.text
 
 
 class TestDefaultSamplerSelection:
