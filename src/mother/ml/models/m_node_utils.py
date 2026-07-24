@@ -701,7 +701,7 @@ class DenseODSTBlock(nn.Sequential):
             tree_output_dim: Output dimension per tree (output_dim + additional).
             max_features: Cap on concatenated feature dimension between layers.
                 Prevents memory explosion with many layers. ``None`` = no cap.
-                It defines how many previous layers are retained for the next 
+                It defines how many previous layers are retained for the next
                 layer's input.
             input_dropout: Dropout rate on concatenated features between layers.
             flatten_output: If True, return ``[batch, layers*trees*dim]``;
@@ -711,7 +711,7 @@ class DenseODSTBlock(nn.Sequential):
         """
         # Ensure max_features is never smaller than 1
         effective_max_features = max_features
-        
+
         if effective_max_features is not None and effective_max_features < 1:
             warn(
                 f"max_features={effective_max_features} is smaller than 1"
