@@ -64,7 +64,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
           install-args:
             "--extra rna --extra report --extra tabpfn --extra clustering
-            --group test_duration"
+            --extra node --group test_duration"
 
       - name: Download TabPFN checkpoint
         run: |
@@ -108,9 +108,8 @@ jobs:
         uses: ./.github/actions/setup-uv-env
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          install-args:
-            "--extra rna --extra report --extra tabpfn --extra clustering
-            --group test_duration"
+          install-args: "--extra rna --extra report --extra tabpfn --extra clustering
+            --extra node --group test_duration"
 
       - name: Download TabPFN checkpoint
         run: |

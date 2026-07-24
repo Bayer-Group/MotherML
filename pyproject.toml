@@ -75,6 +75,13 @@ tabpfn = [
   "torch>=2.3.0,<3",
 ]
 
+### NODE (neural oblivious decision trees)
+node = [
+  "skorch>=1.4.0,<2",
+  "zuko>=1.6.0,<2",
+  "torch>=2.3.0,<3",
+]
+
 
 [dependency-groups]
 dev = [
