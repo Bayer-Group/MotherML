@@ -445,7 +445,7 @@ class NODEBackbone(nn.Module):
             ``continuous_dim``, ``embedded_cat_dim``, ``embedding_dims``,
             ``embedding_dropout``, ``batch_norm_continuous_input``,
             ``num_trees``, ``num_layers``, ``output_dim``,
-            ``additional_tree_output_dim``, ``max_features``,
+            ``additional_tree_output_dim``, ``max_layers_retained``,
             ``input_dropout``, ``depth``, ``choice_function``,
             ``bin_function``, ``initialize_response``,
             ``initialize_selection_logits``, ``threshold_init_beta``,
@@ -474,7 +474,7 @@ class NODEBackbone(nn.Module):
             num_trees=self.hparams.num_trees,
             num_layers=self.hparams.num_layers,
             tree_output_dim=self.hparams.output_dim + self.hparams.additional_tree_output_dim,
-            max_features=self.hparams.max_features,
+            max_layers_retained=self.hparams.max_layers_retained,
             input_dropout=self.hparams.input_dropout,
             depth=self.hparams.depth,
             choice_function=choice_func,
@@ -677,7 +677,7 @@ class CompletePyTorchTabularNODE(nn.Module):
         depth: Tree depth — each tree has 2\ :sup:`depth` leaves.
         choice_function: Sparse feature selector (``"entmax15"`` or ``"sparsemax"``).
         bin_function: Soft binning function (``"entmoid15"`` or ``"sparsemoid"``).
-        max_features: Cap on how many previous layers are seen by the current layer (None = all).
+        max_layers_retained: Cap on how many previous layers are seen by the current layer (None = all).
         input_dropout: Dropout on features between ODST layers.
         head_type: Prediction head — ``"subset"``, ``"linear"``, ``"mlp"``, or ``"flow"``.
         mlp_hidden_dims: Hidden sizes for MLP head (``None`` = auto funnel).
@@ -705,7 +705,7 @@ class CompletePyTorchTabularNODE(nn.Module):
         depth: int = 6,
         choice_function: str = "entmax15",  # "entmax15" or "sparsemax"
         bin_function: str = "entmoid15",  # "entmoid15" or "sparsemoid"
-        max_features: Optional[int] = None,
+        max_layers_retained: Optional[int] = None,
         input_dropout: float = 0.0,
         initialize_response: str = "normal",  # "normal" or "uniform"
         initialize_selection_logits: str = "uniform",  # "uniform" or "normal"
@@ -751,7 +751,7 @@ class CompletePyTorchTabularNODE(nn.Module):
         self.num_trees = num_trees
         self.num_layers = num_layers
         self.depth = depth
-        self.max_features = max_features
+        self.max_layers_retained = max_layers_retained
         self.input_dropout = input_dropout
         self.choice_function = choice_function
         self.bin_function = bin_function
@@ -786,7 +786,7 @@ class CompletePyTorchTabularNODE(nn.Module):
             num_trees=self.num_trees,
             num_layers=self.num_layers,
             tree_output_dim=self.output_dim + self.additional_tree_output_dim,
-            max_features=self.max_features,
+            max_layers_retained=self.max_layers_retained,
             input_dropout=self.input_dropout,
             depth=self.depth,
             choice_function=choice_func,
@@ -920,7 +920,7 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         depth: int,
         choice_function: str,
         bin_function: str,
-        max_features: Optional[int],
+        max_layers_retained: Optional[int],
         input_dropout: float,
         initialize_response: str,
         initialize_selection_logits: str,
@@ -953,7 +953,7 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         self.depth = depth
         self.choice_function = choice_function
         self.bin_function = bin_function
-        self.max_features = max_features
+        self.max_layers_retained = max_layers_retained
         self.input_dropout = input_dropout
         self.initialize_response = initialize_response
         self.initialize_selection_logits = initialize_selection_logits
@@ -1079,7 +1079,7 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
             module__depth=self.depth,
             module__choice_function=self.choice_function,
             module__bin_function=self.bin_function,
-            module__max_features=self.max_features,
+            module__max_layers_retained=self.max_layers_retained,
             module__input_dropout=self.input_dropout,
             module__initialize_response=self.initialize_response,
             module__initialize_selection_logits=self.initialize_selection_logits,
@@ -1125,7 +1125,7 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
             depth=self.depth,
             choice_function=self.choice_function,
             bin_function=self.bin_function,
-            max_features=self.max_features,
+            max_layers_retained=self.max_layers_retained,
             input_dropout=self.input_dropout,
             initialize_response=self.initialize_response,
             initialize_selection_logits=self.initialize_selection_logits,
@@ -1185,7 +1185,7 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
             "depth",
             "choice_function",
             "bin_function",
-            "max_features",
+            "max_layers_retained",
             "input_dropout",
             "initialize_response",
             "initialize_selection_logits",
@@ -1640,7 +1640,7 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
             prefix + "bin_function": "entmoid15",
             prefix + "input_dropout": 0.05,
             prefix + "tree_dropout": 0.05,
-            prefix + "max_features": None,
+            prefix + "max_layers_retained": None,
         }
 
 
@@ -1722,7 +1722,7 @@ class NODERegressor(BaseNODEEstimator):
         choice_function: str = "entmax15",  # Feature selection: "entmax15" or "sparsemax"
         bin_function: str = "entmoid15",  # Binning function: "entmoid15" or "sparsemoid"
         additional_tree_output_dim: int = 3,  # Additional output dimensions per tree
-        max_features: Optional[int] = None,  # How many previous layers are seen by the current layer (None = all)
+        max_layers_retained: Optional[int] = None,  # How many previous layers are seen by the current layer (None = all)
         initialize_response: str = "normal",  # Response init: "normal" or "uniform"
         initialize_selection_logits: str = "uniform",  # Selection init: "uniform" or "normal"
         threshold_init_beta: float = 1.0,  # Beta for threshold initialization
@@ -1760,7 +1760,7 @@ class NODERegressor(BaseNODEEstimator):
             depth,
             choice_function,
             bin_function,
-            max_features,
+            max_layers_retained,
             input_dropout,
             initialize_response,
             initialize_selection_logits,
@@ -2850,7 +2850,7 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
         choice_function: str = "entmax15",  # Feature selection: "entmax15" or "sparsemax"
         bin_function: str = "entmoid15",  # Binning function: "entmoid15" or "sparsemoid"
         additional_tree_output_dim: int = 3,  # Additional output dimensions per tree
-        max_features: Optional[int] = None,  # Max previous layers seen by the current layer (None = all)
+        max_layers_retained: Optional[int] = None,  # Max previous layers seen by the current layer (None = all)
         initialize_response: str = "normal",  # Response init: "normal" or "uniform"
         initialize_selection_logits: str = "uniform",  # Selection init: "uniform" or "normal"
         threshold_init_beta: float = 1.0,  # Beta for threshold initialization
@@ -2899,7 +2899,7 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
             depth,
             choice_function,
             bin_function,
-            max_features,
+            max_layers_retained,
             input_dropout,
             initialize_response,
             initialize_selection_logits,

@@ -674,7 +674,7 @@ class DenseODSTBlock(nn.Sequential):
     Stacks multiple ODST layers where each layer receives all previous outputs
     (like DenseNet). Supports dimension capping to prevent memory explosion.
 
-    Under ``max_features``, retention is layer-aligned: the block always keeps
+    Under ``max_layers_retained``, retention is layer-aligned: the block always keeps
     all original input features plus as many *full* previous layer outputs as
     fit in budget (newest-first). Partial layer slices are never retained.
     """
@@ -685,7 +685,7 @@ class DenseODSTBlock(nn.Sequential):
         num_trees: int,
         num_layers: int,
         tree_output_dim: int = 1,
-        max_features: Optional[int] = None,
+        max_layers_retained: Optional[int] = None,
         input_dropout: float = 0.0,
         flatten_output: bool = False,
         Module: type = ODST,
@@ -699,7 +699,7 @@ class DenseODSTBlock(nn.Sequential):
             num_trees: Number of trees per layer.
             num_layers: Number of ODST layers to stack.
             tree_output_dim: Output dimension per tree (output_dim + additional).
-            max_features: Cap on concatenated feature dimension between layers.
+            max_layers_retained: Cap on concatenated feature dimension between layers.
                 Prevents memory explosion with many layers. ``None`` = no cap.
                 It defines how many previous layers are retained for the next
                 layer's input.
@@ -709,23 +709,23 @@ class DenseODSTBlock(nn.Sequential):
             Module: ODST class (or compatible) to use for each layer.
             **kwargs: Forwarded to each ``Module(...)`` constructor.
         """
-        # Ensure max_features is never smaller than 1
-        effective_max_features = max_features
+        # Ensure max_layers_retained is never smaller than 1
+        effective_max_layers_retained = max_layers_retained
 
-        if effective_max_features is not None and effective_max_features < 1:
+        if effective_max_layers_retained is not None and effective_max_layers_retained < 1:
             warn(
-                f"max_features={effective_max_features} is smaller than 1"
-                f"using max_features={1} to keep dimensions consistent."
+                f"max_layers_retained={effective_max_layers_retained} is smaller than 1"
+                f"using max_layers_retained={1} to keep dimensions consistent."
             )
-            effective_max_features = 1
+            effective_max_layers_retained = 1
 
         base_input_dim = input_dim
         layer_output_width = num_trees * tree_output_dim
-        if effective_max_features is None:
+        if effective_max_layers_retained is None:
             max_prev_layers_kept = None
         else:
             # it should always select at least one previous layer, even if the budget is very tight
-            max_prev_layers_kept = effective_max_features
+            max_prev_layers_kept = effective_max_layers_retained
 
         layers = []
         current_input_dim = base_input_dim
@@ -744,7 +744,7 @@ class DenseODSTBlock(nn.Sequential):
         self.num_layers = num_layers
         self.layer_dim = num_trees
         self.tree_dim = tree_output_dim
-        self.max_features = effective_max_features
+        self.max_layers_retained = effective_max_layers_retained
         self._layer_output_width = layer_output_width
         self._max_prev_layers_kept = max_prev_layers_kept
         self.flatten_output = flatten_output
@@ -754,10 +754,10 @@ class DenseODSTBlock(nn.Sequential):
         """Forward with dense (DenseNet-style) connections and optional input dropout.
 
         Each layer receives the concatenation of the original features and all
-        previous layer outputs.  If ``max_features`` is set, the concatenated
+        previous layer outputs.  If ``max_layers_retained`` is set, the concatenated
         tensor is trimmed to keep only the original features and as many full previous
-        layer as defined by by max_features. max_features == 1 only the previous layer is kept,
-        max_features == 2 the previous two layers are kept, etc.
+        layer as defined by by max_layers_retained. max_layers_retained == 1 only the previous layer is kept,
+        max_layers_retained == 2 the previous two layers are kept, etc.
 
         Args:
             x: Input features ``[batch_size, input_dim]``.
@@ -770,7 +770,7 @@ class DenseODSTBlock(nn.Sequential):
         initial_features = x.shape[-1]
         for layer in self:
             layer_inp = x
-            if self.max_features is not None:
+            if self.max_layers_retained is not None:
                 prev_generated_width = max(layer_inp.shape[-1] - initial_features, 0)
                 prev_generated_layers = prev_generated_width // self._layer_output_width
                 keep_prev_layers = min(prev_generated_layers, self._max_prev_layers_kept or 0)
