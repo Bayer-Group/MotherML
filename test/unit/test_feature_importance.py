@@ -257,6 +257,24 @@ def test_init_parameter_passing(sample_data):
     assert selector.threshold == 0.3, "The threshold parameter was not correctly passed to the superclass."
 
 
+def test_mother_select_from_model_clone_preserves_max_features(sample_data):
+    """
+    Regression test for Issue #39:
+    max_features must be preserved by sklearn.base.clone().
+    """
+    X, y = sample_data
+
+    selector = MotherSelectFromModel(
+        estimator=RandomForestClassifier(random_state=42),
+        max_features=3,
+    )
+    selector.fit(X, y)
+
+    cloned_selector = clone(selector)
+
+    assert cloned_selector.get_params()["max_features"] == 3
+
+
 @pytest.fixture(params=["catboost", "permutation"])
 def importance_estimator_fixture(request):
     """
