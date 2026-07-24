@@ -253,7 +253,7 @@ class _TabICLHyperParams(AbstractMotherPipeline):
 
         # Allow nan values since TabICL can handle them
         # Ensure_2d is True to enforce 2D X (n_samples, n_features), y remains 1D
-        check_X_y(X, y, ensure_2d=True, force_all_finite="allow-nan")
+        check_X_y(X, y, ensure_2d=True, ensure_all_finite="allow-nan")
 
 
 # =========================================================== Classifier model
