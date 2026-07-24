@@ -1517,11 +1517,11 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         """
         suggested_params = {
             prefix + "num_layers": trial.suggest_int(prefix + "num_layers", 1, 3, log=False),
-            prefix + "num_trees": trial.suggest_int(prefix + "num_trees", 256, 1024, step=256, log=False),
+            prefix + "num_trees": trial.suggest_int(prefix + "num_trees", 256, 2048, step=256, log=False),
             prefix + "additional_tree_output_dim": trial.suggest_int(
-                prefix + "additional_tree_output_dim", 1, 3, log=False
+                prefix + "additional_tree_output_dim", 0, 3, log=False
             ),
-            prefix + "depth": trial.suggest_int(prefix + "depth", 3, 5, log=False),
+            prefix + "depth": trial.suggest_int(prefix + "depth", 2, 6, log=False),
             prefix + "lr": trial.suggest_float(prefix + "lr", 1e-3, 1e-2, log=True),
         }
 
