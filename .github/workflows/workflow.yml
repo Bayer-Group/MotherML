@@ -200,6 +200,7 @@ jobs:
           repository-url: https://test.pypi.org/legacy/
           skip-existing: true
           packages-dir: dist/
+          password: ${{ secrets.TEST_PYPI_API_TOKEN }}
 
   publish-pypi:
     name: Publish to PyPI
