@@ -677,7 +677,7 @@ class CompletePyTorchTabularNODE(nn.Module):
         depth: Tree depth — each tree has 2\ :sup:`depth` leaves.
         choice_function: Sparse feature selector (``"entmax15"`` or ``"sparsemax"``).
         bin_function: Soft binning function (``"entmoid15"`` or ``"sparsemoid"``).
-        max_features: Cap on concatenated feature dim between layers.
+        max_features: Cap on how many previous layers are seen by the current layer (None = all).
         input_dropout: Dropout on features between ODST layers.
         head_type: Prediction head — ``"subset"``, ``"linear"``, ``"mlp"``, or ``"flow"``.
         mlp_hidden_dims: Hidden sizes for MLP head (``None`` = auto funnel).
@@ -1722,7 +1722,7 @@ class NODERegressor(BaseNODEEstimator):
         choice_function: str = "entmax15",  # Feature selection: "entmax15" or "sparsemax"
         bin_function: str = "entmoid15",  # Binning function: "entmoid15" or "sparsemoid"
         additional_tree_output_dim: int = 3,  # Additional output dimensions per tree
-        max_features: Optional[int] = None,  # Max features per split (None = all)
+        max_features: Optional[int] = None,  # How many previous layers are seen by the current layer (None = all)
         initialize_response: str = "normal",  # Response init: "normal" or "uniform"
         initialize_selection_logits: str = "uniform",  # Selection init: "uniform" or "normal"
         threshold_init_beta: float = 1.0,  # Beta for threshold initialization
@@ -2850,7 +2850,7 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
         choice_function: str = "entmax15",  # Feature selection: "entmax15" or "sparsemax"
         bin_function: str = "entmoid15",  # Binning function: "entmoid15" or "sparsemoid"
         additional_tree_output_dim: int = 3,  # Additional output dimensions per tree
-        max_features: Optional[int] = None,  # Max features per split (None = all)
+        max_features: Optional[int] = None,  # Max previous layers seen by the current layer (None = all)
         initialize_response: str = "normal",  # Response init: "normal" or "uniform"
         initialize_selection_logits: str = "uniform",  # Selection init: "uniform" or "normal"
         threshold_init_beta: float = 1.0,  # Beta for threshold initialization
