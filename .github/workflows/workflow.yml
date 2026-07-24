@@ -3,21 +3,21 @@ name: Workflow for model testing and release
 on:
   workflow_dispatch:
   pull_request:
-    branches: [ main ]
+    branches: [main]
   push:
 
 permissions:
   contents: read
 
 env:
-  PYTHON_VERSION: "3.12"
+  PYTHON_VERSION: "3.14"
 
 jobs:
   style:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout 🛎
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup uv environment 📚
         id: setup-uv-env
@@ -39,17 +39,18 @@ jobs:
   test:
     needs: style
     runs-on: ubuntu-latest
-    if: ${{ success() && (github.ref == 'refs/heads/main' || github.event_name ==
+    if:
+      ${{ success() && (github.ref == 'refs/heads/main' || github.event_name ==
       'pull_request') }}
     strategy:
       matrix:
-        python-version: [ "3.10", "3.11", "3.12", "3.13" ]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
       # When set to true, GitHub cancels all in-progress jobs if any matrix job fails.
       fail-fast: true
     name: Test 🧪 using 🐍
     steps:
       - name: Checkout 🛎
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         # needed for report dependencies
       - name: Prepare environment
         run: |
@@ -63,6 +64,10 @@ jobs:
           python-version: ${{ matrix.python-version }}
           install-args: "--extra rna --extra report --extra tabpfn --extra tabicl --extra clustering
             --group test_duration"
+
+      - name: Download TabPFN checkpoint
+        run: |
+          uv run python scripts/prepareTabpfn.py
 
       #----------------------------------------------
       #              run test suite
@@ -84,12 +89,13 @@ jobs:
   test-slow:
     needs: test
     runs-on: ubuntu-latest
-    if: ${{ success() && (github.ref == 'refs/heads/main' || github.event_name ==
+    if:
+      ${{ success() && (github.ref == 'refs/heads/main' || github.event_name ==
       'pull_request') }}
-    name: Test Slow 🐢 using 🐍 3.12
+    name: Test Slow 🐢 using 🐍 3.14
     steps:
       - name: Checkout 🛎
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         # needed for report dependencies
       - name: Prepare environment
         run: |
@@ -106,7 +112,7 @@ jobs:
 
       - name: Download TabPFN checkpoint
         run: |
-          uv run python examples/prepareTabpfn.py
+          uv run python scripts/prepareTabpfn.py
 
       #----------------------------------------------
       #              run slow test suite
@@ -131,16 +137,15 @@ jobs:
       contents: write
     steps:
       - name: Checkout 🛎
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false # Make sure to not use the GITHUB_TOKEN for checkout and thus enable updating the version with the PAT
       - name: Set python version 🐍
-        run: echo "PYTHON_VERSION=3.10" >> $GITHUB_ENV
+        run: echo "PYTHON_VERSION=3.11" >> $GITHUB_ENV
 
-      - name: Setup uv environment 📚
-        id: setup-uv-env
-        uses: ./.github/actions/setup-uv-env
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           install-args: "--extra report --extra rna --extra tabpfn --extra tabicl"
@@ -155,30 +160,61 @@ jobs:
       #              run publish
       #----------------------------------------------
       - name: Build package
-        if: steps.release.outputs.released == 'true'
         shell: bash
         run: |
           uv build
 
+      - name: Check dist
+        run: uv tool run twine check --strict dist/*
+
       - name: Upload distribution artifacts
-        if: steps.release.outputs.released == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: dist
+          name: Packages
           path: dist/
+          if-no-files-found: error
+
+  test-pypi-publish:
+    name: Publish dev package to test.pypi.org
+    runs-on: ubuntu-latest
+    needs: release
+    if: ${{ (github.repository == 'bayer-group/motherml' && github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+
+    environment:
+      name: test-pypi
+      url: https://test.pypi.org/p/mother-ml
+
+    permissions:
+      id-token: write
+
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: Packages
+          path: dist
+
+      - name: Upload package to Test PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
+          packages-dir: dist/
 
   publish-pypi:
     name: Publish to PyPI
     needs: release
     if: needs.release.outputs.released == 'true'
+    environment:
+      name: pypi
+      url: https://pypi.org/project/mother-ml/
     runs-on: ubuntu-latest
     permissions:
       id-token: write
     steps:
       - name: Download distribution artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
-          name: dist
+          name: Packages
           path: dist/
 
       - name: Publish package distributions to PyPI
@@ -193,7 +229,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout 🛎
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -209,7 +245,7 @@ jobs:
         id: setup-uv-env
         uses: ./.github/actions/setup-uv-env
         with:
-          python-version: "3.10"
+          python-version: "3.11"
           install-args: "--group docs"
 
       - name: Build docs
