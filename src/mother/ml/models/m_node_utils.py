@@ -701,23 +701,23 @@ class DenseODSTBlock(nn.Sequential):
             tree_output_dim: Output dimension per tree (output_dim + additional).
             max_features: Cap on concatenated feature dimension between layers.
                 Prevents memory explosion with many layers. ``None`` = no cap.
+                It defines how many previous layers are retained for the next 
+                layer's input.
             input_dropout: Dropout rate on concatenated features between layers.
             flatten_output: If True, return ``[batch, layers*trees*dim]``;
                 otherwise ``[batch, layers*trees, dim]``.
             Module: ODST class (or compatible) to use for each layer.
             **kwargs: Forwarded to each ``Module(...)`` constructor.
         """
-        # Ensure max_features never shrinks below the original input width.
-        # The dense forward path always preserves all original features, so
-        # allowing a smaller cap would make later ODST layers expect fewer
-        # features than they actually receive.
+        # Ensure max_features is never smaller than 1
         effective_max_features = max_features
-        if effective_max_features is not None and effective_max_features < input_dim:
+        
+        if effective_max_features is not None and effective_max_features < 1:
             warn(
-                f"max_features={effective_max_features} is smaller than input_dim={input_dim}; "
-                f"using max_features={input_dim} to keep dimensions consistent."
+                f"max_features={effective_max_features} is smaller than 1"
+                f"using max_features={1} to keep dimensions consistent."
             )
-            effective_max_features = input_dim
+            effective_max_features = 1
 
         base_input_dim = input_dim
         layer_output_width = num_trees * tree_output_dim
@@ -725,7 +725,7 @@ class DenseODSTBlock(nn.Sequential):
             max_prev_layers_kept = None
         else:
             # it should always select at least one previous layer, even if the budget is very tight
-            max_prev_layers_kept = max((effective_max_features - base_input_dim) // layer_output_width, 1)
+            max_prev_layers_kept = effective_max_features
 
         layers = []
         current_input_dim = base_input_dim
