@@ -705,7 +705,7 @@ class CompletePyTorchTabularNODE(nn.Module):
         depth: int = 6,
         choice_function: str = "entmax15",  # "entmax15" or "sparsemax"
         bin_function: str = "entmoid15",  # "entmoid15" or "sparsemoid"
-        max_layers_retained: Optional[int] = 1, # None = all layers, 1 = only previous layer, etc.
+        max_layers_retained: Optional[int] = 1,  # None = all layers, 1 = only previous layer, etc.
         input_dropout: float = 0.0,
         initialize_response: str = "normal",  # "normal" or "uniform"
         initialize_selection_logits: str = "uniform",  # "uniform" or "normal"
