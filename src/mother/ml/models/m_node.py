@@ -705,7 +705,7 @@ class CompletePyTorchTabularNODE(nn.Module):
         depth: int = 6,
         choice_function: str = "entmax15",  # "entmax15" or "sparsemax"
         bin_function: str = "entmoid15",  # "entmoid15" or "sparsemoid"
-        max_layers_retained: Optional[int] = None,
+        max_layers_retained: Optional[int] = 1,
         input_dropout: float = 0.0,
         initialize_response: str = "normal",  # "normal" or "uniform"
         initialize_selection_logits: str = "uniform",  # "uniform" or "normal"
@@ -1722,7 +1722,7 @@ class NODERegressor(BaseNODEEstimator):
         choice_function: str = "entmax15",  # Feature selection: "entmax15" or "sparsemax"
         bin_function: str = "entmoid15",  # Binning function: "entmoid15" or "sparsemoid"
         additional_tree_output_dim: int = 3,  # Additional output dimensions per tree
-        max_layers_retained: Optional[int] = None,  # How many previous layers are seen by the current layer (None = all)
+        max_layers_retained: Optional[int] = 1,  # How many previous layers are seen by the current layer (None = all)
         initialize_response: str = "normal",  # Response init: "normal" or "uniform"
         initialize_selection_logits: str = "uniform",  # Selection init: "uniform" or "normal"
         threshold_init_beta: float = 1.0,  # Beta for threshold initialization
@@ -2850,7 +2850,7 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
         choice_function: str = "entmax15",  # Feature selection: "entmax15" or "sparsemax"
         bin_function: str = "entmoid15",  # Binning function: "entmoid15" or "sparsemoid"
         additional_tree_output_dim: int = 3,  # Additional output dimensions per tree
-        max_layers_retained: Optional[int] = None,  # Max previous layers seen by the current layer (None = all)
+        max_layers_retained: Optional[int] = 1,  # Max previous layers seen by the current layer (None = all)
         initialize_response: str = "normal",  # Response init: "normal" or "uniform"
         initialize_selection_logits: str = "uniform",  # Selection init: "uniform" or "normal"
         threshold_init_beta: float = 1.0,  # Beta for threshold initialization
