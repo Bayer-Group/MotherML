@@ -291,23 +291,24 @@ To keep the package size small, some dependencies are added as optional extras. 
 
 ```bash
 # Install with report generation support
-pip install 'mother[report]'
+pip install 'mother-ml[report]'
 
 # Install with PyTorch support (adds ~3GB!)
-pip install 'mother[torch]'
+pip install 'mother-ml[torch]'
 
 # Install multiple extras
-pip install 'mother[report,torch,tabpfn]'
+pip install 'mother-ml[report,torch,tabpfn]'
 ```
 
 **Using uv:**
 
 ```bash
 # Install with specific extras
-uv add mother --extra report --extra torch
+uv add mother-ml --extra report --extra torch
 ```
 
-> **Note:** There is also a different `mother` package on PyPI. Be sure to install `mother-ml`.
+> [!CAUTION]
+> There is also a different `mother` package on PyPI. Be sure to install `mother-ml`.
 
 ## Acknowledgements
 
