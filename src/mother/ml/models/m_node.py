@@ -1535,7 +1535,9 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         # normalizing-flow heads favour (best ~0.008-0.05; Werner & Schmidt-Thieme 2025);
         # all three dropout knobs (input/tree/mlp) stay available.
         # input_dropout: Applied to combined features between ODST layers
-        suggested_params[prefix + "input_dropout"] = trial.suggest_float(prefix + "input_dropout", 0.0, 0.15, step=0.001)
+        suggested_params[prefix + "input_dropout"] = trial.suggest_float(
+            prefix + "input_dropout", 0.0, 0.15, step=0.001
+        )
         # tree_dropout: Applied after NODE layers, before head (architectural)
         suggested_params[prefix + "tree_dropout"] = trial.suggest_float(prefix + "tree_dropout", 0.0, 0.15, step=0.001)
 
