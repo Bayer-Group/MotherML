@@ -364,7 +364,7 @@ class Embedding1dLayer(nn.Module):
         if target_device is not None:
             # Move module to target device if needed
             self.to(target_device)
-            
+
             # Ensure inputs are on target device
             if continuous is not None and continuous.device != target_device:
                 continuous = continuous.to(target_device)
