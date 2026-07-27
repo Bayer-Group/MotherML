@@ -518,88 +518,75 @@ class ODST(ModuleWithInit):
             )
         return strategy
 
-    def forward(self, input: Tensor) -> Tensor:
-        """
-        Forward pass: feature selection → threshold comparison → soft leaf routing → response.
 
-        Steps:
-        1. Sparse feature selection via choice_function (sparsemax/entmax)
-        2. Extract selected feature values (strategy auto-detected on first batch)
-        3. Compare to learned thresholds, scaled by temperature
-        4. Soft binary decisions via bin_function (sparsemoid/entmoid)
-        5. Compute leaf probabilities from decision products
-        6. Weighted sum of leaf responses
+def forward(self, input: Tensor) -> Tensor:
+    """
+    Forward pass: feature selection → threshold comparison → soft leaf routing → response.
+    """
+    assert len(input.shape) >= 2
+    if len(input.shape) > 2:
+        return self.forward(input.view(-1, input.shape[-1])).view(*input.shape[:-1], -1)
 
-        Args:
-            input: [batch_size, in_features]
+    # COMPLETE FIX: Ensure all parameters are on input device
+    input_device = input.device
 
-        Returns:
-            [batch_size, num_trees * tree_output_dim] if flatten_output else
-            [batch_size, num_trees, tree_output_dim]
-        """
-        assert len(input.shape) >= 2
-        if len(input.shape) > 2:
-            return self.forward(input.view(-1, input.shape[-1])).view(*input.shape[:-1], -1)
+    # Move all parameters to input device if needed
+    if self.feature_selection_logits.device != input_device:
+        self.feature_selection_logits.data = self.feature_selection_logits.data.to(input_device)
+        self.feature_thresholds.data = self.feature_thresholds.data.to(input_device)
+        self.log_temperatures.data = self.log_temperatures.data.to(input_device)
+        self.response.data = self.response.data.to(input_device)
+        self.bin_codes_1hot.data = self.bin_codes_1hot.data.to(input_device)
 
-        # FIX: Store input device for consistency checks
-        input_device = input.device
+    # 1. Sparse feature selection
+    feature_logits = self.feature_selection_logits
+    feature_selectors = self.choice_function(feature_logits, dim=0)
+    feature_selectors_2d: Tensor = feature_selectors.reshape(feature_selectors.shape[0], -1)
 
-        # 1. Sparse feature selection
-        feature_logits = self.feature_selection_logits  # [in_features, num_trees, depth]
-        feature_selectors = self.choice_function(feature_logits, dim=0)
-        feature_selectors_2d: Tensor = feature_selectors.reshape(feature_selectors.shape[0], -1)
+    # 2. Feature value extraction
+    self._forward_count = getattr(self, "_forward_count", 0) + 1
+    if self._forward_count == 1 or self._forward_count % self._STRATEGY_RECHECK_INTERVAL == 0:
+        self._matmul_strategy = self._detect_matmul_strategy(input, feature_selectors_2d)
+    strategy = self._matmul_strategy
 
-        # 2. Feature value extraction (strategy auto-detected, rechecked periodically)
-        self._forward_count = getattr(self, "_forward_count", 0) + 1
-        if self._forward_count == 1 or self._forward_count % self._STRATEGY_RECHECK_INTERVAL == 0:
-            self._matmul_strategy = self._detect_matmul_strategy(input, feature_selectors_2d)
-        strategy = self._matmul_strategy
+    if strategy == "input_sparse":
+        input_sparse: Tensor = input.to_sparse()
+        feature_values = torch.sparse.mm(input_sparse, feature_selectors_2d)
 
-        if strategy == "input_sparse":
-            input_sparse: Tensor = input.to_sparse()
-            # FIX: Ensure feature_selectors_2d is on the same device as input
-            feature_selectors_2d = feature_selectors_2d.to(input_device)
-            feature_values = torch.sparse.mm(input_sparse, feature_selectors_2d)
+    elif strategy == "selector_sparse":
+        nonzero_mask: Tensor = feature_selectors_2d != 0
+        indices: Tensor = nonzero_mask.nonzero(as_tuple=False).t()
+        values: Tensor = feature_selectors_2d[nonzero_mask]
 
-        elif strategy == "selector_sparse":
-            # FIX: Create sparse tensor on the input device, not the parameter device
-            nonzero_mask: Tensor = feature_selectors_2d != 0
-            indices: Tensor = nonzero_mask.nonzero(as_tuple=False).t()
-            values: Tensor = feature_selectors_2d[nonzero_mask]
+        sparse_sel: Tensor = torch.sparse_coo_tensor(
+            indices,
+            values,
+            feature_selectors_2d.shape,
+            device=input_device,
+            dtype=feature_selectors_2d.dtype,
+        ).coalesce()
+        feature_values = torch.sparse.mm(sparse_sel.t(), input.t()).t()
 
-            sparse_sel: Tensor = torch.sparse_coo_tensor(
-                indices,
-                values,
-                feature_selectors_2d.shape,
-                device=input_device,  # FIX: Use input_device instead of feature_selectors_2d.device
-                dtype=feature_selectors_2d.dtype,
-            ).coalesce()
-            feature_values = torch.sparse.mm(sparse_sel.t(), input.t()).t()
+    else:  # dense
+        feature_values = input @ feature_selectors_2d
 
-        else:  # dense
-            # FIX: Ensure feature_selectors_2d is on the same device as input
-            feature_selectors_2d = feature_selectors_2d.to(input_device)
-            feature_values = input @ feature_selectors_2d
+    feature_values = feature_values.reshape(input.shape[0], self.num_trees, self.depth)
 
-        feature_values = feature_values.reshape(input.shape[0], self.num_trees, self.depth)
+    # 3. Threshold comparison with temperature scaling
+    threshold_logits = (feature_values - self.feature_thresholds) * torch.exp(-self.log_temperatures)
+    threshold_logits = torch.stack([-threshold_logits, threshold_logits], dim=-1)
 
-        # 3. Threshold comparison with temperature scaling
-        threshold_logits = (feature_values - self.feature_thresholds) * torch.exp(-self.log_temperatures)
-        threshold_logits = torch.stack([-threshold_logits, threshold_logits], dim=-1)
-        # [batch_size, num_trees, depth, 2]
+    # 4. Soft binary decisions
+    bins = self.bin_function(threshold_logits)
 
-        # 4. Soft binary decisions
-        bins = self.bin_function(threshold_logits)
+    # 5. Leaf probability computation
+    bin_matches = torch.einsum("btds,dcs->btdc", bins, self.bin_codes_1hot)
+    response_weights = torch.prod(bin_matches, dim=-2)
 
-        # 5. Leaf probability computation via binary code matching
-        bin_matches = torch.einsum("btds,dcs->btdc", bins, self.bin_codes_1hot)
-        response_weights = torch.prod(bin_matches, dim=-2)
-        # [batch_size, num_trees, 2^depth]
+    # 6. Weighted response aggregation
+    response = torch.einsum("bnd,ncd->bnc", response_weights, self.response)
 
-        # 6. Weighted response aggregation
-        response = torch.einsum("bnd,ncd->bnc", response_weights, self.response)
-
-        return response.flatten(1, 2) if self.flatten_output else response
+    return response.flatten(1, 2) if self.flatten_output else response
 
     def initialize(self, input: Tensor, eps: float = 1e-6) -> None:
         """
