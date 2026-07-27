@@ -350,15 +350,26 @@ class Embedding1dLayer(nn.Module):
     def forward(self, x_dict: Dict[str, Optional[Tensor]]) -> Tensor:
         """
         Process continuous and categorical features into a single tensor.
-
-        Args:
-            x_dict: Dict with 'continuous' and/or 'categorical' tensors.
-
-        Returns:
-            Concatenated feature tensor [batch_size, total_feature_dim].
         """
         continuous = x_dict.get("continuous", None)
         categorical = x_dict.get("categorical", None)
+
+        # Determine target device to ensure everything matches
+        target_device = None
+        if continuous is not None:
+            target_device = continuous.device
+        elif categorical is not None:
+            target_device = categorical.device
+
+        if target_device is not None:
+            # Move module to target device if needed
+            self.to(target_device)
+            
+            # Ensure inputs are on target device
+            if continuous is not None and continuous.device != target_device:
+                continuous = continuous.to(target_device)
+            if categorical is not None and categorical.device != target_device:
+                categorical = categorical.to(target_device)
 
         # Process continuous features
         if continuous is not None and self.continuous_dim > 0:
@@ -526,16 +537,12 @@ class ODST(ModuleWithInit):
         if len(input.shape) > 2:
             return self.forward(input.view(-1, input.shape[-1])).view(*input.shape[:-1], -1)
 
-        # COMPLETE FIX: Ensure all parameters are on input device
         input_device = input.device
 
-        # Move all parameters to input device if needed
+        # COMPLETE FIX: Move entire module to input device if needed
+        # This safely catches all parameters, buffers, and state
         if self.feature_selection_logits.device != input_device:
-            self.feature_selection_logits.data = self.feature_selection_logits.data.to(input_device)
-            self.feature_thresholds.data = self.feature_thresholds.data.to(input_device)
-            self.log_temperatures.data = self.log_temperatures.data.to(input_device)
-            self.response.data = self.response.data.to(input_device)
-            self.bin_codes_1hot.data = self.bin_codes_1hot.data.to(input_device)
+            self.to(input_device)
 
         # 1. Sparse feature selection
         feature_logits = self.feature_selection_logits
@@ -647,7 +654,9 @@ class ODST(ModuleWithInit):
                     )
 
             temperatures /= max(1.0, self.threshold_init_cutoff)
-            self.log_temperatures.data[...] = torch.log(torch.as_tensor(temperatures) + eps)
+            self.log_temperatures.data[...] = torch.log(
+                torch.as_tensor(temperatures, dtype=feature_values.dtype, device=feature_values.device) + eps
+            )
 
     def __repr__(self) -> str:
         return (
