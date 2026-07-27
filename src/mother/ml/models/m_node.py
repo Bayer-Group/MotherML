@@ -705,7 +705,7 @@ class CompletePyTorchTabularNODE(nn.Module):
         depth: int = 6,
         choice_function: str = "entmax15",  # "entmax15" or "sparsemax"
         bin_function: str = "entmoid15",  # "entmoid15" or "sparsemoid"
-        max_layers_retained: Optional[int] = 1,  # None = all layers, 1 = only previous layer, etc.
+        max_layers_retained: Optional[int] = None,  # None = all layers, 1 = only previous layer, etc.
         input_dropout: float = 0.0,
         initialize_response: str = "normal",  # "normal" or "uniform"
         initialize_selection_logits: str = "uniform",  # "uniform" or "normal"
@@ -1516,14 +1516,19 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         and ``NODEClassifier`` to include the head types they support.
         """
         suggested_params = {
-            prefix + "num_layers": trial.suggest_int(prefix + "num_layers", 1, 3, log=False),
+            prefix + "num_layers": trial.suggest_int(prefix + "num_layers", 1, 4, log=False),
             prefix + "num_trees": trial.suggest_int(prefix + "num_trees", 256, 2048, step=256, log=False),
             prefix + "additional_tree_output_dim": trial.suggest_int(
                 prefix + "additional_tree_output_dim", 0, 3, log=False
             ),
+            prefix + "max_layers_retained": trial.suggest_int(prefix + "max_layers_retained", 1, 4, log=False),
             prefix + "depth": trial.suggest_int(prefix + "depth", 2, 6, log=False),
             prefix + "lr": trial.suggest_float(prefix + "lr", 1e-3, 1e-2, log=True),
         }
+
+        suggested_params[prefix + "num_trees"] = (
+            suggested_params[prefix + "num_trees"] / suggested_params[prefix + "num_layers"]
+        )  # Adjust num_trees per layer
 
         # Tune dropout parameters (architectural regularization).
         # Fine step (0.01) so Optuna can reach the low-dropout regime that
@@ -1640,7 +1645,7 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
             prefix + "bin_function": "entmoid15",
             prefix + "input_dropout": 0.05,
             prefix + "tree_dropout": 0.05,
-            prefix + "max_layers_retained": None,
+            prefix + "max_layers_retained": 1,
         }
 
 
@@ -2850,7 +2855,7 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
         choice_function: str = "entmax15",  # Feature selection: "entmax15" or "sparsemax"
         bin_function: str = "entmoid15",  # Binning function: "entmoid15" or "sparsemoid"
         additional_tree_output_dim: int = 3,  # Additional output dimensions per tree
-        max_layers_retained: Optional[int] = 1,  # Max previous layers seen by the current layer (None = all)
+        max_layers_retained: Optional[int] = None,  # Max previous layers seen by the current layer (None = all)
         initialize_response: str = "normal",  # Response init: "normal" or "uniform"
         initialize_selection_logits: str = "uniform",  # Selection init: "uniform" or "normal"
         threshold_init_beta: float = 1.0,  # Beta for threshold initialization
