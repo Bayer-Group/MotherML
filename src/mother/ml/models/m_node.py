@@ -1516,7 +1516,7 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         and ``NODEClassifier`` to include the head types they support.
         """
         suggested_params = {
-            prefix + "num_layers": trial.suggest_int(prefix + "num_layers", 1, 4, log=False),
+            prefix + "num_layers": trial.suggest_int(prefix + "num_layers", 1, 8, log=False),
             prefix + "num_trees": trial.suggest_int(prefix + "num_trees", 256, 2048, step=256, log=False),
             prefix + "additional_tree_output_dim": trial.suggest_int(
                 prefix + "additional_tree_output_dim", 0, 3, log=False
@@ -1535,9 +1535,9 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         # normalizing-flow heads favour (best ~0.008-0.05; Werner & Schmidt-Thieme 2025);
         # all three dropout knobs (input/tree/mlp) stay available.
         # input_dropout: Applied to combined features between ODST layers
-        suggested_params[prefix + "input_dropout"] = trial.suggest_float(prefix + "input_dropout", 0.0, 0.15, step=0.01)
+        suggested_params[prefix + "input_dropout"] = trial.suggest_float(prefix + "input_dropout", 0.0, 0.15, step=0.001)
         # tree_dropout: Applied after NODE layers, before head (architectural)
-        suggested_params[prefix + "tree_dropout"] = trial.suggest_float(prefix + "tree_dropout", 0.0, 0.15, step=0.01)
+        suggested_params[prefix + "tree_dropout"] = trial.suggest_float(prefix + "tree_dropout", 0.0, 0.15, step=0.001)
 
         # Head-specific tuning is delegated entirely to subclass overrides.
         # The base implementation is a no-op; NODERegressor / NODEClassifier
