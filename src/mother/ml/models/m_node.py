@@ -1637,9 +1637,9 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         """
         return {
             prefix + "lr": 0.005,
-            prefix + "depth": 4,
-            prefix + "num_layers": 2,
-            prefix + "num_trees": 512,
+            prefix + "depth": 6,
+            prefix + "num_layers": 1,
+            prefix + "num_trees": 2048,
             prefix + "additional_tree_output_dim": 3,
             prefix + "choice_function": "entmax15",
             prefix + "bin_function": "entmoid15",
