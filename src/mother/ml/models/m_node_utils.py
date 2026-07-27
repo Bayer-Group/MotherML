@@ -541,6 +541,9 @@ class ODST(ModuleWithInit):
         if len(input.shape) > 2:
             return self.forward(input.view(-1, input.shape[-1])).view(*input.shape[:-1], -1)
 
+        # FIX: Store input device for consistency checks
+        input_device = input.device
+
         # 1. Sparse feature selection
         feature_logits = self.feature_selection_logits  # [in_features, num_trees, depth]
         feature_selectors = self.choice_function(feature_logits, dim=0)
@@ -554,20 +557,28 @@ class ODST(ModuleWithInit):
 
         if strategy == "input_sparse":
             input_sparse: Tensor = input.to_sparse()
+            # FIX: Ensure feature_selectors_2d is on the same device as input
+            feature_selectors_2d = feature_selectors_2d.to(input_device)
             feature_values = torch.sparse.mm(input_sparse, feature_selectors_2d)
+
         elif strategy == "selector_sparse":
+            # FIX: Create sparse tensor on the input device, not the parameter device
             nonzero_mask: Tensor = feature_selectors_2d != 0
             indices: Tensor = nonzero_mask.nonzero(as_tuple=False).t()
             values: Tensor = feature_selectors_2d[nonzero_mask]
+
             sparse_sel: Tensor = torch.sparse_coo_tensor(
                 indices,
                 values,
                 feature_selectors_2d.shape,
-                device=feature_selectors_2d.device,
+                device=input_device,  # FIX: Use input_device instead of feature_selectors_2d.device
                 dtype=feature_selectors_2d.dtype,
             ).coalesce()
             feature_values = torch.sparse.mm(sparse_sel.t(), input.t()).t()
-        else:
+
+        else:  # dense
+            # FIX: Ensure feature_selectors_2d is on the same device as input
+            feature_selectors_2d = feature_selectors_2d.to(input_device)
             feature_values = input @ feature_selectors_2d
 
         feature_values = feature_values.reshape(input.shape[0], self.num_trees, self.depth)
