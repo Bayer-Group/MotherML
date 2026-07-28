@@ -135,7 +135,7 @@ class _CatboostHyperParams(AbstractMotherPipeline):
         Adds loss-specific hyperparameters to the suggested parameters based on the target type.
     """
 
-    def __init__(self, tune_boosting_type: bool = False, tune_tree_structure_type: bool = True):
+    def __init__(self, tune_boosting_type: bool = False, tune_tree_structure_type: bool = True, tune_bootstrap_level: bool = False):
         """
         Initialize the _CatboostHyperParams.
 
@@ -146,9 +146,12 @@ class _CatboostHyperParams(AbstractMotherPipeline):
                 Whether to include the "grow_policy" parameter in the hyperparameter space for tuning.
                 If False Symmetric Trees are used which allows the use of i.e. object importance or
                 monotonic constraints.
+            tune_bootstrap_level : bool, optional 
+                Whether to include the bootstrap level parameters in the hyperparameter space for tuning.
         """
         self.tune_boosting_type = tune_boosting_type
         self.tune_tree_structure_type = tune_tree_structure_type
+        self.tune_bootstrap_level = tune_bootstrap_level
 
     def get_hyperparameter_space(self, X, y, trial: Trial, prefix: str = "") -> dict:
         min_depth, max_depth = utils.calc_range_tree_depth(X)
@@ -160,6 +163,16 @@ class _CatboostHyperParams(AbstractMotherPipeline):
             prefix + "learning_rate": trial.suggest_float(prefix + "learning_rate", 0.000001, 0.5, log=True),
             prefix + "random_strength": trial.suggest_float(prefix + "random_strength", 0, 2, log=False),
         }
+
+        if self.tune_bootstrap_level:
+            if suggested_params[prefix + "bootstrap_type"] == "Bernoulli":
+                suggested_params[prefix + "subsample"] = trial.suggest_float(prefix + "subsample", 0.25, 1.0, log=False)
+
+            if suggested_params[prefix + "bootstrap_type"] == "Bayesian":
+                suggested_params[prefix + "bagging_temperature"] = trial.suggest_float(
+                    prefix + "bagging_temperature", 0.01, 10.0, log=True
+                )
+                                
 
         if self.tune_tree_structure_type:
             suggested_params[prefix + "grow_policy"] = trial.suggest_categorical(
@@ -239,6 +252,7 @@ class CatboostRegressorMother(CatBoostRegressor, _CatboostModelMotherBase, _Catb
         target_type: props.TargetType = "single_target",
         tune_tree_structure_type: bool = True,
         tune_boosting_type: bool = False,
+        tune_bootstrap_level: bool = False,
         quantiles: list[float] | None = None,
         data_uncertainty: bool = False,
         model_type: props.ModelType = "regression",
@@ -254,6 +268,8 @@ class CatboostRegressorMother(CatBoostRegressor, _CatboostModelMotherBase, _Catb
                 Whether to include the "grow_policy" parameter in hyperparameter tuning.
             tune_boosting_type : bool, optional
                 Whether to tune boosting_type.
+            tune_bootstrap_level : bool, optional
+                Whether to tune bootstrap level parameters (subsample, bagging_temperature).    
             quantiles : list[float] or None, optional
                 Quantiles for multi-quantile regression.
             data_uncertainty : bool, optional
@@ -265,7 +281,7 @@ class CatboostRegressorMother(CatBoostRegressor, _CatboostModelMotherBase, _Catb
                 Additional CatBoostRegressor parameters.
         """
         # Initialize hyperparameter tuning configuration
-        _CatboostHyperParams.__init__(self, tune_boosting_type, tune_tree_structure_type)
+        _CatboostHyperParams.__init__(self, tune_boosting_type, tune_tree_structure_type, tune_bootstrap_level)
 
         # set the correct model_type
         if model_type != "regression":
@@ -339,6 +355,7 @@ class CatboostRegressorMother(CatBoostRegressor, _CatboostModelMotherBase, _Catb
                 "_quantiles_processed": getattr(self, "_quantiles_processed", None),
                 "data_uncertainty": self.data_uncertainty,
                 "tune_tree_structure_type": self.tune_tree_structure_type,
+                "tune_bootstrap_level": self.tune_bootstrap_level,
             }
         )
         return state
@@ -351,6 +368,7 @@ class CatboostRegressorMother(CatBoostRegressor, _CatboostModelMotherBase, _Catb
         self._quantiles_processed = state.pop("_quantiles_processed", None)
         self.data_uncertainty = state.pop("data_uncertainty", False)
         self.tune_tree_structure_type = state.pop("tune_tree_structure_type", True)
+        self.tune_bootstrap_level = state.pop("tune_bootstrap_level", False)
 
         super(CatBoostRegressor, self).__setstate__(state)
 
@@ -374,6 +392,7 @@ class CatboostRegressorMother(CatBoostRegressor, _CatboostModelMotherBase, _Catb
                 "model_type": self.model_type,
                 "data_uncertainty": self.data_uncertainty,
                 "tune_tree_structure_type": self.tune_tree_structure_type,
+                "tune_bootstrap_level": self.tune_bootstrap_level,
             }
         )
 
@@ -397,6 +416,7 @@ class CatboostRegressorMother(CatBoostRegressor, _CatboostModelMotherBase, _Catb
             "quantiles",
             "data_uncertainty",
             "tune_tree_structure_type",
+            "tune_bootstrap_level",
         ]
 
         for param in our_params:
@@ -719,6 +739,7 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostModelMo
         eps: float = 1e-4,
         tune_boosting_type: bool = False,
         tune_tree_structure_type: bool = True,
+        tune_bootstrap_level: bool = False,
         verbose: bool = False,
         model_type: str = "regression",
         target_type: props.TargetType = "single_target",
@@ -865,6 +886,7 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostModelMo
             "target_type",
             "tune_boosting_type",
             "tune_tree_structure_type",
+            "tune_bootstrap_level",
             "samples",
             "prior_iterations",
             "sigma",
@@ -1075,6 +1097,7 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostModelMo
                 "target_type": self.target_type,
                 "tune_boosting_type": self.tune_boosting_type,
                 "tune_tree_structure_type": self.tune_tree_structure_type,
+                "tune_bootstrap_level": self.tune_bootstrap_level,
                 "samples": self.samples,
                 "prior_iterations": self.prior_iterations,
                 "sigma": self.sigma,
@@ -1093,6 +1116,7 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostModelMo
         self.target_type = state.pop("target_type", "single_target")
         self.tune_boosting_type = state.pop("tune_boosting_type", False)
         self.tune_tree_structure_type = state.pop("tune_tree_structure_type", True)
+        self.tune_bootstrap_level = state.pop("tune_bootstrap_level", False)
         self.samples = state.pop("samples", 10)
         self.prior_iterations = state.pop("prior_iterations", 100)
         self.sigma = state.pop("sigma", 0.1)
@@ -1235,6 +1259,7 @@ class CatboostClassifierMother(CatBoostClassifier, _CatboostModelMotherBase, _Ca
             "tune_boosting_type",
             "model_type",
             "tune_tree_structure_type",
+            "tune_bootstrap_level",
         ]
 
         for param in our_params:
@@ -1322,6 +1347,7 @@ class CatboostClassifierMother(CatBoostClassifier, _CatboostModelMotherBase, _Ca
                 "tune_boosting_type": self.tune_boosting_type,
                 "model_type": self.model_type,
                 "tune_tree_structure_type": self.tune_tree_structure_type,
+                "tune_bootstrap_level": self.tune_bootstrap_level,
             }
         )
         return state
@@ -1331,6 +1357,7 @@ class CatboostClassifierMother(CatBoostClassifier, _CatboostModelMotherBase, _Ca
         self.tune_boosting_type = state.pop("tune_boosting_type", False)
         self.model_type = state.pop("model_type", "classification_binary")
         self.tune_tree_structure_type = state.pop("tune_tree_structure_type", True)
+        self.tune_bootstrap_level = state.pop("tune_bootstrap_level", False)    
         super(CatBoostClassifier, self).__setstate__(state)
 
     def predict_uncertainty(
@@ -1430,6 +1457,8 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
         Whether to include the "boosting_type" parameter in the hyperparameter space for tuning.
     tune_tree_structure_type : bool
         Whether to include the "grow_policy" parameter in the hyperparameter space for tuning.
+    tune_bootstrap_level : bool
+        Whether to include the "bootstrap_type" parameter in the hyperparameter space for tuning.    
 
     Methods
     -------
@@ -1447,6 +1476,7 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
         target_type: props.TargetType = "single_target",
         tune_boosting_type: bool = False,
         tune_tree_structure_type: bool = True,
+        tune_bootstrap_level: bool = False,
         **kwargs,
     ):
         """
@@ -1459,6 +1489,8 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
                 Whether to tune boosting_type.
             tune_tree_structure_type : bool, optional
                 Whether to include the "grow_policy" parameter in hyperparameter tuning.
+            tune_bootstrap_level : bool, optional
+                Whether to include the "bootstrap_type" parameter in hyperparameter tuning.    
             **kwargs
                 Additional CatBoostRanker parameters.
         """
@@ -1466,7 +1498,7 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
         self.target_type: props.TargetType = target_type
 
         # Initialize hyperparameter tuning configuration
-        _CatboostHyperParams.__init__(self, tune_boosting_type, tune_tree_structure_type)
+        _CatboostHyperParams.__init__(self, tune_boosting_type, tune_tree_structure_type, tune_bootstrap_level)
 
         if "loss_function" not in list(kwargs):
             kwargs["loss_function"] = utils.default_loss_function("ranking", target_type)
@@ -1487,6 +1519,7 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
     #             "target_type": self.target_type,
     #             "tune_boosting_type": self.tune_boosting_type,
     #             "tune_tree_structure_type": self.tune_tree_structure_type,
+    #             "tune_bootstrap_level": self.tune_bootstrap_level,
     #         }
     #     )
     #     return params
@@ -1495,7 +1528,7 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
     #     """
     #     Override set_params to handle custom parameters like target_type.
     #     """
-    #     for param in ["target_type", "tune_boosting_type", "tune_tree_structure_type"]:
+    #     for param in ["target_type", "tune_boosting_type", "tune_tree_structure_type", "tune_bootstrap_level"]:
     #         if param in params:
     #             setattr(self, param, params[param])
     #             params.pop(param, None)
@@ -1515,6 +1548,7 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
     #             "target_type": self.target_type,
     #             "tune_boosting_type": self.tune_boosting_type,
     #             "tune_tree_structure_type": self.tune_tree_structure_type,
+    #             "tune_bootstrap_level": self.tune_bootstrap_level,
     #         }
     #     )
     #     return state
