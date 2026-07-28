@@ -135,7 +135,12 @@ class _CatboostHyperParams(AbstractMotherPipeline):
         Adds loss-specific hyperparameters to the suggested parameters based on the target type.
     """
 
-    def __init__(self, tune_boosting_type: bool = False, tune_tree_structure_type: bool = True, tune_bootstrap_level: bool = False):
+    def __init__(
+        self,
+        tune_boosting_type: bool = False,
+        tune_tree_structure_type: bool = True,
+        tune_bootstrap_level: bool = False,
+    ):
         """
         Initialize the _CatboostHyperParams.
 
@@ -146,7 +151,7 @@ class _CatboostHyperParams(AbstractMotherPipeline):
                 Whether to include the "grow_policy" parameter in the hyperparameter space for tuning.
                 If False Symmetric Trees are used which allows the use of i.e. object importance or
                 monotonic constraints.
-            tune_bootstrap_level : bool, optional 
+            tune_bootstrap_level : bool, optional
                 Whether to include the bootstrap level parameters in the hyperparameter space for tuning.
         """
         self.tune_boosting_type = tune_boosting_type
@@ -172,7 +177,6 @@ class _CatboostHyperParams(AbstractMotherPipeline):
                 suggested_params[prefix + "bagging_temperature"] = trial.suggest_float(
                     prefix + "bagging_temperature", 0.01, 10.0, log=True
                 )
-                                
 
         if self.tune_tree_structure_type:
             suggested_params[prefix + "grow_policy"] = trial.suggest_categorical(
@@ -269,7 +273,7 @@ class CatboostRegressorMother(CatBoostRegressor, _CatboostModelMotherBase, _Catb
             tune_boosting_type : bool, optional
                 Whether to tune boosting_type.
             tune_bootstrap_level : bool, optional
-                Whether to tune bootstrap level parameters (subsample, bagging_temperature).    
+                Whether to tune bootstrap level parameters (subsample, bagging_temperature).
             quantiles : list[float] or None, optional
                 Quantiles for multi-quantile regression.
             data_uncertainty : bool, optional
@@ -1357,7 +1361,7 @@ class CatboostClassifierMother(CatBoostClassifier, _CatboostModelMotherBase, _Ca
         self.tune_boosting_type = state.pop("tune_boosting_type", False)
         self.model_type = state.pop("model_type", "classification_binary")
         self.tune_tree_structure_type = state.pop("tune_tree_structure_type", True)
-        self.tune_bootstrap_level = state.pop("tune_bootstrap_level", False)    
+        self.tune_bootstrap_level = state.pop("tune_bootstrap_level", False)
         super(CatBoostClassifier, self).__setstate__(state)
 
     def predict_uncertainty(
@@ -1458,7 +1462,7 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
     tune_tree_structure_type : bool
         Whether to include the "grow_policy" parameter in the hyperparameter space for tuning.
     tune_bootstrap_level : bool
-        Whether to include the "bootstrap_type" parameter in the hyperparameter space for tuning.    
+        Whether to include the "bootstrap_type" parameter in the hyperparameter space for tuning.
 
     Methods
     -------
@@ -1490,7 +1494,7 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
             tune_tree_structure_type : bool, optional
                 Whether to include the "grow_policy" parameter in hyperparameter tuning.
             tune_bootstrap_level : bool, optional
-                Whether to include the "bootstrap_type" parameter in hyperparameter tuning.    
+                Whether to include the "bootstrap_type" parameter in hyperparameter tuning.
             **kwargs
                 Additional CatBoostRanker parameters.
         """
