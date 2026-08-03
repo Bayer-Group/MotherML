@@ -67,8 +67,11 @@ try:
     from tabpfn import TabPFNClassifier, TabPFNRegressor
     from tabpfn.constants import ModelVersion
     from tabpfn.regressor import FullOutputDict
-except ImportError as import_error:
-    raise ExtrasDependencyImportError("tabpfn", import_error) from import_error
+except ModuleNotFoundError as import_error:
+    missing_root = (getattr(import_error, "name", "") or "").split(".")[0]
+    if missing_root in {"tabpfn", "torch"}:
+        raise ExtrasDependencyImportError("tabpfn", import_error) from import_error
+    raise
 
 from mother.ml.core import AbstractMotherPipeline
 from mother.ml.models import utils
