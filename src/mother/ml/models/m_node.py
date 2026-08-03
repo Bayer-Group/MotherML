@@ -1993,6 +1993,7 @@ class NODERegressor(BaseNODEEstimator):
         self,
         X: Union[pd.DataFrame, npt.NDArray[np.float32]],
         num_samples: int = 1000,
+        return_sample_distribution: bool = False,
     ) -> npt.NDArray[np.float32]:
         """
         Enhanced predict method with DataFrame support.
@@ -2001,9 +2002,14 @@ class NODERegressor(BaseNODEEstimator):
             X: Input features
             num_samples: Number of samples to draw for flow head predictions (default: 1000)
                         More samples = better mode estimate but slower
+            return_sample_distribution: If ``True`` and ``head_type='flow'``,
+                return the full sampled predictive distribution with shape
+                ``(num_samples, n_samples, output_dim)``. For non-flow heads,
+                this option is not supported and raises ``ValueError``.
 
         Returns:
-            Predictions array
+            Predictions array, or full sampled flow distribution when
+            ``return_sample_distribution=True``.
 
         Note:
             For flow heads, predictions are the mode of the distribution, estimated by
@@ -2020,19 +2026,30 @@ class NODERegressor(BaseNODEEstimator):
         if is_flow_head:
             # For flow heads, use predict_flow_head and handle flow sampling there
             # This avoids duplicating the batching and tensor conversion logic
-            predictions = self.predict_flow_head(X, num_samples=num_samples)
+            predictions = self.predict_flow_head(
+                X,
+                num_samples=num_samples,
+                return_sample_distribution=return_sample_distribution,
+            )
+
+            if return_sample_distribution:
+                return predictions
+
             # Flatten only if output_dim is 1
             if hasattr(self, "module_") and getattr(self.module_, "output_dim", 1) == 1:
                 return predictions.flatten()
             else:
                 return predictions
         else:
+            if return_sample_distribution:
+                raise ValueError("return_sample_distribution=True is only available for flow heads (head_type='flow').")
             return super().predict(X)
 
     def predict_flow_head(
         self,
         X: Union[pd.DataFrame, npt.NDArray[np.float32]],
         num_samples: int = 200,
+        return_sample_distribution: bool = False,
     ) -> npt.NDArray[np.float32]:
         """
         Predict using the flow head for probabilistic regression.
@@ -2050,9 +2067,13 @@ class NODERegressor(BaseNODEEstimator):
                         More samples give better mode estimates but slower. Default: 200
                         NOTE: Mode estimation requires standardized targets during training
                         for numerical stability of log_prob calculations.
+            return_sample_distribution: If ``True``, return raw samples from the
+                learned flow with shape ``(num_samples, n_samples, output_dim)``
+                instead of mode predictions.
 
         Returns:
-            Predictions (mode) from the flow distribution
+            Predictions (mode) from the flow distribution, or raw sampled
+            distribution if ``return_sample_distribution=True``.
 
         Note:
             For best results with flow heads, standardize your targets before training:
@@ -2069,6 +2090,19 @@ class NODERegressor(BaseNODEEstimator):
         from .m_head_utils import compute_flow_mode_and_uncertainty
 
         self.module_.eval()
+        if return_sample_distribution:
+            sampled_distributions: List[Tensor] = []
+
+            # Use torch.no_grad() to skip gradient computation during inference
+            with torch.no_grad():
+                # Use skorch's built-in forward method which handles batching and device placement
+                for yp in self.forward_iter(X, training=False):
+                    sampled_distributions.append(yp.sample(torch.Size([num_samples])))
+
+            # Concatenate across batch dimension: (S, B1, D) + ... -> (S, N, D)
+            sampled_np: npt.NDArray[np.float32] = torch.cat(sampled_distributions, dim=1).cpu().numpy()
+            return sampled_np
+
         modes: List[Tensor] = []
 
         # Use torch.no_grad() to skip gradient computation during inference
@@ -2195,6 +2229,7 @@ class NODERegressor(BaseNODEEstimator):
             self.module_.eval()
 
             all_quantiles = []
+
             with torch.no_grad():
                 for yp in self.forward_iter(X_prep, training=False):
                     # Sample from flow distributions
