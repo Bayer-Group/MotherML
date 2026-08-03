@@ -2087,31 +2087,30 @@ class NODERegressor(BaseNODEEstimator):
             predictions = y_scaler.inverse_transform(predictions_scaled.reshape(-1, 1)).ravel()
             ```
         """
-        from .m_head_utils import compute_flow_mode_and_uncertainty
-
         self.module_.eval()
-        if return_sample_distribution:
-            sampled_distributions: List[Tensor] = []
-
-            # Use torch.no_grad() to skip gradient computation during inference
-            with torch.no_grad():
-                # Use skorch's built-in forward method which handles batching and device placement
-                for yp in self.forward_iter(X, training=False):
-                    sampled_distributions.append(yp.sample(torch.Size([num_samples])))
-
-            # Concatenate across batch dimension: (S, B1, D) + ... -> (S, N, D)
-            sampled_np: npt.NDArray[np.float32] = torch.cat(sampled_distributions, dim=1).cpu().numpy()
-            return sampled_np
-
+        sampled_distributions: List[Tensor] = []
         modes: List[Tensor] = []
 
         # Use torch.no_grad() to skip gradient computation during inference
         with torch.no_grad():
             # Use skorch's built-in forward method which handles batching and device placement
             for yp in self.forward_iter(X, training=False):
-                # Use shared utility function for mode computation (vectorized)
-                mode, _ = compute_flow_mode_and_uncertainty(yp, num_samples)
-                modes.append(mode)
+                samples = yp.sample(torch.Size([num_samples]))
+
+                if return_sample_distribution:
+                    sampled_distributions.append(samples)
+                else:
+                    # Compute mode from sampled points by taking the highest-density sample per row.
+                    log_probs = yp.log_prob(samples)  # Shape: (num_samples, batch_size)
+                    best_sample_idx = torch.argmax(log_probs, dim=0)  # Shape: (batch_size,)
+                    samples_bsd = samples.permute(1, 0, 2)  # Shape: (batch_size, num_samples, output_dim)
+                    row_idx = torch.arange(samples_bsd.shape[0], device=samples_bsd.device)
+                    modes.append(samples_bsd[row_idx, best_sample_idx])
+
+        if return_sample_distribution:
+            # Concatenate across batch dimension: (S, B1, D) + ... -> (S, N, D)
+            sampled_np: npt.NDArray[np.float32] = torch.cat(sampled_distributions, dim=1).cpu().numpy()
+            return sampled_np
 
         # Concatenate and convert to numpy
         modes_np: npt.NDArray[np.float32] = torch.cat(modes, 0).cpu().numpy()
