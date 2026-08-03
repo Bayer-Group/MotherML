@@ -13,6 +13,7 @@ These are the "raw" NODE architecture components that are independent of
 the Skorch/sklearn wrappers and can be used standalone in PyTorch.
 """
 
+import logging
 from typing import Any, Callable, Dict, Optional, Tuple
 from warnings import warn
 
@@ -23,6 +24,8 @@ import torch.nn.functional as F
 from torch import Tensor
 from torch.autograd import Function
 from torch.jit import script
+
+module_logger = logging.getLogger(__name__)
 
 # ==============================================================================
 # UTILITY FUNCTIONS FOR SPARSE ACTIVATIONS
@@ -506,15 +509,21 @@ class ODST(ModuleWithInit):
 
         old = getattr(self, "_matmul_strategy", None)
         if old is None:
-            warn(
-                f"ODST matmul strategy: '{strategy}' "
-                f"(input_sparsity={inp_sparsity:.0%}, selector_sparsity={sel_sparsity:.0%}, "
-                f"features={input.shape[1]}, trees×depth={feature_selectors_2d.shape[1]})"
+            module_logger.debug(
+                "ODST matmul strategy: '%s' (input_sparsity=%s, selector_sparsity=%s, features=%s, trees×depth=%s)",
+                strategy,
+                f"{inp_sparsity:.0%}",
+                f"{sel_sparsity:.0%}",
+                input.shape[1],
+                feature_selectors_2d.shape[1],
             )
         elif old != strategy:
-            warn(
-                f"ODST matmul strategy changed: '{old}' → '{strategy}' "
-                f"(input_sparsity={inp_sparsity:.0%}, selector_sparsity={sel_sparsity:.0%})"
+            module_logger.debug(
+                "ODST matmul strategy changed: '%s' -> '%s' (input_sparsity=%s, selector_sparsity=%s)",
+                old,
+                strategy,
+                f"{inp_sparsity:.0%}",
+                f"{sel_sparsity:.0%}",
             )
         return strategy
 
@@ -699,10 +708,10 @@ class DenseODSTBlock(nn.Sequential):
             num_trees: Number of trees per layer.
             num_layers: Number of ODST layers to stack.
             tree_output_dim: Output dimension per tree (output_dim + additional).
-            max_layers_retained: Cap on concatenated feature dimension between layers.
-                Prevents memory explosion with many layers. ``None`` = no cap.
-                It defines how many previous layers are retained for the next
-                layer's input.
+            max_layers_retained: Number of previous ODST layer outputs to retain
+                in the next layer's input. ``None`` keeps all previous layers;
+                ``1`` keeps only the most recent previous layer, ``2`` the two
+                most recent, and so on.
             input_dropout: Dropout rate on concatenated features between layers.
             flatten_output: If True, return ``[batch, layers*trees*dim]``;
                 otherwise ``[batch, layers*trees, dim]``.
