@@ -465,7 +465,7 @@ class ODST(ModuleWithInit):
             bin_codes = (indices.view(1, -1) // offsets.view(-1, 1) % 2).to(torch.float32)
             bin_codes_1hot = torch.stack([bin_codes, 1.0 - bin_codes], dim=-1)
             # Shape: [depth, 2^depth, 2]
-            self.bin_codes_1hot = nn.Parameter(bin_codes_1hot, requires_grad=False)
+            self.register_buffer("bin_codes_1hot", bin_codes_1hot)
 
     # Re-evaluate matmul strategy every N forward passes so we adapt as
     # entmax15/entmoid15 sparsity patterns evolve during training.

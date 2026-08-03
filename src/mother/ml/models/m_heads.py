@@ -925,14 +925,20 @@ class MLPHeadClassifier(NeuralNetClassifier, BaseMLPHeadEstimator, AbstractMothe
         - X is cast to float32 for PyTorch
         - y dtype follows criterion requirements:
           * CrossEntropyLoss -> int64
-          * BCE/ BCEWithLogitsLoss -> float32
+          * BCEWithLogitsLoss -> float32
         """
         if isinstance(X, np.ndarray) and X.dtype == np.float64:
             X = X.astype(np.float32)
         if y is not None and isinstance(y, np.ndarray):
             criterion_obj = getattr(self, "criterion", nn.CrossEntropyLoss)
             criterion_cls = criterion_obj if isinstance(criterion_obj, type) else type(criterion_obj)
-            use_float_targets = criterion_cls in (nn.BCELoss, nn.BCEWithLogitsLoss)
+            if issubclass(criterion_cls, nn.BCELoss) and not issubclass(criterion_cls, nn.BCEWithLogitsLoss):
+                raise ValueError(
+                    "MLPHeadClassifier does not support nn.BCELoss because this model outputs logits. "
+                    "Use nn.BCEWithLogitsLoss instead."
+                )
+
+            use_float_targets = issubclass(criterion_cls, nn.BCEWithLogitsLoss)
 
             if use_float_targets:
                 if not np.issubdtype(y.dtype, np.floating) or y.dtype == np.float64:
