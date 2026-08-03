@@ -723,8 +723,8 @@ class DenseODSTBlock(nn.Sequential):
 
         if effective_max_layers_retained is not None and effective_max_layers_retained < 1:
             warn(
-                f"max_layers_retained={effective_max_layers_retained} is smaller than 1"
-                f"using max_layers_retained={1} to keep dimensions consistent."
+                f"max_layers_retained={effective_max_layers_retained} is smaller than 1; "
+                "using max_layers_retained=1 to keep dimensions consistent."
             )
             effective_max_layers_retained = 1
 

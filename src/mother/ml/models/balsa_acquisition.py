@@ -249,8 +249,9 @@ def _collect_mc_flow_distributions(
     if not _has_any_dropout(estimator):
         warnings.warn(
             "The estimator has no active dropout (all dropout rates are 0). "
-            "All MC passes will be identical and acquisition scores will be 0. "
-            "Set input_dropout / tree_dropout > 0 (e.g. 0.05) for meaningful results.",
+            "MC passes will be identical, so dropout-driven acquisition terms will collapse, "
+            "although purely sample-based methods may still show small non-zero Monte-Carlo noise. "
+            "Set input_dropout / tree_dropout > 0 (e.g. 0.05) for meaningful epistemic results.",
             UserWarning,
             stacklevel=4,
         )
