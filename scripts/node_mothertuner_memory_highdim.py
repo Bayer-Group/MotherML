@@ -17,12 +17,14 @@ import argparse
 import json
 import threading
 import time
+import traceback
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
+import optuna
 import pandas as pd
 import torch
 from sklearn.model_selection import KFold
@@ -42,6 +44,7 @@ except ImportError:  # pragma: no cover - optional runtime dependency
 class BenchmarkResult:
     status: str
     error: Optional[str]
+    traceback: Optional[str]
     n_samples: int
     n_features: int
     n_informative: int
@@ -108,6 +111,27 @@ def _cuda_peaks_gb() -> tuple[float, float]:
     allocated = torch.cuda.max_memory_allocated() / (1024**3)
     reserved = torch.cuda.max_memory_reserved() / (1024**3)
     return allocated, reserved
+
+
+def _current_rss_gb() -> Optional[float]:
+    if psutil is None:
+        return None
+    return psutil.Process().memory_info().rss / (1024**3)
+
+
+def _live_memory_snapshot() -> str:
+    cpu_now = _current_rss_gb()
+    if torch.cuda.is_available():
+        cuda_now_alloc = torch.cuda.memory_allocated() / (1024**3)
+        cuda_now_reserved = torch.cuda.memory_reserved() / (1024**3)
+        cuda_peak_alloc = torch.cuda.max_memory_allocated() / (1024**3)
+        cuda_peak_reserved = torch.cuda.max_memory_reserved() / (1024**3)
+        return (
+            f"cpu_now_gb={cpu_now}, "
+            f"cuda_now_alloc_gb={cuda_now_alloc:.4f}, cuda_now_reserved_gb={cuda_now_reserved:.4f}, "
+            f"cuda_peak_alloc_gb={cuda_peak_alloc:.4f}, cuda_peak_reserved_gb={cuda_peak_reserved:.4f}"
+        )
+    return f"cpu_now_gb={cpu_now}, cuda=not_available"
 
 
 def make_high_dimensional_dataset(
@@ -196,9 +220,45 @@ def run_benchmark(args: argparse.Namespace) -> BenchmarkResult:
 
     status = "ok"
     error = None
+    traceback_text = None
     best_trial_number: Optional[int] = None
     best_trial_value: Optional[float] = None
     best_params: Optional[dict[str, Any]] = None
+
+    announced_trials: set[int] = set()
+
+    def hyperparameter_space_with_progress(
+        trial: optuna.trial.Trial,
+        X: pd.DataFrame,
+        y: pd.Series,
+        prefix: str = "",
+    ) -> dict[str, Any]:
+        params = pipeline.get_hyperparameter_space(X=X, y=y, trial=trial, prefix=prefix)
+        if trial.number not in announced_trials:
+            announced_trials.add(trial.number)
+            print(
+                f"\n[trial_start] {trial.number + 1}/{args.n_trials}"
+                f" | params={json.dumps(params, sort_keys=True)}"
+            )
+            print(f"[trial_start_memory] {_live_memory_snapshot()}")
+        return params
+
+    def progress_callback(study: optuna.Study, trial: optuna.trial.FrozenTrial) -> None:
+        value_str = "None" if trial.value is None else f"{trial.value:.6f}"
+        print(
+            f"[trial_end] {trial.number + 1}/{args.n_trials}"
+            f" | state={trial.state.name} | value={value_str}"
+        )
+        print(f"[trial_end_memory] {_live_memory_snapshot()}")
+
+    original_get_callbacks = tuner.get_callbacks
+
+    def get_callbacks_with_progress() -> list[Any]:
+        callbacks = original_get_callbacks() or []
+        callbacks.append(progress_callback)
+        return callbacks
+
+    tuner.get_callbacks = get_callbacks_with_progress  # type: ignore[method-assign]
 
     try:
         _ = tuner.optimize(
@@ -206,6 +266,7 @@ def run_benchmark(args: argparse.Namespace) -> BenchmarkResult:
             X=X,
             y=y,
             cross_validation=cv,
+            hyperparameter_space_function=hyperparameter_space_with_progress,
             default_parameters=default_params,
         )
         if tuner.study is not None and tuner.study.best_trial is not None:
@@ -215,6 +276,7 @@ def run_benchmark(args: argparse.Namespace) -> BenchmarkResult:
     except Exception as exc:  # noqa: BLE001
         status = "error"
         error = repr(exc)
+        traceback_text = traceback.format_exc()
     finally:
         monitor.stop()
 
@@ -228,6 +290,7 @@ def run_benchmark(args: argparse.Namespace) -> BenchmarkResult:
     return BenchmarkResult(
         status=status,
         error=error,
+        traceback=traceback_text,
         n_samples=args.n_samples,
         n_features=args.n_features,
         n_informative=n_informative,
