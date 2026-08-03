@@ -189,7 +189,9 @@ class DimensionSetter(Callback):
                     output_dim = int(y.nunique())
                 else:
                     y_arr = np.asarray(y)
-                    output_dim = int(y_arr.shape[1]) if y_arr.ndim > 1 and y_arr.shape[1] > 1 else int(len(np.unique(y_arr)))
+                    output_dim = (
+                        int(y_arr.shape[1]) if y_arr.ndim > 1 and y_arr.shape[1] > 1 else int(len(np.unique(y_arr)))
+                    )
             elif hasattr(y, "shape"):
                 # Regression: output dimension is purely shape-based.
                 output_dim = y.shape[1] if len(y.shape) > 1 else 1
