@@ -78,7 +78,7 @@ Usage Examples:
     )
     reg.fit(X_train, y_train)
     predictions = reg.predict(X_test)  # Point predictions
-    samples = reg.predict_flow(X_test, num_samples=1000)  # Uncertainty samples
+    samples = reg.predict_flow_head(X_test, num_samples=1000)  # Uncertainty samples
 
 References:
     Popov, S., Morozov, S., & Babenko, A. (2019).
@@ -2800,6 +2800,7 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
         - Binary classification (CrossEntropyLoss)
         - Multiclass classification (CrossEntropyLoss)
         - Multi-label binary (BCEWithLogitsLoss)
+        - Head types: subset, linear, mlp (flow is regression-only)
 
     Key Features:
         - Auto dimension detection via InputOutputShapeSetter callback
@@ -2868,12 +2869,6 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
         threshold_init_beta: float = 1.0,  # Beta for threshold initialization
         threshold_init_cutoff: float = 1.0,  # Cutoff for threshold initialization
         batch_norm_continuous_input: bool = False,  # Batch norm on continuous features
-        flow_type: str = "NICE",  # Reserved for future use (not supported in classification)
-        flow_transforms: int = 3,  # Reserved for future use (not supported in classification)
-        flow_bins: int = 8,  # Reserved for future use (not supported in classification)
-        flow_degree: int = 16,  # Reserved for future use (not supported in classification)
-        flow_signal: int = 16,  # Reserved for future use (not supported in classification)
-        flow_components: int = 8,  # Reserved for future use (not supported in classification)
         # ====================================================================
         # Framework Integration (Mother/Skorch compatibility)
         # ====================================================================
@@ -2893,6 +2888,15 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
             )
         self.model_type = model_type
 
+        # Classifier does not accept any flow-specific kwargs.
+        invalid_flow_kwargs = sorted(k for k in kwargs if k.startswith("flow_"))
+        if invalid_flow_kwargs:
+            raise TypeError(
+                "NODEClassifier() got unexpected keyword argument(s): "
+                f"{invalid_flow_kwargs}. Flow configuration is only supported by "
+                "NODERegressor(head_type='flow')."
+            )
+
         # Validate head_type: flow is not supported for classification
         if head_type == "flow":
             raise ValueError(
@@ -2902,6 +2906,14 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
         # Resolve mutable default for mlp_hidden_dims
         if mlp_hidden_dims is None:
             mlp_hidden_dims = [128, 64, 32]
+
+        # Keep internal defaults for shared base-class wiring (classifier never uses flow head).
+        flow_type = "NICE"
+        flow_transforms = 3
+        flow_bins = 8
+        flow_degree = 16
+        flow_signal = 16
+        flow_components = 8
 
         # Store all NODE parameters using base class method
         self._store_node_parameters(

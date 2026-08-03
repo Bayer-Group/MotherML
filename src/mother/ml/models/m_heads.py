@@ -682,8 +682,8 @@ class MLPHeadRegressor(NeuralNetRegressor, BaseMLPHeadEstimator, AbstractMotherP
 
         Args:
             X: Input features.
-            return_quantiles: Not supported for MC-dropout heads. Quantiles are only
-                available for flow heads; passing True raises ``ValueError``.
+            return_quantiles: Not supported for this classifier estimator.
+                Passing True raises ``ValueError``.
             quantiles: Accepted for interface compatibility but unused.
             uncertainty_for_opt: If True, return only ``total_uncertainty`` as a Series
                 for optimisation / active learning (default False).
@@ -698,7 +698,7 @@ class MLPHeadRegressor(NeuralNetRegressor, BaseMLPHeadEstimator, AbstractMotherP
                 - If ``uncertainty_for_opt=True``: ``pd.Series`` of ``total_uncertainty``.
 
         Raises:
-            ValueError: If ``return_quantiles=True`` (quantiles require a flow head).
+            ValueError: If ``return_quantiles=True`` (classification here does not expose quantiles).
         """
         if return_quantiles:
             raise ValueError(
@@ -990,8 +990,8 @@ class MLPHeadClassifier(NeuralNetClassifier, BaseMLPHeadEstimator, AbstractMothe
 
         if return_quantiles:
             raise ValueError(
-                "Quantiles are only available for flow heads. The MLP classifier estimates "
-                "uncertainty via MC-dropout entropy, not a calibrated predictive distribution. "
+                "Quantiles are not available for MLPHeadClassifier. This estimator models "
+                "classification uncertainty via MC-dropout entropy, not a calibrated predictive distribution. "
                 "Set return_quantiles=False."
             )
 
