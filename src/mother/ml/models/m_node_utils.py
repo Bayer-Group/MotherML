@@ -756,8 +756,9 @@ class DenseODSTBlock(nn.Sequential):
         Each layer receives the concatenation of the original features and all
         previous layer outputs.  If ``max_layers_retained`` is set, the concatenated
         tensor is trimmed to keep only the original features and as many full previous
-        layer as defined by by max_layers_retained. max_layers_retained == 1 only the previous layer is kept,
-        max_layers_retained == 2 the previous two layers are kept, etc.
+        layers as defined by ``max_layers_retained``:
+        ``max_layers_retained == 1`` keeps only the previous layer,
+        ``max_layers_retained == 2`` keeps the previous two layers, etc.
 
         Args:
             x: Input features ``[batch_size, input_dim]``.

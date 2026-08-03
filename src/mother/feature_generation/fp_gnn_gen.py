@@ -7,8 +7,6 @@ from rdkit import Chem
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.utils.validation import check_is_fitted
 
-from mother.errors import ExtrasDependencyImportError
-
 module_logger = logging.getLogger(__name__)
 
 
@@ -17,7 +15,11 @@ def _check_chemprop() -> None:
     try:
         import chemprop  # noqa: F401
     except ImportError as import_error:
-        raise ExtrasDependencyImportError("gnn", import_error) from import_error
+        raise ModuleNotFoundError(
+            "chemprop is required for CheMeleon fingerprints but is not installed. "
+            "Install it in your environment (e.g. `pip install chemprop`). "
+            "Note: there is currently no `mother[gnn]` extra."
+        ) from import_error
 
 
 def _default_chemeleon_embedder(

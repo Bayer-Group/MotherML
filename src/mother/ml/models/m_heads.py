@@ -181,11 +181,15 @@ class DimensionSetter(Callback):
                 # target (e.g. counts) with few unique values would otherwise corrupt
                 # the regressor's output shape.
                 if isinstance(y, pd.DataFrame):
-                    output_dim = int(pd.Series(y.values.ravel()).nunique())
+                    # Multi-label targets are typically shape [n_samples, n_labels]
+                    # with values in {0, 1}. In that case output_dim must be n_labels,
+                    # not the number of unique scalar values.
+                    output_dim = int(y.shape[1]) if y.shape[1] > 1 else int(pd.Series(y.values.ravel()).nunique())
                 elif isinstance(y, pd.Series):
                     output_dim = int(y.nunique())
                 else:
-                    output_dim = int(len(np.unique(np.asarray(y))))
+                    y_arr = np.asarray(y)
+                    output_dim = int(y_arr.shape[1]) if y_arr.ndim > 1 and y_arr.shape[1] > 1 else int(len(np.unique(y_arr)))
             elif hasattr(y, "shape"):
                 # Regression: output dimension is purely shape-based.
                 output_dim = y.shape[1] if len(y.shape) > 1 else 1
@@ -917,12 +921,23 @@ class MLPHeadClassifier(NeuralNetClassifier, BaseMLPHeadEstimator, AbstractMothe
         """Fit the model, ensuring correct dtypes.
 
         - X is cast to float32 for PyTorch
-        - y is cast to int64 for CrossEntropyLoss (requires Long targets)
+        - y dtype follows criterion requirements:
+          * CrossEntropyLoss -> int64
+          * BCE/ BCEWithLogitsLoss -> float32
         """
         if isinstance(X, np.ndarray) and X.dtype == np.float64:
             X = X.astype(np.float32)
-        if y is not None and isinstance(y, np.ndarray) and not np.issubdtype(y.dtype, np.int64):
-            y = y.astype(np.int64)
+        if y is not None and isinstance(y, np.ndarray):
+            criterion_obj = getattr(self, "criterion", nn.CrossEntropyLoss)
+            criterion_cls = criterion_obj if isinstance(criterion_obj, type) else type(criterion_obj)
+            use_float_targets = criterion_cls in (nn.BCELoss, nn.BCEWithLogitsLoss)
+
+            if use_float_targets:
+                if not np.issubdtype(y.dtype, np.floating) or y.dtype == np.float64:
+                    y = y.astype(np.float32)
+            else:
+                if not np.issubdtype(y.dtype, np.int64):
+                    y = y.astype(np.int64)
         return super().fit(X, y, **fit_params)
 
     def predict_uncertainty(
@@ -1006,11 +1021,13 @@ class MLPHeadClassifier(NeuralNetClassifier, BaseMLPHeadEstimator, AbstractMothe
             if isinstance(_m, nn.Dropout):
                 _m.train()
 
+        use_sigmoid = isinstance(self.criterion_, nn.BCEWithLogitsLoss)
+
         probabilities = []
         with torch.no_grad():
             for _ in range(num_samples):
                 logits = self.module_(X_tensor)
-                probs = torch.softmax(logits, dim=1)
+                probs = torch.sigmoid(logits) if use_sigmoid else torch.softmax(logits, dim=1)
                 probabilities.append(probs.cpu().numpy())
 
         # Return to eval mode
@@ -1022,29 +1039,49 @@ class MLPHeadClassifier(NeuralNetClassifier, BaseMLPHeadEstimator, AbstractMothe
         # Predictive (mean) distribution across MC dropout passes.
         mean_probs = probabilities.mean(axis=0)  # shape: (n_datapoints, n_classes)
 
-        # Most likely class — map the argmax *index* back to the real class label
-        # via skorch's ``classes_`` so that non-0..C-1 / string label sets are
-        # preserved (consistent with ``predict()`` and the other Mother classifiers).
-        mean_pred = self.classes_[mean_probs.argmax(axis=1)]
+        if use_sigmoid:
+            # Multi-label path: independent Bernoulli probabilities per label.
+            eps = 1e-12
 
-        # Uncertainty decomposition matching CatBoost (Malinin et al.):
-        #   total     = entropy of the mean predictive distribution  H(mean_p)
-        #   data      = mean per-pass entropy (expected entropy)      E_t[H(p_t)]
-        #   knowledge = total - data (mutual information; 0 when dropout inactive)
-        total_uncertainty = entropy(mean_probs, axis=1)
-        per_pass_entropy = entropy(probabilities, axis=2)  # (num_samples, n_datapoints)
-        data_uncertainty = per_pass_entropy.mean(axis=0)
-        knowledge_uncertainty = total_uncertainty - data_uncertainty
+            def _binary_entropy(p: np.ndarray) -> np.ndarray:
+                p = np.clip(p, eps, 1.0 - eps)
+                return -(p * np.log(p) + (1.0 - p) * np.log(1.0 - p))
 
-        # mean_predictions: mean-over-dropout probability of the reported class.
-        if mean_probs.shape[1] == 2:
-            mean_predictions = mean_probs[:, 1]
+            mean_pred = (mean_probs >= 0.5).astype(np.int64)
+
+            # Average per-label uncertainties into one scalar per sample.
+            total_uncertainty = _binary_entropy(mean_probs).mean(axis=1)
+            per_pass_entropy = _binary_entropy(probabilities).mean(axis=2)  # (num_samples, n_datapoints)
+            data_uncertainty = per_pass_entropy.mean(axis=0)
+            knowledge_uncertainty = total_uncertainty - data_uncertainty
+
+            # Expose full per-label predictive probabilities.
+            mean_predictions = _prepare_for_dataframe(mean_probs.astype(np.float32))
+            pred_out = _prepare_for_dataframe(mean_pred.astype(np.float32))
         else:
-            mean_predictions = mean_probs.max(axis=1)
+            # Most likely class — map the argmax *index* back to the real class label
+            # via skorch's ``classes_`` so that non-0..C-1 / string label sets are
+            # preserved (consistent with ``predict()`` and the other Mother classifiers).
+            pred_out = self.classes_[mean_probs.argmax(axis=1)]
+
+            # Uncertainty decomposition matching CatBoost (Malinin et al.):
+            #   total     = entropy of the mean predictive distribution  H(mean_p)
+            #   data      = mean per-pass entropy (expected entropy)      E_t[H(p_t)]
+            #   knowledge = total - data (mutual information; 0 when dropout inactive)
+            total_uncertainty = entropy(mean_probs, axis=1)
+            per_pass_entropy = entropy(probabilities, axis=2)  # (num_samples, n_datapoints)
+            data_uncertainty = per_pass_entropy.mean(axis=0)
+            knowledge_uncertainty = total_uncertainty - data_uncertainty
+
+            # mean_predictions: mean-over-dropout probability of the reported class.
+            if mean_probs.shape[1] == 2:
+                mean_predictions = mean_probs[:, 1]
+            else:
+                mean_predictions = mean_probs.max(axis=1)
 
         results = pd.DataFrame(
             {
-                "pred": mean_pred,
+                "pred": pred_out,
                 "mean_predictions": mean_predictions,
                 "knowledge_uncertainty": knowledge_uncertainty,
                 "data_uncertainty": data_uncertainty,
