@@ -85,7 +85,7 @@ def _run_classifier(
         lr=cfg.get("lr", 0.005),
         input_dropout=cfg.get("input_dropout", 0.05),
         tree_dropout=cfg.get("tree_dropout", 0.05),
-        head_type="flow",
+        head_type="subset",
         device=device,
         verbose=0,
     )

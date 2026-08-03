@@ -189,7 +189,7 @@ def main() -> None:
             "name": "chem_synth_reg_3048d",
             "task": "regression",
             "X": _make_sparse_fingerprint_matrix(100000, 3048, 72, rng, as_counts=True),
-            "y": rng.normal(0.0, 1.0, size=10000).astype(np.float32),
+            "y": rng.normal(0.0, 1.0, size=100000).astype(np.float32),
         },
     ]
 
