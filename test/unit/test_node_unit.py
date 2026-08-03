@@ -1905,6 +1905,73 @@ def test_flow_head_tuning_hidden_dims():
     print("\n✓ Flow head tuning direct conditioning test passed!")
 
 
+def test_max_layers_retained_tuning_is_adaptive():
+    """max_layers_retained should only appear when multiple NODE layers are used."""
+    import optuna
+    import pandas as pd
+
+    X, y = make_classification(n_samples=40, n_features=4, n_classes=2, random_state=42)
+    X_df = pd.DataFrame(X, columns=[f"feature_{i}" for i in range(X.shape[1])])
+    y_series = pd.Series(y, name="target")
+
+    clf = NODEClassifier(num_trees=32, num_layers=1, max_epochs=1, batch_size=32, device="cpu", tune_head=False)
+
+    trial_single = optuna.trial.FixedTrial(
+        {
+            "num_layers": 1,
+            "num_trees": 256,
+            "additional_tree_output_dim": 3,
+            "depth": 6,
+            "lr": 1e-3,
+            "input_dropout": 0.1,
+            "tree_dropout": 0.0,
+            "choice_function": "entmax15",
+            "bin_function": "entmoid15",
+        }
+    )
+    params_single = clf.get_hyperparameter_space(X_df, y_series, trial_single, prefix="")
+    assert "max_layers_retained" not in params_single
+
+    trial_two_layers = optuna.trial.FixedTrial(
+        {
+            "num_layers": 2,
+            "num_trees": 256,
+            "additional_tree_output_dim": 3,
+            "depth": 6,
+            "lr": 1e-3,
+            "input_dropout": 0.1,
+            "tree_dropout": 0.0,
+            "choice_function": "entmax15",
+            "bin_function": "entmoid15",
+        }
+    )
+    params_two_layers = clf.get_hyperparameter_space(X_df, y_series, trial_two_layers, prefix="")
+    assert params_two_layers["max_layers_retained"] == 1
+
+    reg = NODERegressor(num_trees=32, num_layers=4, max_epochs=1, batch_size=32, device="cpu", tune_head=False)
+    trial_four_layers = optuna.trial.FixedTrial(
+        {
+            "num_layers": 4,
+            "num_trees": 512,
+            "additional_tree_output_dim": 3,
+            "depth": 6,
+            "lr": 1e-3,
+            "input_dropout": 0.1,
+            "tree_dropout": 0.0,
+            "choice_function": "entmax15",
+            "bin_function": "entmoid15",
+            "max_layers_retained": 3,
+            "head_type": "mlp",
+            "mlp_num_layers": 2,
+            "mlp_hidden_dim_1": 204,
+            "mlp_dropout": 0.1,
+            "mlp_activation": "ReLU",
+        }
+    )
+    params_four_layers = reg.get_hyperparameter_space(X_df, y_series, trial_four_layers, prefix="")
+    assert params_four_layers["max_layers_retained"] == 3
+
+
 def test_fast_multilabel_classification():
     """Test multi-label classification with BCEWithLogitsLoss"""
     print("\n🚀 Fast Multi-Label Classification Test")

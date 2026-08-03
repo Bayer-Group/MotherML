@@ -1555,6 +1555,16 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
             suggested_params[prefix + "num_trees"] // suggested_params[prefix + "num_layers"]
         )  # Adjust num_trees per layer
 
+        num_layers = suggested_params[prefix + "num_layers"]
+        if num_layers > 1:
+            max_meaningful_retained = num_layers - 1
+            if max_meaningful_retained == 1:
+                suggested_params[prefix + "max_layers_retained"] = 1
+            else:
+                suggested_params[prefix + "max_layers_retained"] = trial.suggest_int(
+                    prefix + "max_layers_retained", 1, max_meaningful_retained, log=False
+                )
+
         # Tune dropout parameters (architectural regularization).
         # Fine step (0.01) so Optuna can reach the low-dropout regime that
         # normalizing-flow heads favour (best ~0.008-0.05; Werner & Schmidt-Thieme 2025);
@@ -1672,6 +1682,10 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
             prefix + "bin_function": "entmoid15",
             prefix + "input_dropout": 0.05,
             prefix + "tree_dropout": 0.05,
+            # Keep omitted while the default NODE depth is a single layer.
+            # If the default ``num_layers`` is ever raised above 1, add a matching
+            # ``max_layers_retained`` default here as well so the retention policy
+            # stays explicit for default Optuna startup/enqueued parameters.
             # prefix + "max_layers_retained": 1,
         }
 
