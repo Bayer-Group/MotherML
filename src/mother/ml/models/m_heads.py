@@ -1141,6 +1141,53 @@ class FlowHead(nn.Module):
 
     SUPPORTED_FLOW_TYPES = ("GMM", "NICE", "RealNVP", "NAF", "UNAF", "NSF", "BPF")
 
+    @staticmethod
+    def _move_nested_tensors_to_device(obj: Any, device: torch.device, visited: Optional[set[int]] = None) -> Any:
+        """Recursively move plain tensors inside nested objects to ``device``.
+
+        This is primarily for distribution objects returned by zuko flows, where
+        some tensors may be stored as plain attributes rather than registered
+        module parameters/buffers.
+        """
+        if visited is None:
+            visited = set()
+
+        oid = id(obj)
+        if oid in visited:
+            return obj
+        visited.add(oid)
+
+        if isinstance(obj, torch.Tensor):
+            if obj.device != device:
+                return obj.to(device)
+            return obj
+
+        if isinstance(obj, nn.Parameter):
+            return obj
+
+        if isinstance(obj, dict):
+            for k, v in list(obj.items()):
+                obj[k] = FlowHead._move_nested_tensors_to_device(v, device, visited)
+            return obj
+
+        if isinstance(obj, list):
+            for i, v in enumerate(obj):
+                obj[i] = FlowHead._move_nested_tensors_to_device(v, device, visited)
+            return obj
+
+        if isinstance(obj, tuple):
+            return tuple(FlowHead._move_nested_tensors_to_device(v, device, visited) for v in obj)
+
+        if hasattr(obj, "__dict__"):
+            for attr_name, attr_val in list(vars(obj).items()):
+                try:
+                    new_val = FlowHead._move_nested_tensors_to_device(attr_val, device, visited)
+                    if new_val is not attr_val:
+                        setattr(obj, attr_name, new_val)
+                except Exception:
+                    continue
+        return obj
+
     def __init__(
         self,
         input_dim: int,
@@ -1292,7 +1339,11 @@ class FlowHead(nn.Module):
             x = self.encoder(x)
 
         # Return the conditional flow distribution p(y | x)
-        return self.net(x)
+        dist = self.net(x)
+        # Some zuko distribution internals are plain tensors created lazily.
+        # Keep them aligned with the context device used for this forward pass.
+        self._move_nested_tensors_to_device(dist, x.device)
+        return dist
 
 
 class BaseFlowHeadEstimator:

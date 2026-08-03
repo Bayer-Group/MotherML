@@ -1844,6 +1844,9 @@ class NODERegressor(BaseNODEEstimator):
         if self._is_flow_head:
             # For flow heads, y_pred is the flow distribution conditioned on X
             # We need to compute the negative log probability directly
+            model_device = next(self.module_.parameters()).device if hasattr(self, "module_") else y_true.device
+            if y_true.device != model_device:
+                y_true = y_true.to(model_device)
             if y_true.dim() == 1:
                 y_true = y_true.unsqueeze(-1)  # Add feature dimension for flow head
             loss = -y_pred.log_prob(y_true)  # -log p(y_true | X) where y_pred = flow(X)
@@ -3065,7 +3068,6 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
         quantiles: List[float] = DEFAULT_QUANTILES,
         uncertainty_for_opt: bool = False,
         num_samples: int = 100,
-        use_std: bool = True,
         **kwargs,
     ) -> Union[pd.DataFrame, Tuple[pd.DataFrame, npt.NDArray[np.float32]]]:
         """
