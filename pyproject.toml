@@ -82,6 +82,11 @@ node = [
   "torch>=2.3.0,<3",
 ]
 
+### GNN fingerprints (Chemprop-based)
+gnn = [
+  "chemprop",
+]
+
 
 [dependency-groups]
 dev = [
