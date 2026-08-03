@@ -17,8 +17,7 @@ def _check_chemprop() -> None:
     except ImportError as import_error:
         raise ModuleNotFoundError(
             "chemprop is required for CheMeleon fingerprints but is not installed. "
-            "Install it in your environment (e.g. `pip install chemprop`). "
-            "Note: there is currently no `mother[gnn]` extra."
+            "Install it in your environment (e.g. `pip install 'mother-ml[gnn]'` or `pip install chemprop`)."
         ) from import_error
 
 
