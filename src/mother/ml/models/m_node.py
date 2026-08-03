@@ -1010,6 +1010,11 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         """Check whether the fitted module uses a flow head."""
         return hasattr(self, "module_") and hasattr(self.module_, "head_type") and self.module_.head_type == "flow"
 
+    @property
+    def _supports_flow_configuration(self) -> bool:
+        """Whether this estimator should expose flow configuration parameters."""
+        return True
+
     def _has_active_dropout(self, *, include_mlp: bool = True) -> bool:
         """Check whether any dropout source is configured with a non-zero rate.
 
@@ -1168,6 +1173,17 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         if hasattr(self, "_original_callbacks"):
             params["callbacks"] = self._original_callbacks
 
+        if not self._supports_flow_configuration:
+            for key in (
+                "flow_type",
+                "flow_transforms",
+                "flow_bins",
+                "flow_degree",
+                "flow_signal",
+                "flow_components",
+            ):
+                params.pop(key, None)
+
         return params
 
     def set_params(self, **params: Any) -> "BaseNODEEstimator":
@@ -1177,6 +1193,15 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         Syncs NODE architecture params to their module__ counterparts so
         skorch knows to re-initialize the module with new values.
         """
+        if not self._supports_flow_configuration:
+            invalid_flow_params = sorted(k for k in params if k.startswith("flow_"))
+            if invalid_flow_params:
+                raise TypeError(
+                    "NODEClassifier.set_params() got unexpected keyword argument(s): "
+                    f"{invalid_flow_params}. Flow configuration is only supported by "
+                    "NODERegressor(head_type='flow')."
+                )
+
         # List of NODE parameters that need to be synced to module
         node_params = [
             "num_layers",
@@ -3007,6 +3032,11 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
 
         # Store the tuning parameters
         self.tune_head = tune_head
+
+    @property
+    def _supports_flow_configuration(self) -> bool:
+        """NODEClassifier never exposes regression-only flow configuration."""
+        return False
 
     def _set_loss(self, y: Union[pd.Series, npt.NDArray[Any], None] = None) -> None:
         """Set appropriate loss for classification tasks.
