@@ -60,9 +60,15 @@ from sklearn.model_selection import (
 )
 from sklearn.utils import check_array
 from sklearn.utils.validation import check_is_fitted
-from tabpfn import TabPFNClassifier, TabPFNRegressor
-from tabpfn.constants import ModelVersion
-from tabpfn.regressor import FullOutputDict
+
+from mother.errors import ExtrasDependencyImportError
+
+try:
+    from tabpfn import TabPFNClassifier, TabPFNRegressor
+    from tabpfn.constants import ModelVersion
+    from tabpfn.regressor import FullOutputDict
+except ModuleNotFoundError as import_error:
+    raise ExtrasDependencyImportError("tabpfn", import_error) from import_error
 
 from mother.ml.core import AbstractMotherPipeline
 from mother.ml.models import utils
