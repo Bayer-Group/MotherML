@@ -7,8 +7,9 @@ def test_extras_dependency_import_error():
 
     assert isinstance(error, ExtrasDependencyImportError)
     assert str(nested_error) in str(error)
-    assert "pip install 'mother[example]'" in str(error)
-    assert "uv add 'mother[example]'" in str(error)
+    assert "pip install 'mother-ml[example]'" in str(error)
+    assert "uv add mother-ml --extra example" in str(error)
+    assert "uv sync --extra example" in str(error)
 
 
 def test_configuration_error():
