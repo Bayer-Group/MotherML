@@ -157,7 +157,7 @@ def _is_node_flow(estimator: Any) -> bool:
 def _is_flow_head(estimator: Any) -> bool:
     """Return True if *estimator* is a ``FlowHeadRegressor``."""
     try:
-        from mother.ml.models.m_heads import FlowHeadRegressor  # type: ignore[import]
+        from mother.ml.models.m_flow import FlowHeadRegressor  # type: ignore[import]
     except ImportError:
         return False
     return isinstance(estimator, FlowHeadRegressor)
@@ -697,7 +697,7 @@ def acquisition_score(
 
     **Standalone FlowHeadRegressor** (requires ``mlp_dropout > 0`` in the MLP conditioner):
 
-    >>> from mother.ml.models.m_heads import FlowHeadRegressor
+    >>> from mother.ml.models.m_flow import FlowHeadRegressor
     >>> reg = FlowHeadRegressor(flow_type="NSF", mlp_dropout=0.05)
     >>> reg.fit(X_train, y_train)
     >>>

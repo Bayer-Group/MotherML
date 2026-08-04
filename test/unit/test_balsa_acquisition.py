@@ -19,7 +19,7 @@ pytest.importorskip("torch")
 pytest.importorskip("zuko")
 
 from mother.ml.models.balsa_acquisition import acquisition_score  # noqa: E402
-from mother.ml.models.m_heads import FlowHeadRegressor  # noqa: E402
+from mother.ml.models.m_flow import FlowHeadRegressor  # noqa: E402
 from mother.ml.models.m_node import NODERegressor  # noqa: E402
 
 # - serial: avoid PyTorch multiprocessing issues under pytest-xdist

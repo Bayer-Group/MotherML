@@ -25,8 +25,8 @@ from sklearn.model_selection import train_test_split
 pytest.importorskip("skorch")
 pytest.importorskip("torch")
 
-from mother.ml.models.m_heads import (  # noqa: E402
-    FlowHeadRegressor,
+from mother.ml.models.m_flow import FlowHeadRegressor  # noqa: E402
+from mother.ml.models.m_mlp import (  # noqa: E402
     MLPHeadClassifier,
     MLPHeadRegressor,
 )

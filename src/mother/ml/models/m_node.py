@@ -109,7 +109,8 @@ from torch import Tensor
 
 from mother.ml.core import AbstractMotherPipeline
 from mother.ml.models.m_head_utils import compute_flow_mode_and_uncertainty
-from mother.ml.models.m_heads import FlowHead, MLPHead
+from mother.ml.models.m_flow import FlowHead
+from mother.ml.models.m_mlp import MLPHead
 from mother.ml.models.m_node_utils import (
     DenseODSTBlock,
     Embedding1dLayer,
