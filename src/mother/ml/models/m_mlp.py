@@ -34,9 +34,8 @@ References:
 Authors: Julian Qian, Sergey Popov
 """
 
-from typing import Any, Dict, List, Optional, Union
-
 import logging
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import numpy.typing as npt
