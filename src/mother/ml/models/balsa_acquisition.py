@@ -69,7 +69,6 @@ Usage
 
 from __future__ import annotations
 
-import logging
 import math
 import warnings
 from typing import Any, List, Optional, Tuple, Union
@@ -80,8 +79,6 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from sklearn.exceptions import NotFittedError
-
-logger = logging.getLogger(__name__)
 
 __all__ = ["acquisition_score"]
 
