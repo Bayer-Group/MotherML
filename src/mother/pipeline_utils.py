@@ -878,7 +878,7 @@ def mother_cv(
         return performance_data, estimator_output
     else:
         fold_estimators.clear()  # Clear the list to free memory if not returning
-        module_logger.info("Returning performance_data only")   
+        module_logger.info("Returning performance_data only")
 
     return performance_data
 
