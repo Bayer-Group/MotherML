@@ -2192,8 +2192,11 @@ class NODERegressor(BaseNODEEstimator):
                 (MC-dropout) head raises ``ValueError``.
             quantiles: List of quantiles to calculate the uncertainty.
                 Default: ``[0.25, 0.5, 0.75]`` (``DEFAULT_QUANTILES``).
-            uncertainty_for_opt: If True, return only total uncertainty for
-                optimisation / active learning (default False).
+            uncertainty_for_opt: If True, return only a single uncertainty column
+                for optimisation / active learning (default False). Returns the
+                epistemic ``knowledge_uncertainty`` (the BALD/BALSA acquisition
+                signal) when available, falling back to ``total_uncertainty`` for
+                a flow head without dropout, which exposes no epistemic estimate.
             num_samples: Number of samples for uncertainty estimation (default 100).
             use_std: If True, use standard deviation; if False, use IQR
                 for uncertainty (default True).
@@ -2212,7 +2215,9 @@ class NODERegressor(BaseNODEEstimator):
                     - The DataFrame described above.
                     - ``np.ndarray`` of quantile values with shape
                       ``(n_samples, n_quantiles)``.
-                - If ``uncertainty_for_opt=True``: ``pd.Series`` of ``total_uncertainty``.
+                - If ``uncertainty_for_opt=True``: ``pd.Series`` of
+                  ``knowledge_uncertainty`` (epistemic), or of ``total_uncertainty``
+                  when no epistemic estimate is available (flow head without dropout).
 
         Example:
             >>> # Flow head with dropout (both uncertainties)
@@ -2378,8 +2383,11 @@ class NODERegressor(BaseNODEEstimator):
             )
 
         if uncertainty_for_opt:
-            # Return total_uncertainty for active-learning / optimisation,
-            # matching TabPFN / RandomForest convention.
+            # Epistemic (knowledge) uncertainty is the active-learning acquisition
+            # signal (BALD/BALSA); fall back to total_uncertainty for a flow head
+            # without dropout, which exposes no epistemic estimate.
+            if results["knowledge_uncertainty"].notna().any():
+                return results.loc[:, "knowledge_uncertainty"]
             return results.loc[:, "total_uncertainty"]
 
         if return_quantiles:
