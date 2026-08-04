@@ -471,10 +471,6 @@ class ODST(ModuleWithInit):
             # Shape: [depth, 2^depth, 2]
             self.register_buffer("bin_codes_1hot", bin_codes_1hot)
 
-    # Re-evaluate matmul strategy every N forward passes so we adapt as
-    # entmax15/entmoid15 sparsity patterns evolve during training.
-    _STRATEGY_RECHECK_INTERVAL = 500
-
     # Wide single-layer ensembles (e.g. 2048 trees) materialise very large
     # per-tree intermediates at once. Evaluating trees in fixed-width slices
     # caps the peak transient/activation memory to roughly one slice, matching
@@ -482,66 +478,13 @@ class ODST(ModuleWithInit):
     # computed result. Auto-applied whenever num_trees exceeds this width.
     _AUTO_TREE_CHUNK_SIZE = 256
 
-    def _detect_matmul_strategy(self, input: Tensor, feature_selectors_2d: Tensor) -> str:
-        """
-        Choose matmul strategy based on sparsity of the operands.
-
-        Re-evaluated every ``_STRATEGY_RECHECK_INTERVAL`` forward passes so the
-        strategy can adapt as entmax15 feature selectors sharpen during training.
-
-        Rules (from benchmarking on typical NODE workloads):
-        - If either matrix is >50% zeros, use sparse mm on whichever is sparser.
-          Input sparsity is common with fingerprints; selector sparsity comes from
-          entmax but is rarely >50% in practice.
-        - Otherwise stick with dense matmul — it wins for normal tabular data.
-
-        Strategies:
-        - "dense":            input @ selector                          (plain matmul)
-        - "input_sparse":     sparse.mm(sparse_input, dense_selector)   (exploits input zeros)
-        - "selector_sparse":  sparse.mm(sparse_sel.T, input.T).T       (exploits entmax zeros)
-        """
-        _SPARSITY_THRESHOLD = 0.5
-
-        with torch.no_grad():
-            inp_sparsity = (input == 0).sum().item() / input.numel()
-            sel_sparsity = (feature_selectors_2d == 0).sum().item() / feature_selectors_2d.numel()
-
-        if inp_sparsity > _SPARSITY_THRESHOLD or sel_sparsity > _SPARSITY_THRESHOLD:
-            # At least one operand is very sparse — use sparse mm on the sparser one
-            if inp_sparsity >= sel_sparsity:
-                strategy = "input_sparse"
-            else:
-                strategy = "selector_sparse"
-        else:
-            strategy = "dense"
-
-        old = getattr(self, "_matmul_strategy", None)
-        if old is None:
-            module_logger.debug(
-                "ODST matmul strategy: '%s' (input_sparsity=%s, selector_sparsity=%s, features=%s, trees×depth=%s)",
-                strategy,
-                f"{inp_sparsity:.0%}",
-                f"{sel_sparsity:.0%}",
-                input.shape[1],
-                feature_selectors_2d.shape[1],
-            )
-        elif old != strategy:
-            module_logger.debug(
-                "ODST matmul strategy changed: '%s' -> '%s' (input_sparsity=%s, selector_sparsity=%s)",
-                old,
-                strategy,
-                f"{inp_sparsity:.0%}",
-                f"{sel_sparsity:.0%}",
-            )
-        return strategy
-
     def forward(self, input: Tensor) -> Tensor:
         """
         Forward pass: feature selection → threshold comparison → soft leaf routing → response.
 
         Steps:
         1. Sparse feature selection via choice_function (sparsemax/entmax)
-        2. Extract selected feature values (strategy auto-detected on first batch)
+        2. Extract selected feature values (dense projection, tree-sliced for memory)
         3. Compare to learned thresholds, scaled by temperature
         4. Soft binary decisions via bin_function (sparsemoid/entmoid)
         5. Compute leaf probabilities from decision products
@@ -558,18 +501,11 @@ class ODST(ModuleWithInit):
         if len(input.shape) > 2:
             return self.forward(input.view(-1, input.shape[-1])).view(*input.shape[:-1], -1)
 
-        # 1. Sparse feature selection
+        # 1. Sparse feature selection (entmax/sparsemax over input features).
         feature_logits = self.feature_selection_logits  # [in_features, num_trees, depth]
         feature_selectors = self.choice_function(feature_logits, dim=0)
-        feature_selectors_2d: Tensor = feature_selectors.reshape(feature_selectors.shape[0], -1)
 
-        # 2. Detect matmul strategy on the full selector (strategy is shared by all
-        #    tree slices), auto-detected on first pass and rechecked periodically.
-        self._forward_count = getattr(self, "_forward_count", 0) + 1
-        if self._forward_count == 1 or self._forward_count % self._STRATEGY_RECHECK_INTERVAL == 0:
-            self._matmul_strategy = self._detect_matmul_strategy(input, feature_selectors_2d)
-
-        # 3. Evaluate trees. Wide ensembles are processed in fixed-width slices to
+        # 2. Evaluate trees. Wide ensembles are processed in fixed-width slices to
         #    cap peak memory; the concatenation reproduces the full-width result.
         chunk_size = self._AUTO_TREE_CHUNK_SIZE
         if chunk_size is None or self.num_trees <= chunk_size:
@@ -597,26 +533,6 @@ class ODST(ModuleWithInit):
 
         return response.flatten(1, 2) if self.flatten_output else response
 
-    def _project_feature_values(self, input: Tensor, feature_selectors_2d: Tensor) -> Tensor:
-        """Project inputs onto (a slice of) the feature selectors via the active strategy."""
-        strategy = self._matmul_strategy
-        if strategy == "input_sparse":
-            input_sparse: Tensor = input.to_sparse()
-            return torch.sparse.mm(input_sparse, feature_selectors_2d)
-        if strategy == "selector_sparse":
-            nonzero_mask: Tensor = feature_selectors_2d != 0
-            indices: Tensor = nonzero_mask.nonzero(as_tuple=False).t()
-            values: Tensor = feature_selectors_2d[nonzero_mask]
-            sparse_sel: Tensor = torch.sparse_coo_tensor(
-                indices,
-                values,
-                feature_selectors_2d.shape,
-                device=feature_selectors_2d.device,
-                dtype=feature_selectors_2d.dtype,
-            ).coalesce()
-            return torch.sparse.mm(sparse_sel.t(), input.t()).t()
-        return input @ feature_selectors_2d
-
     def _forward_tree_slice(self, input: Tensor, feature_selectors: Tensor, tree_slice: slice) -> Tensor:
         """Compute soft-tree responses for the trees in ``tree_slice`` only.
 
@@ -628,7 +544,7 @@ class ODST(ModuleWithInit):
         n_trees = selectors_slice.shape[1]
         selectors_2d = selectors_slice.reshape(selectors_slice.shape[0], -1)
 
-        feature_values = self._project_feature_values(input, selectors_2d)
+        feature_values = input @ selectors_2d
         feature_values = feature_values.reshape(input.shape[0], n_trees, self.depth)
 
         # Threshold comparison with temperature scaling
