@@ -3264,8 +3264,15 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
         model.eval()
         X_prep = self._prepare_data_for_node(X)
 
-        # Enable dropout for MC sampling.
-        model.train()
+        # Keep the whole model in eval mode (so BatchNorm uses its running statistics
+        # and stays deterministic) and switch ON *only* the dropout mechanisms, mirroring
+        # the regression MC-dropout path. We deliberately avoid ``model.train()``, which
+        # would also enable BatchNorm training and mutate running stats during inference.
+        model.training = True  # gates tree_dropout in the top module
+        for _m in model.modules():
+            # input_dropout is gated on DenseODSTBlock.training; mlp_dropout uses nn.Dropout.
+            if isinstance(_m, (DenseODSTBlock, nn.Dropout)):
+                _m.training = True
 
         use_sigmoid = isinstance(self.criterion_, nn.BCEWithLogitsLoss)
         all_probs = []
