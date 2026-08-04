@@ -27,9 +27,10 @@ from mother.pipeline_utils import get_feature_selection_pipeline, mother_cv
 
 # NODE ("node") and the MLP/Flow heads ("mlp", "flow") depend on non-standard
 # optional dependencies (skorch, torch, zuko) and are neural-network based. They
-# are covered separately in test_node_unit.py. Exclude them from the generic
-# algorithm sweep here so these CV tests remain runnable without the optional
-# "node" extra installed.
+# are covered separately in the dedicated neural suites (test_node_unit.py,
+# test_ml_uncertainty_neural.py, test_balsa_acquisition.py). Exclude them from the
+# generic algorithm sweep here so these CV tests remain runnable without the
+# optional "node" extra installed.
 _OPTIONAL_DEP_ALGORITHMS = {"node", "mlp", "flow"}
 STANDARD_ALGORITHMS = [a for a in get_available_algorithms() if a not in _OPTIONAL_DEP_ALGORITHMS]
 

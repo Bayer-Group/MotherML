@@ -1,7 +1,7 @@
 """
 Uncertainty-interface tests for the optional neural algorithms (NODE + MLP heads).
 
-NODE (``node``) and the MLP/Flow heads (``heads``) depend on non-standard optional
+NODE (``node``) and the MLP/Flow heads (``mlp``, ``flow``) depend on non-standard optional
 dependencies (skorch, torch, zuko). They are excluded from the generic algorithm
 sweep in ``test_ml.py`` and tested here separately so that the core suite stays
 runnable without the optional ``node`` extra installed (e.g. in ``dist-test``).
@@ -37,6 +37,7 @@ from mother.ml.models.m_node import NODEClassifier, NODERegressor  # noqa: E402
 pytestmark = [pytest.mark.serial, pytest.mark.slow]
 
 REQUIRED_UNCERTAINTY_COLS = {
+    "pred",
     "mean_predictions",
     "knowledge_uncertainty",
     "data_uncertainty",

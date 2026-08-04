@@ -474,7 +474,7 @@ class MLPHeadRegressor(NeuralNetRegressor, BaseMLPHeadEstimator, AbstractMotherP
 
         Args:
             X: Input features.
-            return_quantiles: Not supported for this classifier estimator.
+            return_quantiles: Not supported for this MC-dropout regressor.
                 Passing True raises ``ValueError``.
             quantiles: Accepted for interface compatibility but unused.
             uncertainty_for_opt: If True, return only ``total_uncertainty`` as a Series
@@ -490,7 +490,7 @@ class MLPHeadRegressor(NeuralNetRegressor, BaseMLPHeadEstimator, AbstractMotherP
                 - If ``uncertainty_for_opt=True``: ``pd.Series`` of ``total_uncertainty``.
 
         Raises:
-            ValueError: If ``return_quantiles=True`` (classification here does not expose quantiles).
+            ValueError: If ``return_quantiles=True`` (MC-dropout yields a predictive mean and std/IQR, not quantiles).
         """
         if return_quantiles:
             raise ValueError(
