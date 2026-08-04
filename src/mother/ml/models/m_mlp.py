@@ -43,6 +43,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from optuna import Trial
+from sklearn.utils.validation import check_is_fitted
 from skorch import NeuralNetClassifier, NeuralNetRegressor
 from skorch.callbacks import EarlyStopping, LRScheduler
 from skorch.dataset import ValidSplit
@@ -497,6 +498,8 @@ class MLPHeadRegressor(NeuralNetRegressor, BaseMLPHeadEstimator, AbstractMotherP
         Raises:
             ValueError: If ``return_quantiles=True`` (MC-dropout yields a predictive mean and std/IQR, not quantiles).
         """
+        check_is_fitted(self)
+
         if return_quantiles:
             raise ValueError(
                 "Quantiles are only available for flow heads. The MLP head estimates "
@@ -800,6 +803,8 @@ class MLPHeadClassifier(NeuralNetClassifier, BaseMLPHeadEstimator, AbstractMothe
         Raises:
             ValueError: If ``return_quantiles=True`` (quantiles require a flow head).
         """
+        check_is_fitted(self)
+
         from scipy.stats import entropy
 
         if return_quantiles:
