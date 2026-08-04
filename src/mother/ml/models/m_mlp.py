@@ -36,6 +36,8 @@ Authors: Julian Qian, Sergey Popov
 
 from typing import Any, Dict, List, Optional, Union
 
+import logging
+
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
@@ -53,6 +55,8 @@ from mother.ml.models.m_head_utils import (
     _prepare_for_dataframe,
     _suggest_adaptive_hidden_dims,
 )
+
+module_logger = logging.getLogger(__name__)
 
 # ============================================================================
 # MLP HEAD - Deterministic Predictions
@@ -503,6 +507,15 @@ class MLPHeadRegressor(NeuralNetRegressor, BaseMLPHeadEstimator, AbstractMotherP
 
         index = X.index if isinstance(X, pd.DataFrame) else None
 
+        # With no active dropout every MC pass is identical, so all uncertainty
+        # columns collapse to 0. Warn rather than silently returning zeros.
+        if not any(isinstance(m, nn.Dropout) and m.p > 0 for m in self.module_.modules()):
+            module_logger.warning(
+                "MLPHeadRegressor.predict_uncertainty called with no active dropout "
+                "(dropout=0): MC-dropout passes are identical, so knowledge/total "
+                "uncertainty will be 0. Set dropout > 0 to obtain epistemic uncertainty."
+            )
+
         # Deterministic point prediction (dropout off).
         point_pred = self.predict(X)
 
@@ -798,6 +811,15 @@ class MLPHeadClassifier(NeuralNetClassifier, BaseMLPHeadEstimator, AbstractMothe
             )
 
         index = X.index if isinstance(X, pd.DataFrame) else None
+
+        # With no active dropout every MC pass is identical, so the entropy terms
+        # collapse and knowledge_uncertainty is 0. Warn rather than silently doing so.
+        if not any(isinstance(m, nn.Dropout) and m.p > 0 for m in self.module_.modules()):
+            module_logger.warning(
+                "MLPHeadClassifier.predict_uncertainty called with no active dropout "
+                "(dropout=0): MC-dropout passes are identical, so knowledge_uncertainty "
+                "will be 0. Set dropout > 0 to obtain epistemic uncertainty."
+            )
 
         # Convert to float32
         if isinstance(X, np.ndarray) and X.dtype == np.float64:
