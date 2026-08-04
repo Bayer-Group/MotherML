@@ -20,6 +20,7 @@ Outputs are written to fixed artifact paths.
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -28,7 +29,12 @@ from typing import Any
 
 import torch
 
-from scripts.node_mothercv_tuner_default_run import (
+# Ensure imports work when executing this file directly via `python scripts/...`.
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from node_mothercv_tuner_default_run import (
     RunResult,
     StandaloneComplexityResult,
     run_experiment,
