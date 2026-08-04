@@ -52,24 +52,26 @@ def compute_flow_mode_and_uncertainty(dist, num_samples: int = 100):
         Entropy, 26(7), 593.
         https://doi.org/10.3390/e26070593
     """
-    # Sample from distribution
-    samples = dist.sample((num_samples,))  # [num_samples, batch_size, output_dim]
+    # Inference-only helper: no autograd graph is needed for mode/uncertainty.
+    with torch.no_grad():
+        # Sample from distribution
+        samples = dist.sample((num_samples,))  # [num_samples, batch_size, output_dim]
 
-    # Vectorized log_prob: zuko supports batched evaluation natively
-    # Passing [num_samples, batch_size, output_dim] directly returns [num_samples, batch_size]
-    log_probs = dist.log_prob(samples)  # [num_samples, batch_size]
+        # Vectorized log_prob: zuko supports batched evaluation natively
+        # Passing [num_samples, batch_size, output_dim] directly returns [num_samples, batch_size]
+        log_probs = dist.log_prob(samples)  # [num_samples, batch_size]
 
-    # Find the sample with highest log_prob for each input (mode)
-    best_log_probs, best_indices = log_probs.max(dim=0)  # [batch_size]
+        # Find the sample with highest log_prob for each input (mode)
+        best_log_probs, best_indices = log_probs.max(dim=0)  # [batch_size]
 
-    # Vectorized mode extraction using advanced indexing
-    # best_indices: [batch_size], need to gather from samples: [num_samples, batch_size, output_dim]
-    batch_arange = torch.arange(samples.shape[1], device=samples.device)
-    mode_predictions = samples[best_indices, batch_arange, :]  # [batch_size, output_dim]
+        # Vectorized mode extraction using advanced indexing
+        # best_indices: [batch_size], need to gather from samples: [num_samples, batch_size, output_dim]
+        batch_arange = torch.arange(samples.shape[1], device=samples.device)
+        mode_predictions = samples[best_indices, batch_arange, :]  # [batch_size, output_dim]
 
-    # Data uncertainty: negative log-likelihood of the mode
-    # High log_prob → low -log_prob (low uncertainty)
-    # Low log_prob → high -log_prob (high uncertainty)
-    uncertainties = -best_log_probs  # [batch_size]
+        # Data uncertainty: negative log-likelihood of the mode
+        # High log_prob → low -log_prob (low uncertainty)
+        # Low log_prob → high -log_prob (high uncertainty)
+        uncertainties = -best_log_probs  # [batch_size]
 
     return mode_predictions, uncertainties
