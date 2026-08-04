@@ -59,7 +59,6 @@ from mother.ml.models.m_head_utils import (
     compute_flow_mode_and_uncertainty,
 )
 
-
 # ============================================================================
 # FLOW HEAD - Probabilistic Predictions
 # ============================================================================

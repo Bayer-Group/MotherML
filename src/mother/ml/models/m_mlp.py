@@ -54,7 +54,6 @@ from mother.ml.models.m_head_utils import (
     _suggest_adaptive_hidden_dims,
 )
 
-
 # ============================================================================
 # MLP HEAD - Deterministic Predictions
 # ============================================================================
