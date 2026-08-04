@@ -9,8 +9,8 @@ class ExtrasDependencyImportError(Exception):
         message: str = (
             f"\n\n📦 {nested_error}\n\n"
             + f"{Style.DIM}# Have you tried running the following?{Style.RESET_ALL}\n"
-            + f"$ {style}pip install 'mother[{extras_type}]'{Style.RESET_ALL} or\n"
-            + f"$ {style}uv add 'mother[{extras_type}]'{Style.RESET_ALL}"
+            + f"$ {style}pip install 'mother-ml[{extras_type}]'{Style.RESET_ALL} or\n"
+            + f"$ {style}uv add 'mother-ml[{extras_type}]'{Style.RESET_ALL}"
         )
         super().__init__(message)
 

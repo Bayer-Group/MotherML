@@ -84,6 +84,10 @@ class CheMeleonFingerprintTransformer(BaseEstimator, TransformerMixin):
         device: str = "cpu",
         embedder: Optional[Callable[[Sequence[str]], np.ndarray]] = None,
     ) -> None:
+        if output_dim <= 0:
+            raise ValueError(f"output_dim must be a positive integer, got {output_dim}.")
+        if batch_size <= 0:
+            raise ValueError(f"batch_size must be a positive integer, got {batch_size}.")
         self.output_dim = output_dim
         self.batch_size = batch_size
         self.checkpoint_path = checkpoint_path
@@ -152,6 +156,10 @@ class CheMeleonFingerprintFactory:
         device: str = "cpu",
         embedder: Optional[Callable[[Sequence[str]], np.ndarray]] = None,
     ) -> None:
+        if output_dim <= 0:
+            raise ValueError(f"output_dim must be a positive integer, got {output_dim}.")
+        if batch_size <= 0:
+            raise ValueError(f"batch_size must be a positive integer, got {batch_size}.")
         self.output_dim = output_dim
         self.batch_size = batch_size
         self.checkpoint_path = checkpoint_path

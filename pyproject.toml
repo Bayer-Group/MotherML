@@ -87,9 +87,9 @@ gnn = [
   "chemprop",
 ]
 
-### CheMeleon fingerprints — alias for the ``gnn`` extra so both names install the same deps
+### CheMeleon fingerprints — same third-party deps as the ``gnn`` extra (both names install chemprop)
 chemeleon = [
-  "mother-ml[gnn]",
+  "chemprop",
 ]
 
 

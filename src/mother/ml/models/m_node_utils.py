@@ -518,12 +518,16 @@ class ODST(ModuleWithInit):
                 if use_checkpoint:
                     # Recompute each slice in backward so saved activations stay
                     # bounded to one slice; numerically identical (no RNG here).
+                    # Capture the non-tensor ``tree_slice`` in a closure so only
+                    # tensors are passed to ``checkpoint`` (it inspects tensor args).
+                    def slice_forward(inp: Tensor, sel: Tensor, _tree_slice: slice = tree_slice) -> Tensor:
+                        return self._forward_tree_slice(inp, sel, _tree_slice)
+
                     slice_outputs.append(
                         torch.utils.checkpoint.checkpoint(
-                            self._forward_tree_slice,
+                            slice_forward,
                             input,
                             feature_selectors,
-                            tree_slice,
                             use_reentrant=False,
                         )
                     )
