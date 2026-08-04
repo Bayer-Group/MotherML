@@ -1050,8 +1050,12 @@ class FlowHeadRegressor(NeuralNetRegressor, BaseFlowHeadEstimator, AbstractMothe
                 flow distribution (default False).
             quantiles: List of quantiles to compute. Default ``[0.25, 0.5, 0.75]``
                 (``DEFAULT_QUANTILES``).
-            uncertainty_for_opt: If True, return only ``total_uncertainty`` as a Series
-                for optimisation / active learning (default False).
+            uncertainty_for_opt: If True, return only a single uncertainty column
+                as a Series for optimisation / active learning (default False).
+                Returns the epistemic ``knowledge_uncertainty`` (the BALD/BALSA
+                acquisition signal) when MC-dropout is active, falling back to
+                ``total_uncertainty`` for the flow-alone regime, which exposes no
+                epistemic estimate.
             num_samples: Number of samples drawn from the flow for the mode and quantiles
                 (default 1000).
             num_mc_samples: Number of MC-dropout forward passes used when an MLP encoder
@@ -1067,7 +1071,9 @@ class FlowHeadRegressor(NeuralNetRegressor, BaseFlowHeadEstimator, AbstractMothe
                 - If ``return_quantiles=True``: ``(DataFrame, quantile_array)`` where the
                   array has shape ``(n_samples, n_quantiles)`` (single target) or
                   ``(n_samples, n_quantiles, output_dim)`` (multi-target).
-                - If ``uncertainty_for_opt=True``: ``pd.Series`` of ``total_uncertainty``.
+                - If ``uncertainty_for_opt=True``: ``pd.Series`` of
+                  ``knowledge_uncertainty`` (epistemic), or of ``total_uncertainty``
+                  when no epistemic estimate is available (flow-alone regime).
 
         Example:
             >>> reg = FlowHeadRegressor(input_dim=10, output_dim=1)
@@ -1147,6 +1153,11 @@ class FlowHeadRegressor(NeuralNetRegressor, BaseFlowHeadEstimator, AbstractMothe
             )
 
         if uncertainty_for_opt:
+            # Epistemic (knowledge) uncertainty is the active-learning acquisition
+            # signal (BALD/BALSA); fall back to total_uncertainty for the flow-alone
+            # regime, which exposes no epistemic estimate.
+            if results["knowledge_uncertainty"].notna().any():
+                return results.loc[:, "knowledge_uncertainty"]
             return results.loc[:, "total_uncertainty"]
 
         if return_quantiles:

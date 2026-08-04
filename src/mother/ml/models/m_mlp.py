@@ -477,8 +477,10 @@ class MLPHeadRegressor(NeuralNetRegressor, BaseMLPHeadEstimator, AbstractMotherP
             return_quantiles: Not supported for this MC-dropout regressor.
                 Passing True raises ``ValueError``.
             quantiles: Accepted for interface compatibility but unused.
-            uncertainty_for_opt: If True, return only ``total_uncertainty`` as a Series
-                for optimisation / active learning (default False).
+            uncertainty_for_opt: If True, return only the epistemic
+                ``knowledge_uncertainty`` as a Series for optimisation / active
+                learning (default False). For this MC-dropout head that equals the
+                dropout spread (``total_uncertainty``).
             num_samples: Number of MC Dropout forward passes (default 100).
             use_std: If True, use standard deviation; if False, use IQR (default True).
             **kwargs: Additional arguments (ignored, for interface compatibility).
@@ -487,7 +489,7 @@ class MLPHeadRegressor(NeuralNetRegressor, BaseMLPHeadEstimator, AbstractMotherP
             Union[pd.DataFrame, pd.Series]:
                 - Default: DataFrame with columns ``pred``, ``mean_predictions``,
                   ``knowledge_uncertainty``, ``data_uncertainty`` (None), ``total_uncertainty``.
-                - If ``uncertainty_for_opt=True``: ``pd.Series`` of ``total_uncertainty``.
+                - If ``uncertainty_for_opt=True``: ``pd.Series`` of ``knowledge_uncertainty``.
 
         Raises:
             ValueError: If ``return_quantiles=True`` (MC-dropout yields a predictive mean and std/IQR, not quantiles).
@@ -525,7 +527,9 @@ class MLPHeadRegressor(NeuralNetRegressor, BaseMLPHeadEstimator, AbstractMotherP
         )
 
         if uncertainty_for_opt:
-            return results.loc[:, "total_uncertainty"]
+            # Epistemic (knowledge) uncertainty is the active-learning acquisition
+            # signal; for this MC-dropout head it equals total_uncertainty.
+            return results.loc[:, "knowledge_uncertainty"]
 
         return results
 
