@@ -21,6 +21,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.utils.checkpoint
 from torch import Tensor
 from torch.autograd import Function
 from torch.jit import script
@@ -474,6 +475,13 @@ class ODST(ModuleWithInit):
     # entmax15/entmoid15 sparsity patterns evolve during training.
     _STRATEGY_RECHECK_INTERVAL = 500
 
+    # Wide single-layer ensembles (e.g. 2048 trees) materialise very large
+    # per-tree intermediates at once. Evaluating trees in fixed-width slices
+    # caps the peak transient/activation memory to roughly one slice, matching
+    # the footprint of an equivalent multi-layer split, without changing the
+    # computed result. Auto-applied whenever num_trees exceeds this width.
+    _AUTO_TREE_CHUNK_SIZE = 256
+
     def _detect_matmul_strategy(self, input: Tensor, feature_selectors_2d: Tensor) -> str:
         """
         Choose matmul strategy based on sparsity of the operands.
@@ -555,16 +563,47 @@ class ODST(ModuleWithInit):
         feature_selectors = self.choice_function(feature_logits, dim=0)
         feature_selectors_2d: Tensor = feature_selectors.reshape(feature_selectors.shape[0], -1)
 
-        # 2. Feature value extraction (strategy auto-detected, rechecked periodically)
+        # 2. Detect matmul strategy on the full selector (strategy is shared by all
+        #    tree slices), auto-detected on first pass and rechecked periodically.
         self._forward_count = getattr(self, "_forward_count", 0) + 1
         if self._forward_count == 1 or self._forward_count % self._STRATEGY_RECHECK_INTERVAL == 0:
             self._matmul_strategy = self._detect_matmul_strategy(input, feature_selectors_2d)
-        strategy = self._matmul_strategy
 
+        # 3. Evaluate trees. Wide ensembles are processed in fixed-width slices to
+        #    cap peak memory; the concatenation reproduces the full-width result.
+        chunk_size = self._AUTO_TREE_CHUNK_SIZE
+        if chunk_size is None or self.num_trees <= chunk_size:
+            response = self._forward_tree_slice(input, feature_selectors, slice(0, self.num_trees))
+        else:
+            use_checkpoint = self.training and torch.is_grad_enabled()
+            slice_outputs = []
+            for start in range(0, self.num_trees, chunk_size):
+                tree_slice = slice(start, min(start + chunk_size, self.num_trees))
+                if use_checkpoint:
+                    # Recompute each slice in backward so saved activations stay
+                    # bounded to one slice; numerically identical (no RNG here).
+                    slice_outputs.append(
+                        torch.utils.checkpoint.checkpoint(
+                            self._forward_tree_slice,
+                            input,
+                            feature_selectors,
+                            tree_slice,
+                            use_reentrant=False,
+                        )
+                    )
+                else:
+                    slice_outputs.append(self._forward_tree_slice(input, feature_selectors, tree_slice))
+            response = torch.cat(slice_outputs, dim=1)
+
+        return response.flatten(1, 2) if self.flatten_output else response
+
+    def _project_feature_values(self, input: Tensor, feature_selectors_2d: Tensor) -> Tensor:
+        """Project inputs onto (a slice of) the feature selectors via the active strategy."""
+        strategy = self._matmul_strategy
         if strategy == "input_sparse":
             input_sparse: Tensor = input.to_sparse()
-            feature_values = torch.sparse.mm(input_sparse, feature_selectors_2d)
-        elif strategy == "selector_sparse":
+            return torch.sparse.mm(input_sparse, feature_selectors_2d)
+        if strategy == "selector_sparse":
             nonzero_mask: Tensor = feature_selectors_2d != 0
             indices: Tensor = nonzero_mask.nonzero(as_tuple=False).t()
             values: Tensor = feature_selectors_2d[nonzero_mask]
@@ -575,29 +614,38 @@ class ODST(ModuleWithInit):
                 device=feature_selectors_2d.device,
                 dtype=feature_selectors_2d.dtype,
             ).coalesce()
-            feature_values = torch.sparse.mm(sparse_sel.t(), input.t()).t()
-        else:
-            feature_values = input @ feature_selectors_2d
+            return torch.sparse.mm(sparse_sel.t(), input.t()).t()
+        return input @ feature_selectors_2d
 
-        feature_values = feature_values.reshape(input.shape[0], self.num_trees, self.depth)
+    def _forward_tree_slice(self, input: Tensor, feature_selectors: Tensor, tree_slice: slice) -> Tensor:
+        """Compute soft-tree responses for the trees in ``tree_slice`` only.
 
-        # 3. Threshold comparison with temperature scaling
-        threshold_logits = (feature_values - self.feature_thresholds) * torch.exp(-self.log_temperatures)
+        Slicing the tree axis of the selectors, thresholds, temperatures and leaf
+        responses yields exactly the same per-tree outputs as the full-width path,
+        so concatenating slices reconstructs the unchunked result.
+        """
+        selectors_slice = feature_selectors[:, tree_slice, :]
+        n_trees = selectors_slice.shape[1]
+        selectors_2d = selectors_slice.reshape(selectors_slice.shape[0], -1)
+
+        feature_values = self._project_feature_values(input, selectors_2d)
+        feature_values = feature_values.reshape(input.shape[0], n_trees, self.depth)
+
+        # Threshold comparison with temperature scaling
+        threshold_logits = (feature_values - self.feature_thresholds[tree_slice]) * torch.exp(
+            -self.log_temperatures[tree_slice]
+        )
         threshold_logits = torch.stack([-threshold_logits, threshold_logits], dim=-1)
-        # [batch_size, num_trees, depth, 2]
 
-        # 4. Soft binary decisions
+        # Soft binary decisions
         bins = self.bin_function(threshold_logits)
 
-        # 5. Leaf probability computation via binary code matching
+        # Leaf probability computation via binary code matching
         bin_matches = torch.einsum("btds,dcs->btdc", bins, self.bin_codes_1hot)
         response_weights = torch.prod(bin_matches, dim=-2)
-        # [batch_size, num_trees, 2^depth]
 
-        # 6. Weighted response aggregation
-        response = torch.einsum("bnd,ncd->bnc", response_weights, self.response)
-
-        return response.flatten(1, 2) if self.flatten_output else response
+        # Weighted response aggregation for this slice of trees
+        return torch.einsum("bnd,ncd->bnc", response_weights, self.response[tree_slice])
 
     def initialize(self, input: Tensor, eps: float = 1e-6) -> None:
         """
