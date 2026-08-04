@@ -441,6 +441,9 @@ class MLPHeadRegressor(NeuralNetRegressor, BaseMLPHeadEstimator, AbstractMotherP
         if isinstance(X, np.ndarray) and X.dtype == np.float64:
             X = X.astype(np.float32)
         if y is not None:
+            # Normalise pandas targets to float32 NumPy so the reshape below applies.
+            if isinstance(y, (pd.Series, pd.DataFrame)):
+                y = y.to_numpy(dtype=np.float32)
             if isinstance(y, np.ndarray) and y.dtype == np.float64:
                 y = y.astype(np.float32)
             # Skorch MSELoss needs 2D targets to match [batch, output_dim] predictions
