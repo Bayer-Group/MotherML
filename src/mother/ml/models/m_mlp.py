@@ -277,12 +277,12 @@ class BaseMLPHeadEstimator:
         """
         Return default hyperparameters for MLP head.
 
-        These defaults provide a good starting point for most tasks:
+        These defaults mirror the estimator constructor baselines:
         - 3-layer funnel architecture [256, 128, 64]
-        - 10% dropout for regularization
+        - 5% dropout for regularization
         - Batch normalization enabled
         - ReLU activation (simple and effective)
-        - Learning rate of 0.001
+        - Learning rate of 0.005
 
         Args:
             prefix: Prefix for parameter names (default: "")
@@ -292,10 +292,10 @@ class BaseMLPHeadEstimator:
         """
         return {
             prefix + "hidden_dims": [256, 128, 64],
-            prefix + "dropout": 0.1,
+            prefix + "dropout": 0.05,
             prefix + "batch_norm": True,
             prefix + "activation": "ReLU",
-            prefix + "lr": 0.001,
+            prefix + "lr": 0.005,
         }
 
 

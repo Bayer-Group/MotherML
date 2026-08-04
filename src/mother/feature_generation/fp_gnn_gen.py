@@ -17,7 +17,7 @@ def _check_chemprop() -> None:
     try:
         import chemprop  # noqa: F401
     except ImportError as import_error:
-        raise ExtrasDependencyImportError("gnn", import_error) from import_error
+        raise ExtrasDependencyImportError("chemeleon", import_error) from import_error
 
 
 def _default_chemeleon_embedder(
