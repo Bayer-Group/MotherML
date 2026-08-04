@@ -25,12 +25,12 @@ from mother.ml.models.m_randomForest import (
 from mother.optimization.core import MotherTuner
 from mother.pipeline_utils import get_feature_selection_pipeline, mother_cv
 
-# NODE ("node") and MLP/Flow heads ("heads") depend on non-standard optional
-# dependencies (skorch, torch, zuko) and are neural-network based. They are
-# covered separately in test_node_unit.py. Exclude them from the generic
+# NODE ("node") and the MLP/Flow heads ("mlp", "flow") depend on non-standard
+# optional dependencies (skorch, torch, zuko) and are neural-network based. They
+# are covered separately in test_node_unit.py. Exclude them from the generic
 # algorithm sweep here so these CV tests remain runnable without the optional
 # "node" extra installed.
-_OPTIONAL_DEP_ALGORITHMS = {"node", "heads"}
+_OPTIONAL_DEP_ALGORITHMS = {"node", "mlp", "flow"}
 STANDARD_ALGORITHMS = [a for a in get_available_algorithms() if a not in _OPTIONAL_DEP_ALGORITHMS]
 
 
