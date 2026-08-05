@@ -403,8 +403,8 @@ class MLPHeadRegressor(NeuralNetRegressor, BaseMLPHeadEstimator, AbstractMotherP
             module_key = f"module__{name}"
             if hasattr(self, module_key):
                 params[name] = getattr(self, module_key)
-        # Remove module__* parameters to avoid conflicts during sklearn cloning
-        params_to_remove: List[str] = [key for key in params.keys() if key.startswith("module__")]
+        # Remove only module__ parameters that are re-exposed as top-level args.
+        params_to_remove: List[str] = [f"module__{name}" for name in head_params]
         for key in params_to_remove:
             params.pop(key, None)
         params.pop("module", None)  # Also remove 'module' itself
@@ -700,8 +700,8 @@ class MLPHeadClassifier(NeuralNetClassifier, BaseMLPHeadEstimator, AbstractMothe
             module_key = f"module__{name}"
             if hasattr(self, module_key):
                 params[name] = getattr(self, module_key)
-        # Remove module__* parameters to avoid conflicts during sklearn cloning
-        params_to_remove: List[str] = [key for key in params.keys() if key.startswith("module__")]
+        # Remove only module__ parameters that are re-exposed as top-level args.
+        params_to_remove: List[str] = [f"module__{name}" for name in head_params]
         for key in params_to_remove:
             params.pop(key, None)
         params.pop("module", None)  # Also remove 'module' itself
@@ -787,8 +787,10 @@ class MLPHeadClassifier(NeuralNetClassifier, BaseMLPHeadEstimator, AbstractMothe
             return_quantiles: Not supported for MC-dropout heads. Quantiles are only
                 available for flow heads; passing True raises ``ValueError``.
             quantiles: Accepted for interface compatibility but unused.
-            uncertainty_for_opt: If True, return only ``knowledge_uncertainty`` as a
-                single-column DataFrame for optimisation (default False).
+            uncertainty_for_opt: If True, return a single-column DataFrame for
+                optimisation (default False): ``knowledge_uncertainty`` (epistemic)
+                when dropout is active, else ``total_uncertainty`` (aleatoric), which
+                is still meaningful with no dropout.
             num_samples: Number of MC Dropout forward passes (default 100).
             use_std: Unused for classification; kept for interface compatibility.
             **kwargs: Additional arguments (ignored).
@@ -800,8 +802,9 @@ class MLPHeadClassifier(NeuralNetClassifier, BaseMLPHeadEstimator, AbstractMothe
                   ``knowledge_uncertainty`` (mutual information, total - data),
                   ``data_uncertainty`` (mean per-pass entropy),
                   ``total_uncertainty`` (entropy of the mean probability).
-                - If ``uncertainty_for_opt=True``: single-column ``knowledge_uncertainty``
-                  DataFrame.
+                - If ``uncertainty_for_opt=True``: single-column DataFrame —
+                  ``knowledge_uncertainty`` when dropout is active, else
+                  ``total_uncertainty``.
 
         Raises:
             ValueError: If ``return_quantiles=True`` (quantiles require a flow head).
@@ -821,7 +824,8 @@ class MLPHeadClassifier(NeuralNetClassifier, BaseMLPHeadEstimator, AbstractMothe
 
         # With no active dropout every MC pass is identical, so the entropy terms
         # collapse and knowledge_uncertainty is 0. Warn rather than silently doing so.
-        if not any(isinstance(m, nn.Dropout) and m.p > 0 for m in self.module_.modules()):
+        has_active_dropout = any(isinstance(m, nn.Dropout) and m.p > 0 for m in self.module_.modules())
+        if not has_active_dropout:
             module_logger.warning(
                 "MLPHeadClassifier.predict_uncertainty called with no active dropout "
                 "(dropout=0): MC-dropout passes are identical, so knowledge_uncertainty "
@@ -924,8 +928,12 @@ class MLPHeadClassifier(NeuralNetClassifier, BaseMLPHeadEstimator, AbstractMothe
         )
 
         if uncertainty_for_opt:
+            # Epistemic (knowledge) uncertainty is the acquisition signal, but with no
+            # active dropout it is identically 0; fall back to total_uncertainty, which
+            # still carries the aleatoric/data uncertainty (matches RF/TabPFN).
+            opt_col = "knowledge_uncertainty" if has_active_dropout else "total_uncertainty"
             return pd.DataFrame(
-                {"knowledge_uncertainty": results["knowledge_uncertainty"]},
+                {opt_col: results[opt_col]},
                 index=index,
             )
 
