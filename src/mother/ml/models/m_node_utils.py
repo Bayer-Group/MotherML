@@ -264,7 +264,8 @@ class ModuleWithInit(nn.Module):
             self._is_initialized_bool = bool(self._is_initialized_tensor.item())
         if not self._is_initialized_bool:
             self.initialize(*args, **kwargs)
-            self._is_initialized_tensor.data[...] = 1
+            with torch.no_grad():
+                self._is_initialized_tensor.fill_(1)
             self._is_initialized_bool = True
         return super().__call__(*args, **kwargs)
 

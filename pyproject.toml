@@ -82,14 +82,9 @@ node = [
   "torch>=2.3.0,<3",
 ]
 
-### GNN fingerprints (Chemprop-based)
-gnn = [
-  "chemprop",
-]
-
-### CheMeleon fingerprints — same third-party deps as the ``gnn`` extra (both names install chemprop)
-chemeleon = [
-  "chemprop",
+### Chemprop-based fingerprints (CheMeleon/GNN)
+chemprop = [
+  "chemprop>=2.0,<3",
 ]
 
 
