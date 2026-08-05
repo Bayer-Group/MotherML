@@ -11,22 +11,27 @@ issues with PyTorch and multiprocessing.
 
 import numpy as np
 import pytest
-import torch
-import torch.nn as nn
 from sklearn.datasets import make_classification, make_regression
 from sklearn.metrics import accuracy_score, r2_score
 from sklearn.model_selection import KFold, train_test_split
 
+# Skip the entire module when the optional NODE dependencies (skorch/torch/zuko) are absent.
+pytest.importorskip("skorch")
+pytest.importorskip("torch")
+
+import torch  # noqa: E402
+import torch.nn as nn  # noqa: E402
+
 # Import NODE models
-from mother.ml.models.m_node import (
+from mother.ml.models.m_node import (  # noqa: E402
     CompletePyTorchTabularNODE,
     NODEClassifier,
     NODERegressor,
 )
-from mother.ml.models.m_node_utils import DenseODSTBlock
+from mother.ml.models.m_node_utils import DenseODSTBlock  # noqa: E402
 
 # Import mother tuner for hyperparameter optimization
-from mother.optimization import MotherTuner
+from mother.optimization import MotherTuner  # noqa: E402
 
 # Mark all tests in this module as serial and slow
 # - serial: avoid PyTorch multiprocessing issues
