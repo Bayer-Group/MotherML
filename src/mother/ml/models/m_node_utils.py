@@ -556,6 +556,8 @@ class ODST(ModuleWithInit):
         threshold_logits = (feature_values - self.feature_thresholds[tree_slice]) * torch.exp(
             -self.log_temperatures[tree_slice]
         )
+        # Bin functions are applied to symmetric logits [-t, t]. For entmoid15
+        # and sparsemoid this yields complementary probabilities that sum to 1.
         threshold_logits = torch.stack([-threshold_logits, threshold_logits], dim=-1)
 
         # Soft binary decisions
