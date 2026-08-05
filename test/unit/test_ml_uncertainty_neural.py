@@ -143,9 +143,9 @@ def test_flow_head_default_has_mlp_encoder_with_uncertainty():
     zuko = pytest.importorskip("zuko")  # noqa: F841
     X_train, X_test, y_train, _ = _regression_data()
 
-    # No mlp_* args -> default "auto" 2-layer encoder [256, 128] with 0.1 dropout.
+    # No mlp_* args -> default "auto" single-layer encoder [512] with 0.1 dropout.
     reg = FlowHeadRegressor(flow_type="NICE", max_epochs=6, lr=1e-2, device="cpu", verbose=0)
-    assert reg.get_params()["mlp_hidden_dims"] == [256, 128]
+    assert reg.get_params()["mlp_hidden_dims"] == [512]
     assert reg.get_params()["mlp_dropout"] == 0.1
 
     reg.fit(X_train, y_train)
@@ -166,7 +166,7 @@ def test_flow_head_mlp_dropout_uncertainty_decomposition():
         mlp_hidden_dims=[64, 32],
         mlp_dropout=0.1,
         mlp_activation="ReLU",
-        mlp_batch_norm=True,
+        mlp_norm="batch",
         max_epochs=6,
         lr=1e-2,
         device="cpu",
@@ -219,7 +219,7 @@ def test_flow_head_clone_preserves_architecture():
         "mlp_hidden_dims",
         "mlp_dropout",
         "mlp_activation",
-        "mlp_batch_norm",
+        "mlp_norm",
         "flow_type",
         "flow_bins",
         "input_dim",
@@ -232,16 +232,16 @@ def test_flow_head_clone_preserves_architecture():
 
     # Default "auto" encoder resolves to a concrete list that must survive cloning.
     default = FlowHeadRegressor()
-    assert default.get_params()["mlp_hidden_dims"] == [256, 128]
+    assert default.get_params()["mlp_hidden_dims"] == [512]
     assert snap(default) == snap(clone(default))
 
-    # Non-default architectures, including batch-norm off and the flow-alone opt-outs.
+    # Non-default architectures, including a non-batch norm and the flow-alone opt-outs.
     for kwargs in (
         dict(
             mlp_hidden_dims=[256, 128, 64],
             mlp_dropout=0.3,
             mlp_activation="GELU",
-            mlp_batch_norm=False,
+            mlp_norm="none",
             flow_type="NSF",
             flow_bins=12,
         ),
@@ -255,11 +255,11 @@ def test_flow_head_clone_preserves_architecture():
     # A cloned (unfitted) copy rebuilds the module with the cloned params.
     X_train, _, y_train, _ = _regression_data()
     reg = FlowHeadRegressor(
-        mlp_hidden_dims=[32, 16], mlp_dropout=0.1, mlp_batch_norm=False, max_epochs=3, device="cpu", verbose=0
+        mlp_hidden_dims=[32, 16], mlp_dropout=0.1, mlp_norm="none", max_epochs=3, device="cpu", verbose=0
     )
     cloned = clone(reg)
     cloned.fit(X_train, y_train)
     encoder_types = {m.__class__.__name__ for m in cloned.module_.encoder.modules()}
-    assert cloned.module_.mlp_batch_norm is False
+    assert cloned.module_.mlp_norm == "none"
     assert "BatchNorm1d" not in encoder_types
     assert "Dropout" in encoder_types

@@ -126,14 +126,16 @@ class FlowHead(nn.Module):
         mlp_dropout: Dropout rate applied inside the MLP encoder (default: 0.0).
             Only has an effect when ``mlp_hidden_dims`` is set. Must be > 0 to obtain
             knowledge (epistemic) uncertainty via MC-dropout.
-        mlp_activation: Activation for the MLP encoder (default: "ReLU"). One of
-            "ReLU", "GELU", "LeakyReLU", "ELU", "SiLU", "Tanh".
-        mlp_batch_norm: Whether to apply batch normalisation inside the MLP encoder
-            (default: True). Only has an effect when ``mlp_hidden_dims`` is set. The
-            encoder mirrors the standalone :class:`MLPHead` block layout
-            ``Linear -> BatchNorm -> activation -> Dropout`` so a flow head with an
-            MLP encoder is defined exactly like the standalone MLP head, just with the
-            normalising flow attached afterwards.
+        mlp_activation: Activation for the MLP encoder (default: "GELU"). One of
+            "ReLU", "GELU", "LeakyReLU", "ELU", "SiLU", "Tanh". GELU is a smooth
+            default that pairs well with the downstream normalising flow.
+        mlp_norm: Normalisation applied inside each MLP-encoder block (default:
+            "batch"). One of "batch" (BatchNorm1d), "layer" (LayerNorm) or "none".
+            Only has an effect when ``mlp_hidden_dims`` is set. The block layout is
+            ``Linear -> Norm -> activation -> Dropout``. "batch" mirrors the standalone
+            :class:`MLPHead`; prefer "layer" for wide pretrained-embedding inputs
+            (e.g. CheMeleon) or small / variable batch sizes, where BatchNorm running
+            statistics get noisy; "none" disables normalisation.
     """
 
     SUPPORTED_FLOW_TYPES = ("GMM", "NICE", "RealNVP", "NAF", "UNAF", "NSF", "BPF")
@@ -197,8 +199,8 @@ class FlowHead(nn.Module):
         flow_components: int = 8,
         mlp_hidden_dims: Optional[List[int]] = None,
         mlp_dropout: float = 0.0,
-        mlp_activation: str = "ReLU",
-        mlp_batch_norm: bool = True,
+        mlp_activation: str = "GELU",
+        mlp_norm: str = "batch",
     ) -> None:
         super().__init__()
         if zuko is None:  # pragma: no cover - exercised only when the optional dep is absent
@@ -217,16 +219,14 @@ class FlowHead(nn.Module):
         self.mlp_hidden_dims = list(mlp_hidden_dims) if mlp_hidden_dims else None
         self.mlp_dropout = mlp_dropout
         self.mlp_activation = mlp_activation
-        self.mlp_batch_norm = mlp_batch_norm
+        self.mlp_norm = mlp_norm
 
         # === OPTIONAL MLP ENCODER (conditioner) ===
         # When hidden dims are given, the flow is conditioned on an MLP embedding
         # instead of the raw input. Dropout layers inside this encoder are what make
         # MC-dropout epistemic uncertainty possible for the standalone flow head.
-        # The per-layer block layout (Linear -> BatchNorm -> activation -> Dropout)
-        # deliberately mirrors the standalone ``MLPHead`` so the MLP part of a flow
-        # head is defined exactly like the standalone MLP head, with the flow attached
-        # afterwards.
+        # The per-layer block layout (Linear -> Norm -> activation -> Dropout) mirrors
+        # the standalone ``MLPHead``; ``mlp_norm`` selects BatchNorm / LayerNorm / none.
         if self.mlp_hidden_dims:
 
             def _make_activation() -> nn.Module:
@@ -249,8 +249,12 @@ class FlowHead(nn.Module):
             prev_dim = input_dim
             for hidden_dim in self.mlp_hidden_dims:
                 encoder_layers.append(nn.Linear(prev_dim, hidden_dim))
-                if mlp_batch_norm:
+                if mlp_norm == "batch":
                     encoder_layers.append(nn.BatchNorm1d(hidden_dim))
+                elif mlp_norm == "layer":
+                    encoder_layers.append(nn.LayerNorm(hidden_dim))
+                elif mlp_norm != "none":
+                    raise ValueError(f"Unsupported mlp_norm: {mlp_norm!r}. Choose 'batch', 'layer' or 'none'.")
                 encoder_layers.append(_make_activation())
                 if mlp_dropout > 0:
                     encoder_layers.append(nn.Dropout(mlp_dropout))
@@ -437,9 +441,9 @@ class BaseFlowHeadEstimator:
             max_layers=4,
         )
         suggested_params[prefix + "mlp_hidden_dims"] = mlp_hidden_dims
-        suggested_params[prefix + "mlp_dropout"] = trial.suggest_float(prefix + "mlp_dropout", 0.0, 0.5, log=False)
-        suggested_params[prefix + "mlp_batch_norm"] = trial.suggest_categorical(
-            prefix + "mlp_batch_norm", (True, False)
+        suggested_params[prefix + "mlp_dropout"] = trial.suggest_float(prefix + "mlp_dropout", 0.0, 0.3, log=False)
+        suggested_params[prefix + "mlp_norm"] = trial.suggest_categorical(
+            prefix + "mlp_norm", ("batch", "layer", "none")
         )
         suggested_params[prefix + "mlp_activation"] = trial.suggest_categorical(
             prefix + "mlp_activation", ("ReLU", "GELU", "LeakyReLU")
@@ -462,7 +466,7 @@ class BaseFlowHeadEstimator:
         - NICE flow (fast default)
         - 3 transformation layers (good balance)
         - 8 spline bins (good balance for NSF)
-        - A 2-layer MLP encoder ``[256, 128]`` with 0.1 dropout before the flow
+        - A single-layer MLP encoder ``[512]`` with 0.1 dropout before the flow
         - Learning rate of 0.001
 
         Args:
@@ -474,7 +478,7 @@ class BaseFlowHeadEstimator:
         return {
             prefix + "flow_type": "NICE",
             prefix + "flow_transforms": 3,
-            prefix + "mlp_hidden_dims": [256, 128],
+            prefix + "mlp_hidden_dims": [512],
             prefix + "mlp_dropout": 0.1,
             prefix + "lr": 0.001,
         }
@@ -510,20 +514,23 @@ class FlowHeadRegressor(NeuralNetRegressor, BaseFlowHeadEstimator, AbstractMothe
         flow_signal: Hidden signal dimension for NAF/UNAF (default: 16)
         flow_components: Number of mixture components for GMM (default: 8)
         mlp_hidden_dims: Hidden sizes for the MLP encoder placed *before* the flow.
-            Default ``"auto"`` builds a reasonable 2-layer encoder ``[256, 128]`` so the
+            Default ``"auto"`` builds a single standard encoder layer ``[512]`` so the
             standalone flow head has an MLP trunk and (with ``mlp_dropout`` > 0) MC-dropout
             uncertainty out of the box. Pass an explicit list to control the layers, or
             ``None`` / ``[]`` to condition the flow directly on the raw input (flow-alone,
             aleatoric uncertainty only). When an MLP is used it is defined exactly like the
             standalone :class:`MLPHeadRegressor`
-            (``Linear -> BatchNorm -> activation -> Dropout`` per layer) with the flow
-            attached afterwards, and — together with ``mlp_dropout`` > 0 — unlocks the
+            (``Linear -> Norm -> activation -> Dropout`` per layer, ``Norm`` selected by
+            ``mlp_norm``) with the flow attached afterwards, and — together with
+            ``mlp_dropout`` > 0 — unlocks the
             same flow + MC-dropout uncertainty decomposition as the NODE flow head.
         mlp_dropout: Dropout rate for the MLP encoder (default: 0.1). Must be > 0 to
             obtain knowledge (epistemic) uncertainty via MC-dropout. Set to 0.0 for a
             deterministic encoder (aleatoric uncertainty only).
-        mlp_activation: Activation for the MLP encoder (default: "ReLU").
-        mlp_batch_norm: Whether to use batch norm in the MLP encoder (default: True).
+        mlp_activation: Activation for the MLP encoder (default: "GELU").
+        mlp_norm: Normalisation inside the MLP encoder: "batch", "layer" or "none"
+            (default: "batch"). Use "layer" for wide pretrained-embedding inputs
+            (e.g. CheMeleon) or small batches where BatchNorm statistics are noisy.
         max_epochs: Maximum training epochs (default: 100)
         lr: Learning rate (default: 0.001)
         **kwargs: Additional arguments passed to NeuralNetRegressor
@@ -534,7 +541,7 @@ class FlowHeadRegressor(NeuralNetRegressor, BaseFlowHeadEstimator, AbstractMothe
         >>> reg.fit(X_train, y_train)
         >>> predictions = reg.predict(X_test)  # Point predictions
         >>> samples = reg.predict_flow(X_test, num_samples=1000)  # Distribution
-        >>> # Default encoder ([256, 128], dropout 0.1) -> flow + MC-dropout uncertainties
+        >>> # Default encoder ([512], dropout 0.1) -> flow + MC-dropout uncertainties
         >>> results = reg.predict_uncertainty(X_test)  # knowledge + data uncertainty
         >>> # Opt out of the MLP encoder for a pure flow (aleatoric only)
         >>> reg = FlowHeadRegressor(input_dim=20, mlp_hidden_dims=None)
@@ -556,8 +563,8 @@ class FlowHeadRegressor(NeuralNetRegressor, BaseFlowHeadEstimator, AbstractMothe
         flow_components: int = 8,
         mlp_hidden_dims: Union[str, List[int], None] = "auto",
         mlp_dropout: float = 0.1,
-        mlp_activation: str = "ReLU",
-        mlp_batch_norm: bool = True,
+        mlp_activation: str = "GELU",
+        mlp_norm: str = "batch",
         max_epochs: int = 100,
         lr: float = 0.001,
         **kwargs: Any,
@@ -566,12 +573,16 @@ class FlowHeadRegressor(NeuralNetRegressor, BaseFlowHeadEstimator, AbstractMothe
         # Don't pass criterion as a method reference - Skorch will call it during forward
         # We'll override get_loss instead
 
-        # Resolve the "auto" architecture into a concrete, reasonable default encoder
-        # (2 hidden layers). None / [] keep the flow conditioned on the raw input.
+        # Resolve the "auto" architecture into a single standard encoder layer (width 512,
+        # a good match for wide pretrained embeddings such as ~2048-dim CheMeleon). One MLP
+        # layer gives the flow a learned conditioner (and, with dropout, MC-dropout
+        # uncertainty); HPO can still widen/deepen it. None / [] keep the flow conditioned on
+        # the raw input. Inside NODE the flow head is built without this encoder, since the
+        # NODE trunk already provides the feature layers.
         if isinstance(mlp_hidden_dims, str):
             if mlp_hidden_dims != "auto":
                 raise ValueError(f"mlp_hidden_dims string must be 'auto', got {mlp_hidden_dims!r}.")
-            mlp_hidden_dims = [256, 128]
+            mlp_hidden_dims = [512]
 
         # ── Sensible training defaults ──────────────────────────────────
         # AdamW provides proper weight-decay decoupling for better generalisation
@@ -612,7 +623,7 @@ class FlowHeadRegressor(NeuralNetRegressor, BaseFlowHeadEstimator, AbstractMothe
             module__mlp_hidden_dims=mlp_hidden_dims,
             module__mlp_dropout=mlp_dropout,
             module__mlp_activation=mlp_activation,
-            module__mlp_batch_norm=mlp_batch_norm,
+            module__mlp_norm=mlp_norm,
             max_epochs=max_epochs,
             lr=lr,
             **kwargs,
@@ -637,7 +648,7 @@ class FlowHeadRegressor(NeuralNetRegressor, BaseFlowHeadEstimator, AbstractMothe
             "mlp_hidden_dims",
             "mlp_dropout",
             "mlp_activation",
-            "mlp_batch_norm",
+            "mlp_norm",
         ]
         for name in head_params:
             module_key = f"module__{name}"
@@ -665,7 +676,7 @@ class FlowHeadRegressor(NeuralNetRegressor, BaseFlowHeadEstimator, AbstractMothe
             "mlp_hidden_dims",
             "mlp_dropout",
             "mlp_activation",
-            "mlp_batch_norm",
+            "mlp_norm",
         ]
 
         # For each head parameter being set, also set the module__ version
