@@ -85,6 +85,8 @@ class MLPHead(nn.Module):
         hidden_dims: List of hidden layer sizes [512, 256, ...]
         dropout: Dropout rate for regularization (default: 0.1)
         activation: Activation function name - "ReLU", "GELU", or "LeakyReLU" (default: "ReLU")
+        norm: Normalisation in each hidden block - "batch" (BatchNorm1d), "layer"
+            (LayerNorm) or "none" (default: "batch").
     """
 
     def __init__(
@@ -94,7 +96,7 @@ class MLPHead(nn.Module):
         hidden_dims: List[int],
         dropout: float = 0.1,
         activation: str = "ReLU",
-        batch_norm: bool = True,
+        norm: str = "batch",
     ) -> None:
         super().__init__()
         self.input_dim = input_dim
@@ -102,7 +104,7 @@ class MLPHead(nn.Module):
         self.hidden_dims = hidden_dims
         self.dropout = dropout
         self.activation_name = activation
-        self.batch_norm = batch_norm
+        self.norm = norm
 
         # === ACTIVATION FUNCTION FACTORY ===
         def _make_activation() -> nn.Module:
@@ -120,9 +122,9 @@ class MLPHead(nn.Module):
                 raise ValueError(f"Unsupported activation: {activation}")
 
         # === MLP LAYER CONSTRUCTION ===
-        # Architecture: Input → [Linear → BatchNorm → Activation → Dropout]* → Linear → Output
-        # Each hidden block uses batch normalization for stable training and
-        # a fresh activation instance (required for nn.Sequential).
+        # Architecture: Input → [Linear → Norm → Activation → Dropout]* → Linear → Output
+        # ``norm`` selects BatchNorm / LayerNorm / none; a fresh activation instance is
+        # created per block (required for nn.Sequential).
         layers = []
         dims = [input_dim] + hidden_dims + [output_dim]
 
@@ -130,8 +132,12 @@ class MLPHead(nn.Module):
             layers.append(nn.Linear(dims[i], dims[i + 1]))
 
             if i < len(dims) - 2:  # Hidden layer (not final output)
-                if batch_norm:
+                if norm == "batch":
                     layers.append(nn.BatchNorm1d(dims[i + 1]))
+                elif norm == "layer":
+                    layers.append(nn.LayerNorm(dims[i + 1]))
+                elif norm != "none":
+                    raise ValueError(f"Unsupported norm: {norm!r}. Choose 'batch', 'layer' or 'none'.")
                 layers.append(_make_activation())
                 if dropout > 0:
                     layers.append(nn.Dropout(dropout))
@@ -253,9 +259,9 @@ class BaseMLPHeadEstimator:
         # Higher = more regularization but may hurt learning
         suggested_params[prefix + "dropout"] = trial.suggest_float(prefix + "dropout", 0.0, 0.5, log=False)
 
-        # Batch normalization between hidden layers
-        # Stabilizes training and often improves generalization
-        suggested_params[prefix + "batch_norm"] = trial.suggest_categorical(prefix + "batch_norm", (True, False))
+        # Normalisation in each hidden block: BatchNorm, LayerNorm or none.
+        # LayerNorm suits wide pretrained embeddings / small batches; BatchNorm the rest.
+        suggested_params[prefix + "norm"] = trial.suggest_categorical(prefix + "norm", ("batch", "layer", "none"))
 
         # === ACTIVATION FUNCTION ===
 
@@ -282,10 +288,11 @@ class BaseMLPHeadEstimator:
         Return default hyperparameters for MLP head.
 
         These defaults mirror the estimator constructor baselines:
-        - 3-layer funnel architecture [256, 128, 64]
+        - 3-layer funnel architecture [512, 256, 128] (wide first layer for
+          high-dimensional pretrained embeddings, e.g. CheMeleon)
         - 5% dropout for regularization
-        - Batch normalization enabled
-        - ReLU activation (simple and effective)
+        - Batch normalisation (``norm="batch"``; tune "layer" / "none")
+        - GELU activation (smooth; pairs well with foundation embeddings)
         - Learning rate of 0.005
 
         Args:
@@ -295,10 +302,10 @@ class BaseMLPHeadEstimator:
             Dictionary of default parameters
         """
         return {
-            prefix + "hidden_dims": [256, 128, 64],
+            prefix + "hidden_dims": [512, 256, 128],
             prefix + "dropout": 0.05,
-            prefix + "batch_norm": True,
-            prefix + "activation": "ReLU",
+            prefix + "norm": "batch",
+            prefix + "activation": "GELU",
             prefix + "lr": 0.005,
         }
 
@@ -320,9 +327,13 @@ class MLPHeadRegressor(NeuralNetRegressor, BaseMLPHeadEstimator, AbstractMotherP
     Args:
         input_dim: Input feature dimension (required)
         output_dim: Output dimension (default: 1 for single-target regression)
-        hidden_dims: List of hidden layer sizes (default: [256, 128, 64])
+        hidden_dims: List of hidden layer sizes (default: [512, 256, 128], a wide
+            funnel suited to high-dimensional pretrained embeddings such as CheMeleon)
         dropout: Dropout rate (default: 0.05)
-        activation: Activation function name (default: "ReLU")
+        activation: Activation function name (default: "GELU")
+        norm: Normalisation per hidden block: "batch", "layer" or "none" (default:
+            "batch"). Use "layer" for wide pretrained-embedding inputs (e.g. CheMeleon)
+            or small batches where BatchNorm statistics are noisy.
         max_epochs: Maximum training epochs (default: 500)
         lr: Learning rate (default: 0.005)
         **kwargs: Additional arguments passed to NeuralNetRegressor.
@@ -342,15 +353,15 @@ class MLPHeadRegressor(NeuralNetRegressor, BaseMLPHeadEstimator, AbstractMotherP
         output_dim: int = 1,  # Placeholder - automatically detected from data
         hidden_dims: Union[List[int], None] = None,
         dropout: float = 0.05,
-        batch_norm: bool = True,
-        activation: str = "ReLU",
+        norm: str = "batch",
+        activation: str = "GELU",
         max_epochs: int = 500,
         lr: float = 0.005,
         **kwargs: Any,
     ) -> None:
         # Set defaults
         if hidden_dims is None:
-            hidden_dims = [256, 128, 64]
+            hidden_dims = [512, 256, 128]
 
         # ── Sensible training defaults ──────────────────────────────────
         # AdamW provides proper weight-decay decoupling for better generalisation
@@ -384,7 +395,7 @@ class MLPHeadRegressor(NeuralNetRegressor, BaseMLPHeadEstimator, AbstractMotherP
             module__output_dim=output_dim,
             module__hidden_dims=hidden_dims,
             module__dropout=dropout,
-            module__batch_norm=batch_norm,
+            module__norm=norm,
             module__activation=activation,
             max_epochs=max_epochs,
             lr=lr,
@@ -398,7 +409,7 @@ class MLPHeadRegressor(NeuralNetRegressor, BaseMLPHeadEstimator, AbstractMotherP
         # Re-expose module__<head_param> as bare constructor arguments so that
         # sklearn.clone() (which rebuilds via __class__(**get_params())) preserves the
         # head configuration instead of silently reverting to constructor defaults.
-        head_params: List[str] = ["input_dim", "output_dim", "hidden_dims", "dropout", "batch_norm", "activation"]
+        head_params: List[str] = ["input_dim", "output_dim", "hidden_dims", "dropout", "norm", "activation"]
         for name in head_params:
             module_key = f"module__{name}"
             if hasattr(self, module_key):
@@ -413,7 +424,7 @@ class MLPHeadRegressor(NeuralNetRegressor, BaseMLPHeadEstimator, AbstractMotherP
     def set_params(self, **params: Any) -> "MLPHeadRegressor":
         """Set parameters, implementing AbstractMotherPipeline requirement with proper MRO."""
         # List of MLP Head parameters that need to be synced to module
-        head_params: List[str] = ["input_dim", "output_dim", "hidden_dims", "dropout", "batch_norm", "activation"]
+        head_params: List[str] = ["input_dim", "output_dim", "hidden_dims", "dropout", "norm", "activation"]
 
         # For each head parameter being set, also set the module__ version
         # and remove the bare name so that skorch doesn't reject it.
@@ -613,9 +624,13 @@ class MLPHeadClassifier(NeuralNetClassifier, BaseMLPHeadEstimator, AbstractMothe
     Args:
         input_dim: Input feature dimension (required)
         output_dim: Number of classes (required)
-        hidden_dims: List of hidden layer sizes (default: [256, 128, 64])
+        hidden_dims: List of hidden layer sizes (default: [512, 256, 128], a wide
+            funnel suited to high-dimensional pretrained embeddings such as CheMeleon)
         dropout: Dropout rate (default: 0.05)
-        activation: Activation function name (default: "ReLU")
+        activation: Activation function name (default: "GELU")
+        norm: Normalisation per hidden block: "batch", "layer" or "none" (default:
+            "batch"). Use "layer" for wide pretrained-embedding inputs (e.g. CheMeleon)
+            or small batches where BatchNorm statistics are noisy.
         max_epochs: Maximum training epochs (default: 500)
         lr: Learning rate (default: 0.005)
         **kwargs: Additional arguments passed to NeuralNetClassifier.
@@ -636,15 +651,15 @@ class MLPHeadClassifier(NeuralNetClassifier, BaseMLPHeadEstimator, AbstractMothe
         output_dim: int = 1,  # Placeholder - automatically detected from data
         hidden_dims: Union[List[int], None] = None,
         dropout: float = 0.05,
-        batch_norm: bool = True,
-        activation: str = "ReLU",
+        norm: str = "batch",
+        activation: str = "GELU",
         max_epochs: int = 500,
         lr: float = 0.005,
         **kwargs: Any,
     ) -> None:
         # Set defaults
         if hidden_dims is None:
-            hidden_dims = [256, 128, 64]
+            hidden_dims = [512, 256, 128]
 
         # ── Sensible training defaults ──────────────────────────────────────
         # AdamW provides proper weight-decay decoupling for better generalisation
@@ -681,7 +696,7 @@ class MLPHeadClassifier(NeuralNetClassifier, BaseMLPHeadEstimator, AbstractMothe
             module__output_dim=output_dim,
             module__hidden_dims=hidden_dims,
             module__dropout=dropout,
-            module__batch_norm=batch_norm,
+            module__norm=norm,
             module__activation=activation,
             max_epochs=max_epochs,
             lr=lr,
@@ -695,7 +710,7 @@ class MLPHeadClassifier(NeuralNetClassifier, BaseMLPHeadEstimator, AbstractMothe
         # Re-expose module__<head_param> as bare constructor arguments so that
         # sklearn.clone() (which rebuilds via __class__(**get_params())) preserves the
         # head configuration instead of silently reverting to constructor defaults.
-        head_params: List[str] = ["input_dim", "output_dim", "hidden_dims", "dropout", "batch_norm", "activation"]
+        head_params: List[str] = ["input_dim", "output_dim", "hidden_dims", "dropout", "norm", "activation"]
         for name in head_params:
             module_key = f"module__{name}"
             if hasattr(self, module_key):
@@ -710,7 +725,7 @@ class MLPHeadClassifier(NeuralNetClassifier, BaseMLPHeadEstimator, AbstractMothe
     def set_params(self, **params: Any) -> "MLPHeadClassifier":
         """Set parameters, implementing AbstractMotherPipeline requirement with proper MRO."""
         # List of MLP Head parameters that need to be synced to module
-        head_params: List[str] = ["input_dim", "output_dim", "hidden_dims", "dropout", "batch_norm", "activation"]
+        head_params: List[str] = ["input_dim", "output_dim", "hidden_dims", "dropout", "norm", "activation"]
 
         # For each head parameter being set, also set the module__ version
         # and remove the bare name so that skorch doesn't reject it.
