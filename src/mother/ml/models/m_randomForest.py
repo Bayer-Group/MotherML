@@ -204,7 +204,7 @@ class RandomForestRegressorMother(RandomForestQuantileRegressor, _RandomForestMo
             "min_samples_leaf": trial.suggest_int(name=prefix + "min_samples_leaf", low=1, high=5, step=1),
         }
 
-        choices = ["squared_error", "absolute_error", "friedman_mse", "poisson"]
+        choices = ["squared_error", "absolute_error", "poisson"]
         if np.any(y < 0):
             module_logger.debug("Target is not strictly non-negative, removing 'poisson' from criterion choices")
             choices.remove("poisson")

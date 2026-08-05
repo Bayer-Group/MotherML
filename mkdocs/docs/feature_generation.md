@@ -11,11 +11,12 @@ The **Mother** framework provides tools to automate feature generation:
 1. **Descriptors**
     - Numerical values summarizing molecular properties (e.g., Molecular weight, LogP (hydrophobicity), number of rotatable bonds, topological polar surface area).
     - Mother supports all descriptors provided by [rdkit.Chem.Descriptors](https://www.rdkit.org/docs/source/rdkit.Chem.Descriptors.html). You can check the full list of available descriptors:
-    ```python
-    from rdkit.Chem import Descriptors
-    for k, v in Descriptors.descList:
-        print(k)
-    ```
+```python
+from rdkit.Chem import Descriptors
+
+for k, v in Descriptors.descList:
+    print(k)
+```
 
 
 2. **Fingerprints**
@@ -39,21 +40,24 @@ The **Mother** framework provides tools to automate feature generation:
 
     The `use_counts` parameter is available on both `FingerprintsGeneric` and the `MorganFingerprints` convenience class:
 
-    ```python
-    from mother.feature_generation import FingerprintsGeneric, MorganFingerprints
+```python
+from rdkit import Chem
+from mother.feature_generation import FingerprintsGeneric, MorganFingerprints
 
-    # Count-based Morgan fingerprints via the convenience class
-    morgan_counts = MorganFingerprints(radius=2, fpSize=1024, use_counts=True)
-    features = morgan_counts.fit_transform(molecule_objects)
+molecule_objects = [Chem.MolFromSmiles(smi) for smi in ["CCO", "CCN", "c1ccccc1"]]
 
-    # Count-based fingerprints via the generic class (works with any supported fp_type)
-    fp_counts = FingerprintsGeneric(
-        fp_type="AtomPairFP",
-        parameters={"fpSize": 2048},
-        use_counts=True,
-    )
-    features = fp_counts.fit_transform(molecule_objects)
-    ```
+# Count-based Morgan fingerprints via the convenience class
+morgan_counts = MorganFingerprints(radius=2, fpSize=1024, use_counts=True)
+features = morgan_counts.fit_transform(molecule_objects)
+
+# Count-based fingerprints via the generic class (works with any supported fp_type)
+fp_counts = FingerprintsGeneric(
+    fp_type="AtomPairFP",
+    parameters={"fpSize": 2048},
+    use_counts=True,
+)
+features = fp_counts.fit_transform(molecule_objects)
+```
 
     !!! note
         `use_counts` is a standard scikit-learn parameter — it is preserved through `set_params()`, `get_params()`, and `sklearn.base.clone()`.
@@ -77,11 +81,14 @@ You can combine multiple feature generators using scikit-learn’s `FeatureUnion
 
 ```python
 from sklearn.pipeline import FeatureUnion
-from mother.feature_generation import ChemicalDescriptors, MorganFingerprint
+from rdkit import Chem
+from mother.feature_generation import ChemicalDescriptors, MorganFingerprints
+
+molecule_objects = [Chem.MolFromSmiles(smi) for smi in ["CCO", "CCN", "c1ccccc1"]]
 
 feature_generator = FeatureUnion([
     ("descriptors", ChemicalDescriptors(descriptor_list=["MolWt", "MolLogP"])),
-    ("morgan_fp", MorganFingerprint(radius=2, n_bits=1024))
+    ("morgan_fp", MorganFingerprints(radius=2, fpSize=1024)),
 ])
 features = feature_generator.fit_transform(molecule_objects)
 ```

@@ -45,7 +45,7 @@ extras_to_check = {
     'torch': 'torch',
     'rna': 'anndata',
     'report': 'seaborn',
-    'clustering': 'hdbscan',
+    'clustering': 'kmedoids',
     'uncertainty': 'quantile_forest',
 }
 

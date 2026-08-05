@@ -86,16 +86,37 @@ Let’s walk through a simple example:
 4. **Model Training**: Train a regression model to predict solubility.
 
 ```python
+import pandas as pd
 from sklearn import pipeline as sklearn_pipeline
 from mother.preprocessing import SmilesToMolTransformer, StandardizerTransformer
 from mother.feature_generation import ChemicalDescriptors
 from mother.ml import CatboostRegressorMother
 
+smiles_data = pd.DataFrame(
+  {
+    "smiles": [
+      "CCO",
+      "CCN",
+      "c1ccccc1",
+      "CC(=O)O",
+      "CC(C)O",
+      "CCCC",
+    ]
+  }
+)
+target = pd.Series([0.2, 0.4, 0.7, 1.1, 1.5, 2.0], name="solubility")
+
 # Preprocessing pipeline
 preprocessor = sklearn_pipeline.Pipeline([
-    ("standardizer", StandardizerTransformer(flags=["STANDARDIZE", "DESALT", "NEUTRALIZE"])),
-    ("smiles_to_mol", SmilesToMolTransformer())
-])
+  (
+    "standardizer",
+    StandardizerTransformer(
+      flags=["STANDARDIZE", "DESALT", "NEUTRALIZE"],
+      smiles_col="smiles",
+    ),
+  ),
+  ("smiles_to_mol", SmilesToMolTransformer(molecule_col="Molecule"))
+]).set_output(transform="pandas")
 
 # Feature generation
 feature_generator = sklearn_pipeline.FeatureUnion([
@@ -103,13 +124,21 @@ feature_generator = sklearn_pipeline.FeatureUnion([
 ])
 
 regression_model = sklearn_pipeline.Pipeline([
-    ("regressor", CatboostRegressorMother(target_type="single_target", logging_level="Silent")),
+  (
+    "regressor",
+    CatboostRegressorMother(
+      target_type="single_target",
+      logging_level="Silent",
+      random_seed=42,
+      iterations=10,
+    ),
+  ),
     ]
 )
 
 # Example workflow
 mol_data = preprocessor.fit_transform(smiles_data)
-features = feature_generator.fit_transform(mol_data)
+features = feature_generator.fit_transform(mol_data["Molecule"])
 
 # fit the model to data
 regression_model.fit(features, target)

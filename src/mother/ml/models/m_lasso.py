@@ -1,5 +1,5 @@
 import logging
-from typing import Literal, Mapping, Optional, Union
+from typing import Mapping, Optional, Union
 
 from optuna.trial import Trial
 from sklearn.linear_model import Lasso, LogisticRegression
@@ -70,7 +70,6 @@ class LassoClassifierBinaryMother(LogisticRegression, AbstractMotherPipeline):
 
     def __init__(
         self,
-        penalty: Literal["l1"] = "l1",  # Lasso uses L1 penalty
         *,
         dual: bool = False,
         tol: float = 0.0001,
@@ -79,14 +78,17 @@ class LassoClassifierBinaryMother(LogisticRegression, AbstractMotherPipeline):
         intercept_scaling: float = 1,
         class_weight: Optional[Union[Mapping, str]] = "balanced",
         random_state: int = 42,
-        solver: str = "liblinear",  # 'liblinear' can be used for L1 penalty and is less complex
+        solver: str = "liblinear",  # liblinear supports pure L1 (l1_ratio=1)
         max_iter: int = 3000,
         verbose: int = 0,
         warm_start: bool = False,
         n_jobs: Optional[int] = None,
     ) -> None:
+        # l1_ratio=1: pure L1 regularisation via the sklearn ≥1.8 API.
+        # penalty='l1' was deprecated in sklearn 1.8 and will be removed in 1.10;
+        # l1_ratio=1 is the replacement (analogous to LogisticRegressionCV).
         super().__init__(
-            penalty,
+            l1_ratio=1,
             dual=dual,
             tol=tol,
             C=C,
