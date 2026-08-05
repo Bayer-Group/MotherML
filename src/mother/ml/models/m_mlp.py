@@ -249,6 +249,7 @@ class BaseMLPHeadEstimator:
             layers_key=prefix + "num_hidden_layers",
             width_key=prefix + "hidden_dim_1",
             max_layers=4,
+            shape_key=prefix + "hidden_shape",
         )
         suggested_params[prefix + "hidden_dims"] = hidden_dims
 
@@ -758,7 +759,14 @@ class MLPHeadClassifier(NeuralNetClassifier, BaseMLPHeadEstimator, AbstractMothe
         """
         if isinstance(X, np.ndarray) and X.dtype == np.float64:
             X = X.astype(np.float32)
-        if y is not None and isinstance(y, np.ndarray):
+        if y is not None:
+            # Normalise pandas / array-like targets to a NumPy array first so the
+            # criterion-based dtype rules below apply regardless of input container.
+            if isinstance(y, (pd.Series, pd.DataFrame)):
+                y = y.to_numpy()
+            elif not isinstance(y, np.ndarray):
+                y = np.asarray(y)
+
             criterion_obj = getattr(self, "criterion", nn.CrossEntropyLoss)
             criterion_cls = criterion_obj if isinstance(criterion_obj, type) else type(criterion_obj)
             if issubclass(criterion_cls, nn.BCELoss) and not issubclass(criterion_cls, nn.BCEWithLogitsLoss):
@@ -767,14 +775,12 @@ class MLPHeadClassifier(NeuralNetClassifier, BaseMLPHeadEstimator, AbstractMothe
                     "Use nn.BCEWithLogitsLoss instead."
                 )
 
-            use_float_targets = issubclass(criterion_cls, nn.BCEWithLogitsLoss)
-
-            if use_float_targets:
+            # BCEWithLogitsLoss expects float targets; CrossEntropyLoss expects int64 class indices.
+            if issubclass(criterion_cls, nn.BCEWithLogitsLoss):
                 if not np.issubdtype(y.dtype, np.floating) or y.dtype == np.float64:
                     y = y.astype(np.float32)
-            else:
-                if not np.issubdtype(y.dtype, np.int64):
-                    y = y.astype(np.int64)
+            elif not np.issubdtype(y.dtype, np.int64):
+                y = y.astype(np.int64)
         return super().fit(X, y, **fit_params)
 
     def predict_uncertainty(

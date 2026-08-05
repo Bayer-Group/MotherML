@@ -55,7 +55,7 @@ from mother.ml.models.m_head_utils import (
     DEFAULT_QUANTILES,
     DimensionSetter,
     _prepare_for_dataframe,
-    _suggest_adaptive_hidden_dims,
+    _suggest_adaptive_width,
     compute_flow_mode_and_uncertainty,
 )
 
@@ -423,24 +423,18 @@ class BaseFlowHeadEstimator:
         if selected_flow_type == "BPF":
             suggested_params[prefix + "flow_degree"] = trial.suggest_int(prefix + "flow_degree", 8, 32)
 
-        # === MLP ENCODER (conditioner placed BEFORE the flow) ===
-        # The MLP trunk gives the flow richer conditioning features and — with
-        # dropout — provides MC-dropout epistemic uncertainty. It is tuned with the
-        # SAME search space as the standalone MLP head (shared adaptive-sizing helper
-        # plus dropout / activation / batch-norm), so the two are fully aligned.
+        # === MLP ENCODER (single conditioner layer placed BEFORE the flow) ===
+        # The flow head keeps its conditioner deliberately simple: a single MLP layer
+        # (see FlowHead default). Tuning only adjusts that layer's width; dropout /
+        # activation / norm are tuned like the MLP head. Depth and shape are intentionally
+        # not searched here so the flow stays simple.
         if isinstance(X, pd.DataFrame):
             input_dim = X.shape[1]
         else:
             input_dim = X.shape[1] if hasattr(X, "shape") else len(X[0])
 
-        mlp_hidden_dims = _suggest_adaptive_hidden_dims(
-            trial,
-            input_dim,
-            layers_key=prefix + "mlp_num_layers",
-            width_key=prefix + "mlp_hidden_dim_1",
-            max_layers=4,
-        )
-        suggested_params[prefix + "mlp_hidden_dims"] = mlp_hidden_dims
+        mlp_width = _suggest_adaptive_width(trial, input_dim, width_key=prefix + "mlp_hidden_dim_1")
+        suggested_params[prefix + "mlp_hidden_dims"] = [mlp_width]
         suggested_params[prefix + "mlp_dropout"] = trial.suggest_float(prefix + "mlp_dropout", 0.0, 0.3, log=False)
         suggested_params[prefix + "mlp_norm"] = trial.suggest_categorical(
             prefix + "mlp_norm", ("batch", "layer", "none")

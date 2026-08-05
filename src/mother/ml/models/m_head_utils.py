@@ -7,7 +7,7 @@ auto-detection, dataframe formatting, adaptive MLP sizing, and flow mode /
 uncertainty computation.
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import numpy.typing as npt
@@ -191,6 +191,22 @@ class DimensionSetter(Callback):
                 net.initialize()
 
 
+def _suggest_adaptive_width(trial: Trial, input_dim: int, *, width_key: str) -> int:
+    """Suggest a single input-adaptive hidden-layer width.
+
+    Width is sampled log-uniformly in ``[max(64, input_dim // 8), input_dim * 2]``. The
+    low floor lets tuning reach compact, ChemProp-style readouts (e.g. ~300 for a
+    2048-dim foundation embedding such as CheMeleon); the wide ceiling keeps
+    over-parameterised heads reachable. Log scale puts finer granularity on the small
+    widths that tend to win on frozen embeddings while still spanning to the ceiling.
+    Shared by the multi-layer funnel/constant helper and single-layer heads (e.g. the
+    flow head's one-layer MLP conditioner).
+    """
+    min_hidden = max(64, input_dim // 8)
+    max_hidden = max(min_hidden, input_dim * 2)
+    return trial.suggest_int(width_key, min_hidden, max_hidden, log=True)
+
+
 def _suggest_adaptive_hidden_dims(
     trial: Trial,
     input_dim: int,
@@ -198,42 +214,49 @@ def _suggest_adaptive_hidden_dims(
     layers_key: str,
     width_key: str,
     max_layers: int = 4,
+    shape_key: Optional[str] = None,
 ) -> List[int]:
-    """Suggest an input-adaptive funnel MLP architecture.
+    """Suggest an input-adaptive MLP architecture.
 
     Shared by the standalone MLP head (``BaseMLPHeadEstimator``) and the flow head's
     MLP trunk (``BaseFlowHeadEstimator``) so both size their hidden layers identically:
 
     - **depth** ``[1, max_layers]`` (``layers_key``);
-    - **first-layer width** scaled to the input dimension (``width_key``): from
-      ``max(64, input_dim // 2)`` up to ``input_dim * 2``, step-aligned so Optuna
-      only proposes reachable values;
-    - **funnel**: each subsequent layer halves the previous width, floored at 32.
+    - **first-layer width** log-uniform in ``[max(64, input_dim // 8), input_dim * 2]``
+      (``width_key``), via :func:`_suggest_adaptive_width`;
+    - **shape** (``shape_key``, optional): ``"funnel"`` halves each subsequent layer
+      (floored at 32); ``"constant"`` keeps every layer at the first-layer width. When
+      ``shape_key`` is ``None`` the architecture is always a funnel (backwards compatible).
+
+    Constant width mirrors the ChemProp / foundation-embedding readout convention and
+    often fits wide pretrained embeddings (e.g. CheMeleon) better than a funnel; offering
+    both lets tuning pick per dataset. It is a single independent categorical, so no
+    nested/conditional search space is introduced.
 
     Args:
-        trial: Optuna trial used to suggest the depth and first-layer width.
+        trial: Optuna trial used to suggest the depth, first-layer width and shape.
         input_dim: Number of input features (drives the width scaling).
         layers_key: Full trial parameter name for the number of hidden layers.
         width_key: Full trial parameter name for the first hidden-layer width.
         max_layers: Maximum number of hidden layers (default 4).
+        shape_key: Optional trial parameter name for the funnel/constant choice. When
+            omitted, a funnel is always used (no extra hyperparameter is sampled).
 
     Returns:
-        The list of hidden-layer sizes (the funnel architecture).
+        The list of hidden-layer sizes.
     """
     num_layers = trial.suggest_int(layers_key, 1, max_layers, log=False)
 
-    # First hidden layer scaled to the data with a generous floor so small
-    # datasets still get a usable trunk.
-    min_hidden = max(64, input_dim // 2)
-    max_hidden = max(min_hidden, input_dim * 2)
-    step = max(32, input_dim // 16)
-    # Ensure max_hidden is reachable from min_hidden with the chosen step.
-    max_hidden = min_hidden + ((max_hidden - min_hidden) // step) * step
+    first_hidden = _suggest_adaptive_width(trial, input_dim, width_key=width_key)
 
-    first_hidden = trial.suggest_int(width_key, min_hidden, max_hidden, step=step, log=False)
+    # Shape: "funnel" halves each subsequent layer (floored at 32); "constant" keeps the
+    # first-layer width. Only sampled when shape_key is given, and as a single independent
+    # categorical so Optuna never sees a nested/conditional space.
+    shape = "funnel"
+    if shape_key is not None:
+        shape = trial.suggest_categorical(shape_key, ("funnel", "constant"))
 
-    # Funnel: each subsequent layer halves the previous width (floored at 32).
     hidden_dims = [first_hidden]
     for i in range(1, num_layers):
-        hidden_dims.append(max(32, first_hidden // (2**i)))
+        hidden_dims.append(first_hidden if shape == "constant" else max(32, first_hidden // (2**i)))
     return hidden_dims
