@@ -33,6 +33,11 @@ warnings.filterwarnings("ignore")
 
 # ── mother / sklearn imports first (avoids torchmetrics/lightning conflict) ──
 import pandas as pd
+
+# ── chemprop (after mother) ───────────────────────────────────────────────────
+from chemprop import models as cp_models
+from chemprop import nn as cnn
+from chemprop.data import MoleculeDatapoint, MoleculeDataset, collate_batch
 from sklearn.linear_model import Lasso
 from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_error
 from sklearn.model_selection import train_test_split
@@ -41,12 +46,6 @@ from sklearn.preprocessing import StandardScaler
 from mother.ml.models.m_flow import FlowHeadRegressor
 from mother.ml.models.m_mlp import MLPHeadRegressor
 from mother.ml.models.m_node import NODERegressor
-
-# ── chemprop (after mother) ───────────────────────────────────────────────────
-from chemprop import models as cp_models
-from chemprop import nn as cnn
-from chemprop.data import MoleculeDatapoint, MoleculeDataset, collate_batch
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
