@@ -1101,18 +1101,40 @@ class FlowHeadRegressor(NeuralNetRegressor, BaseFlowHeadEstimator, AbstractMothe
 
         X_tensor = self._to_input_tensor(X)
 
-        # Quantiles are sampled from the (dropout-off) conditional flow p(y|x), matching
-        # the NODE flow head convention of drawing quantiles from a single eval() pass.
+        # When MC-dropout is active, pool samples across passes so quantiles reflect
+        # total uncertainty (epistemic + aleatoric); otherwise aleatoric only.
         quantile_predictions = None
         if return_quantiles:
-            self.module_.eval()
-            with torch.no_grad():
-                dist = self.module_(X_tensor)
-                samples = dist.sample(torch.Size([num_samples]))  # (num_samples, N, output_dim)
-                q_stack = torch.stack([torch.quantile(samples, q, dim=0) for q in quantiles], dim=1)
+            if self._flow_has_mc_dropout():
+                n_mc = max(5, num_samples // 20)
+                n_flow_per_pass = max(10, num_samples // n_mc)
+                _model = self.module_
+                _model.eval()
+                for _m in _model.modules():
+                    if isinstance(_m, nn.Dropout):
+                        _m.train()
+                _pooled: list = []
+                try:
+                    with torch.no_grad():
+                        for _ in range(n_mc):
+                            dist = _model(X_tensor)
+                            _pooled.append(dist.sample(torch.Size([n_flow_per_pass])))  # (S, N, D)
+                finally:
+                    _model.eval()
+                pooled = torch.cat(_pooled, dim=0)  # (T*S, N, D)
+                q_stack = torch.stack([torch.quantile(pooled, q, dim=0) for q in quantiles], dim=1)
                 quantile_predictions = q_stack.cpu().numpy()
                 if quantile_predictions.shape[2] == 1:
                     quantile_predictions = quantile_predictions.squeeze(axis=2)
+            else:
+                self.module_.eval()
+                with torch.no_grad():
+                    dist = self.module_(X_tensor)
+                    samples = dist.sample(torch.Size([num_samples]))  # (num_samples, N, output_dim)
+                    q_stack = torch.stack([torch.quantile(samples, q, dim=0) for q in quantiles], dim=1)
+                    quantile_predictions = q_stack.cpu().numpy()
+                    if quantile_predictions.shape[2] == 1:
+                        quantile_predictions = quantile_predictions.squeeze(axis=2)
 
         if self._flow_has_mc_dropout():
             # Flow + MC-dropout: full epistemic/aleatoric decomposition (like NODE flow).

@@ -2266,39 +2266,53 @@ class NODERegressor(BaseNODEEstimator):
                 quantiles.append(q)
         quantiles = sorted(quantiles)
 
-        # Compute quantiles only for flow heads
+        # Compute quantiles only for flow heads.
+        # When dropout is active, pool samples across MC-dropout passes so quantiles
+        # reflect total uncertainty (epistemic + aleatoric), not aleatoric only.
         quantile_predictions = None
         if return_quantiles and is_flow_head:
             X_prep = self._prepare_data_for_node(X)
-            self.module_.eval()
+            model = self.module_
+            model.eval()
 
-            all_quantiles = []
+            if has_dropout:
+                # Split the sample budget across MC passes.
+                n_mc = max(5, num_samples // 20)
+                n_flow_per_pass = max(10, num_samples // n_mc)
+                model.training = True
+                for _m in model.modules():
+                    if isinstance(_m, (DenseODSTBlock, nn.Dropout)):
+                        _m.training = True
+                pooled_by_batch: list = []
+                try:
+                    with torch.no_grad():
+                        for t in range(n_mc):
+                            for b, batch in enumerate(self.get_iterator(X_prep, training=False)):
+                                Xi = batch[0] if isinstance(batch, (tuple, list)) else batch
+                                Xi = Xi.to(self.device)
+                                yp = model(Xi)
+                                samp = yp.sample(torch.Size([n_flow_per_pass]))  # (S, batch, D)
+                                if t == 0:
+                                    pooled_by_batch.append(samp)
+                                else:
+                                    pooled_by_batch[b] = torch.cat([pooled_by_batch[b], samp], dim=0)
+                finally:
+                    model.eval()
+                all_quantiles = []
+                with torch.no_grad():
+                    for pooled in pooled_by_batch:  # (T*S, batch, D)
+                        all_quantiles.append(torch.stack([torch.quantile(pooled, q, dim=0) for q in quantiles], dim=0))
+            else:
+                all_quantiles = []
+                with torch.no_grad():
+                    for yp in self.forward_iter(X_prep, training=False):
+                        samples = yp.sample(torch.Size([num_samples]))  # (S, batch, D)
+                        all_quantiles.append(torch.stack([torch.quantile(samples, q, dim=0) for q in quantiles], dim=0))
 
-            with torch.no_grad():
-                for yp in self.forward_iter(X_prep, training=False):
-                    # Sample from flow distributions
-                    samples = yp.sample(torch.Size([num_samples]))  # Shape: (n_samples, batch_size, output_dim)
-
-                    # Compute quantiles
-                    batch_quantiles = []
-                    for q in quantiles:
-                        q_vals = torch.quantile(samples, q, dim=0)  # Shape: (batch_size, output_dim)
-                        batch_quantiles.append(q_vals)
-
-                    # Stack quantiles: (n_quantiles, batch_size, output_dim)
-                    batch_quantiles_stacked = torch.stack(batch_quantiles, dim=0)
-                    all_quantiles.append(batch_quantiles_stacked)
-
-            # Concatenate batches: (n_quantiles, total_samples, output_dim)
-            quantile_predictions = torch.cat(all_quantiles, dim=1).cpu().numpy()
-
-            # Transpose to (total_samples, n_quantiles) for single target
-            # or (total_samples, n_quantiles, output_dim) for multi-target
-            quantile_predictions = np.transpose(quantile_predictions, (1, 0, 2))
-
-            # Flatten last dimension if single target
+            quantile_predictions = torch.cat(all_quantiles, dim=1).cpu().numpy()  # (n_q, N, D)
+            quantile_predictions = np.transpose(quantile_predictions, (1, 0, 2))  # (N, n_q, D)
             if quantile_predictions.shape[2] == 1:
-                quantile_predictions = quantile_predictions.squeeze(axis=2)  # Shape: (total_samples, n_quantiles)
+                quantile_predictions = quantile_predictions.squeeze(axis=2)
 
         # Flow head with dropout: use combined uncertainty (best option)
         if is_flow_head and has_dropout:
