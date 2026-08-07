@@ -38,16 +38,21 @@ import pandas as pd
 from chemprop import models as cp_models
 from chemprop import nn as cnn
 from chemprop.data import MoleculeDatapoint, MoleculeDataset, collate_batch
+from rdkit import Chem
+from rdkit.Chem import MACCSkeys
 from sklearn.linear_model import Lasso
 from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_error
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
+
+from mother.cv.cv_methods import tanimoto_sphere_exclusion_clustering
 
 from mother.feature_generation.fp_gnn_gen import get_default_chemeleon_checkpoint
 from mother.ml.models.m_catboost import CatboostRegressorMother
 from mother.ml.models.m_flow import FlowHeadRegressor
 from mother.ml.models.m_mlp import MLPHeadRegressor
 from mother.ml.models.m_node import NODERegressor
+from pytabkit import RealMLP_TD_Regressor, TabM_D_Regressor
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -157,9 +162,30 @@ def main() -> None:
     X = embed(smiles)
     out(f"Fingerprint matrix: {X.shape}")
 
-    # ── Train / test split ────────────────────────────────────────────────────
-    Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.2, random_state=args.seed)
-    out(f"Split: train={len(Xtr)}  test={len(Xte)}\n")
+    # ── Cluster-based train/test split (MACCS + Tanimoto sphere exclusion) ──
+    mols = [Chem.MolFromSmiles(s) for s in smiles]
+    maccs_fps = [MACCSkeys.GenMACCSKeys(m) for m in mols]
+    clusters = tanimoto_sphere_exclusion_clustering(maccs_fps, similarity_threshold=0.5)
+
+    # Sort clusters by size descending; hold out the largest ~20% of molecules
+    cluster_ids_by_size = sorted(clusters, key=lambda c: len(clusters[c]), reverse=True)
+    test_idx, train_idx = set(), set()
+    target_test = int(0.2 * len(smiles))
+    for cid in cluster_ids_by_size:
+        if len(test_idx) < target_test:
+            test_idx.update(clusters[cid])
+        else:
+            train_idx.update(clusters[cid])
+    train_idx = sorted(train_idx)
+    test_idx = sorted(test_idx)
+
+    out(f"Clusters: {len(clusters)}  |  Split: train={len(train_idx)}  test={len(test_idx)}  "
+        f"(MACCS Tanimoto threshold=0.5)\n")
+
+    Xtr = X[train_idx].astype(np.float32)
+    Xte = X[test_idx].astype(np.float32)
+    ytr = y[train_idx]
+    yte = y[test_idx]
 
     xs = StandardScaler().fit(Xtr)
     Xtr = xs.transform(Xtr).astype(np.float32)
@@ -192,6 +218,18 @@ def main() -> None:
     results.append(_report(
         "CatBoost (default)",
         CatboostRegressorMother(verbose=0),
+        Xtr, Xte, ytr_s, yte, ym, ysd,
+    ))
+
+    # pytabkit auto-detects GPU; early stopping disabled — 2048-dim embeddings need more epochs to converge
+    results.append(_report(
+        "RealMLP-TD",
+        RealMLP_TD_Regressor(n_epochs=mlp_epochs * 5, n_refit=1, val_fraction=0.1, use_early_stopping=False),
+        Xtr, Xte, ytr_s, yte, ym, ysd,
+    ))
+    results.append(_report(
+        "TabM-D",
+        TabM_D_Regressor(n_epochs=mlp_epochs * 5, val_fraction=0.1),
         Xtr, Xte, ytr_s, yte, ym, ysd,
     ))
 
