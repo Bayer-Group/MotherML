@@ -619,7 +619,7 @@ class NODEModel(nn.Module):
                     first_hidden // 4,  # Third layer: 25% of first
                 ]
 
-            return MLPHead(head_input_dim, head_output_dim, mlp_hidden_dims, dropout=mlp_dropout)
+            return MLPHead(head_input_dim, head_output_dim, mlp_hidden_dims, dropout=mlp_dropout, norm="none")
         elif head_type == "flow":
             # Flow head for probabilistic regression (tree dropout applied before head)
             flow_type = getattr(self.hparams, "flow_type", "NICE")
@@ -825,6 +825,7 @@ class CompletePyTorchTabularNODE(nn.Module):
                 hidden_dims=self.mlp_hidden_dims,
                 dropout=self.mlp_dropout,
                 activation=self.mlp_activation,
+                norm="none",  # ODST outputs need no extra batch norm; avoids crash on single-sample batch
             )
 
         elif self.head_type == "flow":
