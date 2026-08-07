@@ -194,16 +194,16 @@ class DimensionSetter(Callback):
 def _suggest_adaptive_width(trial: Trial, input_dim: int, *, width_key: str) -> int:
     """Suggest a single input-adaptive hidden-layer width.
 
-    Width is sampled log-uniformly in ``[max(64, input_dim // 8), input_dim * 2]``. The
+    Width is sampled log-uniformly in ``[max(64, input_dim // 8), input_dim]``. The
     low floor lets tuning reach compact, ChemProp-style readouts (e.g. ~300 for a
-    2048-dim foundation embedding such as CheMeleon); the wide ceiling keeps
-    over-parameterised heads reachable. Log scale puts finer granularity on the small
-    widths that tend to win on frozen embeddings while still spanning to the ceiling.
-    Shared by the multi-layer funnel/constant helper and single-layer heads (e.g. the
-    flow head's one-layer MLP conditioner).
+    2048-dim foundation embedding such as CheMeleon); the ceiling is capped at
+    input_dim to avoid over-parameterised heads. Log scale puts finer granularity on
+    the small widths that tend to win on frozen embeddings while still spanning to the
+    ceiling. Shared by the multi-layer funnel/constant helper and single-layer heads
+    (e.g. the flow head's one-layer MLP conditioner).
     """
     min_hidden = max(64, input_dim // 8)
-    max_hidden = max(min_hidden, input_dim * 2)
+    max_hidden = max(min_hidden, input_dim)
     return trial.suggest_int(width_key, min_hidden, max_hidden, log=True)
 
 
