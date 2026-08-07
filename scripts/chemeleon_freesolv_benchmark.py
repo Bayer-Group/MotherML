@@ -54,7 +54,7 @@ from mother.ml.models.m_flow import FlowHeadRegressor
 from mother.ml.models.m_mlp import MLPHeadRegressor
 from mother.ml.models.m_node import NODERegressor
 
-# from tabicl import TabICLRegressor  # OOMs on 2048-dim input; needs PCA workaround first
+from tabicl import TabICLRegressor
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -153,6 +153,8 @@ def main() -> None:
     parser.add_argument("--node-epochs", type=int, default=None, help="Max epochs for NODE models (default: --epochs // 2)")
     parser.add_argument("--flow-epochs", type=int, default=None, help="Max epochs for standalone flow models (default: --epochs)")
     parser.add_argument("--node-flow-epochs", type=int, default=None, help="Max epochs for NODE+flow head (default: --node-epochs)")
+    parser.add_argument("--split", choices=["cluster", "random"], default="cluster",
+                        help="Train/test split strategy (default: cluster)")
     parser.add_argument("--device", default="cpu")
     args = parser.parse_args()
 
@@ -165,34 +167,40 @@ def main() -> None:
     X = embed(smiles)
     out(f"Fingerprint matrix: {X.shape}")
 
-    # ── Cluster-based train/test split (MACCS + Tanimoto sphere exclusion) ──
-    mols = [Chem.MolFromSmiles(s) for s in smiles]
-    maccs_fps = [MACCSkeys.GenMACCSKeys(m) for m in mols]
-    clusters = tanimoto_sphere_exclusion_clustering(maccs_fps, similarity_threshold=0.5)
-
-    # Sort clusters by size descending; hold out the largest ~20% of molecules
-    cluster_ids_by_size = sorted(clusters, key=lambda c: len(clusters[c]), reverse=True)
-    test_idx, train_idx = set(), set()
-    target_test = int(0.2 * len(smiles))
-    for cid in cluster_ids_by_size:
-        if len(test_idx) < target_test:
-            test_idx.update(clusters[cid])
-        else:
-            train_idx.update(clusters[cid])
-    train_idx = sorted(train_idx)
-    test_idx = sorted(test_idx)
-
-    out(f"Clusters: {len(clusters)}  |  Split: train={len(train_idx)}  test={len(test_idx)}  "
-        f"(MACCS Tanimoto threshold=0.5)\n")
-
-    Xtr = X[train_idx].astype(np.float32)
-    Xte = X[test_idx].astype(np.float32)
-    ytr = y[train_idx]
-    yte = y[test_idx]
+    # ── Train/test split ─────────────────────────────────────────────────────
+    if args.split == "cluster":
+        mols = [Chem.MolFromSmiles(s) for s in smiles]
+        maccs_fps = [MACCSkeys.GenMACCSKeys(m) for m in mols]
+        clusters = tanimoto_sphere_exclusion_clustering(maccs_fps, similarity_threshold=0.5)
+        cluster_ids_by_size = sorted(clusters, key=lambda c: len(clusters[c]), reverse=True)
+        test_idx, train_idx = set(), set()
+        target_test = int(0.2 * len(smiles))
+        for cid in cluster_ids_by_size:
+            if len(test_idx) < target_test:
+                test_idx.update(clusters[cid])
+            else:
+                train_idx.update(clusters[cid])
+        train_idx = sorted(train_idx)
+        test_idx = sorted(test_idx)
+        out(f"Clusters: {len(clusters)}  |  Split: train={len(train_idx)}  test={len(test_idx)}  "
+            f"(MACCS Tanimoto threshold=0.5)\n")
+        Xtr = X[train_idx].astype(np.float32)
+        Xte = X[test_idx].astype(np.float32)
+        ytr = y[train_idx]
+        yte = y[test_idx]
+    else:
+        Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.2, random_state=args.seed)
+        Xtr, Xte = Xtr.astype(np.float32), Xte.astype(np.float32)
+        out(f"Split: train={len(Xtr)}  test={len(Xte)}  (random seed={args.seed})\n")
 
     xs = StandardScaler().fit(Xtr)
     Xtr = xs.transform(Xtr).astype(np.float32)
     Xte = xs.transform(Xte).astype(np.float32)
+
+    # PCA-100 projection for TabICL (fits on train only to avoid leakage)
+    pca = PCA(n_components=100, random_state=args.seed).fit(Xtr)
+    Xtr_pca = pca.transform(Xtr).astype(np.float32)
+    Xte_pca = pca.transform(Xte).astype(np.float32)
 
     # Standardize target (required for numerical stability of flow heads)
     ym, ysd = ytr.mean(), ytr.std()
@@ -224,30 +232,35 @@ def main() -> None:
         Xtr, Xte, ytr_s, yte, ym, ysd,
     ))
 
-    # pytabkit auto-detects GPU; early stopping disabled — 2048-dim embeddings need more epochs to converge
-    results.append(_report(
-        "RealMLP-TD",
-        RealMLP_TD_Regressor(n_epochs=mlp_epochs * 5, n_refit=1, val_fraction=0.1, use_early_stopping=False),
-        Xtr, Xte, ytr_s, yte, ym, ysd,
-    ))
+    # RealMLP-TD unstable on 2048-dim frozen embeddings under cluster shift — revisit later
+    # results.append(_report(
+    #     "RealMLP-TD",
+    #     RealMLP_TD_Regressor(n_epochs=mlp_epochs * 5, n_refit=1, val_fraction=0.1, use_early_stopping=False),
+    #     Xtr, Xte, ytr, yte, 0.0, 1.0,
+    # ))
     results.append(_report(
         "TabM-D",
         TabM_D_Regressor(n_epochs=mlp_epochs * 5, val_fraction=0.1),
         Xtr, Xte, ytr_s, yte, ym, ysd,
     ))
-    # TabICL OOMs on 2048-dim input; needs feature reduction strategy — commented out for now
-    # results.append(_report(
-    #     "TabICL (PCA-100)",
-    #     TabICLRegressor(device=args.device, allow_auto_download=True),
-    #     PCA(n_components=100, random_state=args.seed).fit_transform(Xtr),
-    #     PCA(n_components=100, random_state=args.seed).fit(Xtr).transform(Xte),
-    #     ytr_s, yte, ym, ysd,
-    # ))
+    results.append(_report(
+        "TabICL (PCA-100)",
+        TabICLRegressor(device=args.device, allow_auto_download=True),
+        Xtr_pca, Xte_pca, ytr_s, yte, ym, ysd,
+    ))
 
     # MLP replications from previous run
     results.append(_report(
         "MLP default [512,256,128] GELU/BN",
         MLPHeadRegressor(max_epochs=mlp_epochs, lr=2.5e-3, device=args.device, verbose=0),
+        Xtr, Xte, ytr_s, yte, ym, ysd,
+    ))
+    results.append(_report(
+        "MLP CheMeleon [256,256] ReLU lr=1e-5",
+        MLPHeadRegressor(
+            hidden_dims=[256, 256], activation="ReLU", dropout=0.0,
+            max_epochs=50, lr=1e-5, device=args.device, verbose=0,
+        ),
         Xtr, Xte, ytr_s, yte, ym, ysd,
     ))
     results.append(_report(

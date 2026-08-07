@@ -1550,7 +1550,8 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
             ),
             # prefix + "max_layers_retained": trial.suggest_int(prefix + "max_layers_retained", 1, 4, log=False),
             prefix + "depth": trial.suggest_int(prefix + "depth", 2, 6, log=False),
-            prefix + "lr": trial.suggest_float(prefix + "lr", 1e-3, 1e-2, log=True),
+            # Lower bound 5e-4 covers flow heads; upper bound 1e-2 covers non-flow heads
+            prefix + "lr": trial.suggest_float(prefix + "lr", 5e-4, 1e-2, log=True),
         }
 
         suggested_params[prefix + "num_trees"] = (
@@ -2817,11 +2818,9 @@ class NODERegressor(BaseNODEEstimator):
         else:
             selected_head = self.head_type
 
-        # MLP-specific parameters (reuse base-class helper)
         if selected_head == "mlp":
             suggested_params = self._suggest_mlp_params(trial, suggested_params, prefix)
 
-        # Flow-specific parameters (regression only)
         if selected_head == "flow":
             suggested_params = self._suggest_flow_params(trial, suggested_params, prefix)
 
@@ -2885,6 +2884,9 @@ class NODERegressor(BaseNODEEstimator):
             # Flow defaults (Optuna starting point when flow is sampled)
             defaults[prefix + "flow_type"] = "NICE"
             defaults[prefix + "flow_transforms"] = 3
+        elif self.head_type == "flow":
+            # Lower lr default for fixed flow head — joint backbone+flow training is lr-sensitive.
+            defaults[prefix + "lr"] = 1e-3
 
         return defaults
 
