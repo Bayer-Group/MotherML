@@ -43,6 +43,7 @@ from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_err
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
+from mother.feature_generation.fp_gnn_gen import get_default_chemeleon_checkpoint
 from mother.ml.models.m_flow import FlowHeadRegressor
 from mother.ml.models.m_mlp import MLPHeadRegressor
 from mother.ml.models.m_node import NODERegressor
@@ -78,6 +79,10 @@ def _load_data() -> tuple[list[str], np.ndarray]:
 
 def _build_embedder(ckpt_path: str):
     """Load CheMeleon MPNN from checkpoint and return an embed(smiles) callable."""
+    if not os.path.exists(ckpt_path):
+        out(f"Checkpoint not found at {ckpt_path} — using cached/auto-downloaded copy ...")
+        ckpt_path = str(get_default_chemeleon_checkpoint())
+    out(f"Loading checkpoint from {ckpt_path}")
     ckpt = torch.load(ckpt_path, weights_only=True)
     mp = cnn.BondMessagePassing(**ckpt["hyper_parameters"])
     mp.load_state_dict(ckpt["state_dict"])
@@ -163,7 +168,7 @@ def main() -> None:
     ytr_s = ((ytr - ym) / ysd).astype(np.float32)
 
     mlp_epochs = args.mlp_epochs or args.epochs
-    node_epochs = args.node_epochs or max(1, args.epochs // 2)
+    node_epochs = args.node_epochs or args.epochs
     flow_epochs = args.flow_epochs or args.epochs
 
     # ── Benchmark ─────────────────────────────────────────────────────────────
@@ -196,33 +201,32 @@ def main() -> None:
         Xtr, Xte, ytr_s, yte, ym, ysd,
     ))
 
-    # NODE — subset head (original NODE, lightest)
-    # Small num_trees/depth: 2048-dim input with ~500 train samples → avoid overfitting
+    _node_base = dict(num_trees=256, depth=4, num_layers=2, input_dropout=0.05,
+                      tree_dropout=0.0, lr=5e-3, batch_size=64, device=args.device)
+
+    # NODE — subset head
     results.append(_report(
         "NODE subset head",
-        NODERegressor(
-            head_type="subset",
-            num_trees=256, depth=4, num_layers=2,
-            input_dropout=0.05, tree_dropout=0.0,
-            max_epochs=node_epochs, lr=5e-3, batch_size=64,
-            device=args.device,
-        ),
+        NODERegressor(head_type="subset", max_epochs=node_epochs, **_node_base),
         Xtr, Xte, ytr_s, yte, ym, ysd,
     ))
 
-    # NODE — MLP head
+    # NODE — linear head
     results.append(_report(
-        "NODE MLP head [256,128]",
-        NODERegressor(
-            head_type="mlp",
-            mlp_hidden_dims=[256, 128], mlp_dropout=0.1, mlp_activation="GELU",
-            num_trees=256, depth=4, num_layers=2,
-            input_dropout=0.05, tree_dropout=0.0,
-            max_epochs=node_epochs, lr=5e-3, batch_size=64,
-            device=args.device,
-        ),
+        "NODE linear head",
+        NODERegressor(head_type="linear", max_epochs=node_epochs, **_node_base),
         Xtr, Xte, ytr_s, yte, ym, ysd,
     ))
+
+    # NODE — MLP heads: several width/depth combos
+    for dims, act in [([256], "ReLU"), ([256, 128], "GELU"), ([512, 256], "GELU"), ([512, 256, 128], "GELU")]:
+        label = f"NODE MLP head {dims} {act}"
+        results.append(_report(
+            label,
+            NODERegressor(head_type="mlp", mlp_hidden_dims=dims, mlp_dropout=0.1,
+                          mlp_activation=act, max_epochs=node_epochs, **_node_base),
+            Xtr, Xte, ytr_s, yte, ym, ysd,
+        ))
 
     # Standalone flow head (no NODE backbone) — MLP encoder + normalizing flow
     results.append(_report(
@@ -245,29 +249,18 @@ def main() -> None:
     ))
 
     # NODE — flow head (NSF, probabilistic regression)
-    # Flow heads are sensitive to target scale — targets are already standardized above.
     results.append(_report(
         "NODE flow head NSF (point pred)",
-        NODERegressor(
-            head_type="flow", flow_type="NSF", flow_bins=8,
-            num_trees=256, depth=4, num_layers=2,
-            input_dropout=0.05, tree_dropout=0.0,
-            max_epochs=node_epochs, lr=5e-3, batch_size=64,
-            device=args.device,
-        ),
+        NODERegressor(head_type="flow", flow_type="NSF", flow_bins=8,
+                      max_epochs=node_epochs, **_node_base),
         Xtr, Xte, ytr_s, yte, ym, ysd,
     ))
 
     # NODE — flow head (NICE, simpler, faster)
     results.append(_report(
         "NODE flow head NICE (point pred)",
-        NODERegressor(
-            head_type="flow", flow_type="NICE", flow_transforms=3,
-            num_trees=256, depth=4, num_layers=2,
-            input_dropout=0.05, tree_dropout=0.0,
-            max_epochs=node_epochs, lr=5e-3, batch_size=64,
-            device=args.device,
-        ),
+        NODERegressor(head_type="flow", flow_type="NICE", flow_transforms=3,
+                      max_epochs=node_epochs, **_node_base),
         Xtr, Xte, ytr_s, yte, ym, ysd,
     ))
 

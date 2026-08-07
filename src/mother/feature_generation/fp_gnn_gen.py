@@ -1,4 +1,5 @@
 import logging
+import urllib.request
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional, Sequence
 
@@ -10,6 +11,18 @@ from sklearn.utils.validation import check_is_fitted
 from mother.errors import ExtrasDependencyImportError
 
 module_logger = logging.getLogger(__name__)
+
+_CHEMELEON_ZENODO_URL = "https://zenodo.org/records/15460715/files/chemeleon_mp.pt"
+_CHEMELEON_CACHE_PATH = Path.home() / ".cache" / "mother" / "chemeleon_mp.pt"
+
+
+def get_default_chemeleon_checkpoint() -> Path:
+    """Return path to chemeleon_mp.pt, downloading from Zenodo on first use."""
+    if not _CHEMELEON_CACHE_PATH.exists():
+        _CHEMELEON_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        module_logger.info("Downloading CheMeleon checkpoint from Zenodo to %s", _CHEMELEON_CACHE_PATH)
+        urllib.request.urlretrieve(_CHEMELEON_ZENODO_URL, _CHEMELEON_CACHE_PATH)
+    return _CHEMELEON_CACHE_PATH
 
 
 def _check_chemprop() -> None:
@@ -36,7 +49,7 @@ def _default_chemeleon_embedder(
     from chemprop.models import load_model  # type: ignore
 
     if checkpoint_path is None:
-        raise ValueError("checkpoint_path is required for CheMeleon embeddings with the current chemprop API.")
+        checkpoint_path = str(get_default_chemeleon_checkpoint())
 
     model = load_model(path=Path(checkpoint_path))
 
