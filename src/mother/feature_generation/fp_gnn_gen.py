@@ -20,8 +20,14 @@ def get_default_chemeleon_checkpoint() -> Path:
     """Return path to chemeleon_mp.pt, downloading from Zenodo on first use."""
     if not _CHEMELEON_CACHE_PATH.exists():
         _CHEMELEON_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        module_logger.info("Downloading CheMeleon checkpoint from Zenodo to %s", _CHEMELEON_CACHE_PATH)
-        urllib.request.urlretrieve(_CHEMELEON_ZENODO_URL, _CHEMELEON_CACHE_PATH)
+        tmp_path = _CHEMELEON_CACHE_PATH.with_suffix(".tmp")
+        try:
+            module_logger.info("Downloading CheMeleon checkpoint from Zenodo to %s", _CHEMELEON_CACHE_PATH)
+            urllib.request.urlretrieve(_CHEMELEON_ZENODO_URL, tmp_path)
+            tmp_path.rename(_CHEMELEON_CACHE_PATH)  # atomic on POSIX; avoids partial file
+        except Exception:
+            tmp_path.unlink(missing_ok=True)
+            raise
     return _CHEMELEON_CACHE_PATH
 
 

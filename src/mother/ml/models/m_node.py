@@ -299,9 +299,11 @@ class InputOutputShapeSetter(skorch.callbacks.Callback):
                                 )
                             X_processed[col] = encoded
                     else:
-                        # For non-categorical object/category columns, create a temporary encoder
-                        temp_le: LabelEncoder = LabelEncoder()
-                        X_processed[col] = temp_le.fit_transform(X_processed[col].astype(str))
+                        raise ValueError(
+                            f"Column '{col}' has a non-numeric dtype ({X_processed[col].dtype}) "
+                            f"but is not declared categorical. NODE does not auto-detect categorical "
+                            f"features. Please list '{col}' in 'cat_features' or convert it to numeric."
+                        )
 
             # Return as numpy array - NO dictionaries!
             return X_processed.values.astype(np.float32)

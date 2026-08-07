@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate executable Python code  in docs markdown files.
+"""Validate executable Python code fences in docs markdown files.
 
 This script scans mkdocs/docs/**/*.md for fenced blocks with the `python` language,
 executes them sequentially per file, and fails if any block raises an exception.
