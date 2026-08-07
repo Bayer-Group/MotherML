@@ -44,6 +44,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
 from mother.feature_generation.fp_gnn_gen import get_default_chemeleon_checkpoint
+from mother.ml.models.m_catboost import CatboostRegressorMother
 from mother.ml.models.m_flow import FlowHeadRegressor
 from mother.ml.models.m_mlp import MLPHeadRegressor
 from mother.ml.models.m_node import NODERegressor
@@ -143,6 +144,7 @@ def main() -> None:
     parser.add_argument("--mlp-epochs", type=int, default=None, help="Max epochs for MLP models (default: --epochs)")
     parser.add_argument("--node-epochs", type=int, default=None, help="Max epochs for NODE models (default: --epochs // 2)")
     parser.add_argument("--flow-epochs", type=int, default=None, help="Max epochs for standalone flow models (default: --epochs)")
+    parser.add_argument("--node-flow-epochs", type=int, default=None, help="Max epochs for NODE+flow head (default: --node-epochs)")
     parser.add_argument("--device", default="cpu")
     args = parser.parse_args()
 
@@ -170,10 +172,11 @@ def main() -> None:
     mlp_epochs = args.mlp_epochs or args.epochs
     node_epochs = args.node_epochs or args.epochs
     flow_epochs = args.flow_epochs or args.epochs
+    node_flow_epochs = args.node_flow_epochs or node_epochs
 
     # ── Benchmark ─────────────────────────────────────────────────────────────
     out(f"=== FreeSolv benchmark  |  CheMeleon {X.shape[1]}-dim embeddings ===\n")
-    out(f"Epochs  MLP={mlp_epochs}  NODE={node_epochs}  Flow={flow_epochs}\n")
+    out(f"Epochs  MLP={mlp_epochs}  NODE={node_epochs}  Flow={flow_epochs}  NODE+flow={node_flow_epochs}\n")
     out(HEADER)
     out(SEP)
 
@@ -183,6 +186,12 @@ def main() -> None:
     results.append(_report(
         "Lasso (alpha=0.01)",
         Lasso(alpha=0.01, max_iter=10000),
+        Xtr, Xte, ytr_s, yte, ym, ysd,
+    ))
+
+    results.append(_report(
+        "CatBoost (default)",
+        CatboostRegressorMother(verbose=0),
         Xtr, Xte, ytr_s, yte, ym, ysd,
     ))
 
@@ -248,19 +257,18 @@ def main() -> None:
         Xtr, Xte, ytr_s, yte, ym, ysd,
     ))
 
-    # NODE — flow head (NSF, probabilistic regression)
+    # NODE — flow heads: lower lr to stabilise the joint NODE+flow optimisation
+    _node_flow_base = {**_node_base, "lr": 1e-3}
     results.append(_report(
         "NODE flow head NSF (point pred)",
         NODERegressor(head_type="flow", flow_type="NSF", flow_bins=8,
-                      max_epochs=node_epochs, **_node_base),
+                      max_epochs=node_flow_epochs, **_node_flow_base),
         Xtr, Xte, ytr_s, yte, ym, ysd,
     ))
-
-    # NODE — flow head (NICE, simpler, faster)
     results.append(_report(
         "NODE flow head NICE (point pred)",
         NODERegressor(head_type="flow", flow_type="NICE", flow_transforms=3,
-                      max_epochs=node_epochs, **_node_base),
+                      max_epochs=node_flow_epochs, **_node_flow_base),
         Xtr, Xte, ytr_s, yte, ym, ysd,
     ))
 
