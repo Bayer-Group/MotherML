@@ -46,6 +46,7 @@ from sklearn.linear_model import Lasso
 from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_error
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
+from tabicl import TabICLRegressor
 
 from mother.cv.cv_methods import tanimoto_sphere_exclusion_clustering
 from mother.feature_generation.fp_gnn_gen import get_default_chemeleon_checkpoint
@@ -53,9 +54,6 @@ from mother.ml.models.m_catboost import CatboostRegressorMother
 from mother.ml.models.m_flow import FlowHeadRegressor
 from mother.ml.models.m_mlp import MLPHeadRegressor
 from mother.ml.models.m_node import NODERegressor
-
-from tabicl import TabICLRegressor
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
