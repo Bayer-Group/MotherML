@@ -55,7 +55,7 @@ Dependency groups are development dependencies that are NOT published with the p
 | Group | Description | Installation |
 |-------|-------------|--------------|
 | `examples` | Dependencies for example notebooks (polaris-lib, shap) | `uv sync --group examples` |
-| `docs` | Documentation building tools (mkdocs, etc.) | `uv sync --group docs` |
+| `docs` | Documentation building tools (zensical, mkdocstrings, etc.) | `uv sync --group docs` |
 | `test_duration` | Test performance analysis (pytest-html, pytest-xdist) | `uv sync --group test_duration` |
 
 **Install multiple groups:**
@@ -259,7 +259,7 @@ upload_to_vcs_release = true
 [tool.semantic_release.changelog]
 mode = "update"
 insertion_flag = "..\n    All versions below are listed in reverse chronological order"
-changelog_file = "mkdocs/docs/Changelog.md"
+changelog_file = "docs/Changelog.md"
 output_format = "md"
 ```
 
@@ -269,7 +269,7 @@ Releases are automatically triggered when commits are pushed to the `main` branc
 
 1. **Analysis**: PSR analyzes commit messages since the last release
 2. **Version Calculation**: Determines the next version based on commit types
-3. **Changelog Generation**: Updates `mkdocs/docs/Changelog.md` with new changes
+3. **Changelog Generation**: Updates `docs/Changelog.md` with new changes
 4. **Version Bump**: Updates version in `pyproject.toml`
 5. **Build**: Creates distribution packages using uv
 6. **Release**: Creates a GitHub release with built artifacts

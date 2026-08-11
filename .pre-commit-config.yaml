@@ -1,5 +1,5 @@
 fail_fast: false
-exclude: ^(docs/|examples/|tests/)
+exclude: ^(examples/|tests/)
 repos:
   - repo: https://github.com/astral-sh/uv-pre-commit
     rev: "0.11.2"
@@ -71,7 +71,7 @@ repos:
         entry: uv run poe docs-python-fences
         pass_filenames: false
         language: system
-        files: ^mkdocs/docs/.*\.md$
+        files: ^docs/.*\.md$
   - repo: https://github.com/nbQA-dev/nbQA
     rev: 1.9.1
     hooks:
