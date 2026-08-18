@@ -130,9 +130,7 @@ To provide your own model and make this step as easy as possible, we provide the
 Your own model just has to inherit from that class and implement the required functions that provide the hyperparameters you want to tune. For example, see the implementation of the Lasso model. Since lasso basically has one parameter to be tuned, the implementation is fairly easy.
 
 ~~~python title="Lasso with Hyperparameter Tuning"
-{%
-    include "../../../src/mother/ml/models/m_lasso.py"
-%}
+--8<-- "src/mother/ml/models/m_lasso.py"
 ~~~
 
 ## Registering your model using MotherModelRegistry

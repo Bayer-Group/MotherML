@@ -7,7 +7,7 @@ Mother is a machine-learning framework for predicting properties from chemical m
 - 🔬 **SMILES** preprocessing
 - 💾 Generating of **feature vectors** from molecules
 - 📈 Grouping and cross-validation, based on chemical similarity
-- 💻 Model Training: Standard catboost models, and feature selection methods
+- 💻 Model Training: Standard models like catboost, lasso, or random forest, and custom models (e.g.: TabPFN), and feature selection methods
 - 🚴 Training, cross-validation, and hyperparameter optimization of machine-learning models
 - 🌀 Handling Gene expression data from transcriptomics experiments including different normalisation techniques
 - ✨ ~~Explainability analysis with *SHAP*~~ (Currently not supported, will be added in a later release)
@@ -16,7 +16,7 @@ Mother is a machine-learning framework for predicting properties from chemical m
 
 Mother provides methods for each of these steps in the form of sklearn transformer objects. By that, all methods are designed to be easily accessible and usable in a modular way. The methods can be combined to ML workflows with [sklearn pipelines, column transformers, and feature unions](https://scikit-learn.org/dev/modules/compose.html).
 
-All methods can be used as sklearn `transformer` or `estimator`. Combination with other methods, or own methods and models (e.g. using mother preprocessing with other model) is therefore straightforward. To be as compatible as possible, every transformer can be constructed using a dictionary containing the required parameters. However, to provide some convenience to the users, a settings class [MotherSettings](https://github.com/Bayer-Group/MotherML/blob/main/src/mother/settings.py). This class can be used to store all relevant settings for your ML project.
+All methods can be used as sklearn `transformer` or `estimator`. Combination with other methods, or own methods and models (e.g. using mother preprocessing with other model) is therefore straightforward. To be as compatible as possible, every transformer can be constructed using a dictionary containing the required parameters. However, to provide some convenience to the users, a settings class [MotherSettings](https://github.com/Bayer-Group/MotherML/blob/main/src/mother/settings.py) is provided. This class can be used to store all relevant settings for your ML project.
 
 ## Usage
 
@@ -165,6 +165,9 @@ model.fit(features, targets)
 
 Here, we use the extended sklearn pipeline `PipelineWithHyperparameterRooting` for some additional methods for hyperparameter
 tuning.
+
+!!! note
+    
 
 Without feature selection, this is simplified:
 
