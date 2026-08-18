@@ -105,7 +105,7 @@ examples = [
 docs = [
   "zensical",
   "mkdocstrings[python]",
-  "markdown-exec[ansi]>=1.7.0,<2",
+  "markdown-exec[ansi]>=1.7.0,<2"
 ]
 test_duration = [
   "pytest-html>=4.0.2,<5",
