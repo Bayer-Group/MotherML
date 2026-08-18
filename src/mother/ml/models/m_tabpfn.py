@@ -46,7 +46,6 @@ from typing import (
 
 import numpy as np
 import pandas as pd
-import torch
 from optuna.trial import Trial
 from six import iteritems
 from sklearn.base import BaseEstimator, TransformerMixin, clone
@@ -60,9 +59,16 @@ from sklearn.model_selection import (
 )
 from sklearn.utils import check_array
 from sklearn.utils.validation import check_is_fitted
-from tabpfn import TabPFNClassifier, TabPFNRegressor
-from tabpfn.constants import ModelVersion
-from tabpfn.regressor import FullOutputDict
+
+from mother.errors import ExtrasDependencyImportError
+
+try:
+    import torch
+    from tabpfn import TabPFNClassifier, TabPFNRegressor
+    from tabpfn.constants import ModelVersion
+    from tabpfn.regressor import FullOutputDict
+except ImportError as import_error:
+    raise ExtrasDependencyImportError("tabpfn", import_error) from import_error
 
 from mother.ml.core import AbstractMotherPipeline
 from mother.ml.models import utils
