@@ -1,5 +1,5 @@
 fail_fast: false
-exclude: ^(examples/|tests/)
+exclude: ^(examples/|test/)
 repos:
   - repo: https://github.com/astral-sh/uv-pre-commit
     rev: "0.11.2"
