@@ -276,7 +276,7 @@ class TestTabICLEmbeddingTransformer:
         assert result.shape[1] == TABICL_EMBEDDING_SIZE
 
     def test_fit_transform_with_groups_classification(self):
-        groups = np.random.randint(0, 3, size=self.X.shape[0])
+        groups = self.rng.integers(0, 3, size=self.X.shape[0])
         transformer = TabICLEmbeddingTransformer(
             model_type="classification",
             use_kfold=True,

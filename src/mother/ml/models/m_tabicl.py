@@ -734,7 +734,7 @@ class TabICLEmbeddingTransformer(BaseEstimator, TransformerMixin):
         If ``False``, a single model is fitted on all data and its representations
         for the training set are stored (note: this introduces data leakage for
         the training embeddings).
-    random_state : int or None, default=42
+    random_state : int or None, default=0
         Random seed for reproducibility of k-fold splitting and TabICL ensemble.
     embedding_column_name : str, default='tabiclembedding'
         Name or prefix for the output embedding columns.
