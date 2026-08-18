@@ -1,8 +1,6 @@
-# Mother-ML
+# Mother-ML - A ML framework that takes care.
 
-A ML framework that takes care.
-
-Mother is a machine-learning framework for predicting properties from chemical molecules. The major features are:
+Mother is a machine-learning framework for predicting properties from mainly chemical molecules. The major features are:
 
 - 🔬 **SMILES** preprocessing
 - 💾 Generating of **feature vectors** from molecules
@@ -17,6 +15,17 @@ Mother is a machine-learning framework for predicting properties from chemical m
 Mother provides methods for each of these steps in the form of sklearn transformer objects. By that, all methods are designed to be easily accessible and usable in a modular way. The methods can be combined to ML workflows with [sklearn pipelines, column transformers, and feature unions](https://scikit-learn.org/dev/modules/compose.html).
 
 All methods can be used as sklearn `transformer` or `estimator`. Combination with other methods, or own methods and models (e.g. using mother preprocessing with other model) is therefore straightforward. To be as compatible as possible, every transformer can be constructed using a dictionary containing the required parameters. However, to provide some convenience to the users, a settings class [MotherSettings](https://github.com/Bayer-Group/MotherML/blob/main/src/mother/settings.py) is provided. This class can be used to store all relevant settings for your ML project.
+
+## Why Mother?
+
+Mother keeps the parts of a molecular ML workflow connected without requiring you to leave the scikit-learn ecosystem.
+
+- **Tune an entire workflow from one place.** Mother model wrappers define their own Optuna search spaces, and `PipelineWithHyperparameterRooting`, `ColumnTransformerWithHyperparameterRooting`, and `FeatureUnionWithHyperparameterRooting` collect them across nested steps using familiar `step__parameter` names. You can therefore tune preprocessing, feature selection, and the final estimator together while retaining scikit-learn composition.
+- **Exchange compatible transformers and estimators.** Preprocessing, molecular feature generation, feature selection, cross-validation grouping, and models follow scikit-learn's estimator and transformer interfaces. Mother components work in `Pipeline`, `ColumnTransformer`, and `FeatureUnion`, and can be combined with your own scikit-learn components.
+- **Use consistent, analysis-ready outputs.** Components preserve pandas-friendly tabular data where appropriate. `predict_uncertainty(...)` exposes a common prediction and uncertainty schema across model backends, while `mother_cv(...)` returns fold-level predictions together with evaluation metadata for straightforward comparison and downstream analysis.
+- **Evaluate chemical models more realistically.** Chemistry-aware grouping, including Tanimoto-similarity groups, makes it practical to use group-aware splits that better test generalisation to dissimilar compounds.
+- **Choose models without rewriting the workflow.** The model registry discovers integrated model wrappers and presents a common interface for CatBoost, random forest, lasso, TabPFN when installed, and compatible custom models.
+- **Make workflows reproducible and configurable.** `MotherSettings` keeps input, preprocessing, feature generation, cross-validation, model, and tuning configuration in one validated object that can be loaded from or written to YAML.
 
 ## Usage
 
@@ -165,9 +174,6 @@ model.fit(features, targets)
 
 Here, we use the extended sklearn pipeline `PipelineWithHyperparameterRooting` for some additional methods for hyperparameter
 tuning.
-
-!!! note
-    
 
 Without feature selection, this is simplified:
 
