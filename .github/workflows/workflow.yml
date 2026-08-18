@@ -62,8 +62,17 @@ jobs:
         uses: ./.github/actions/setup-uv-env
         with:
           python-version: ${{ matrix.python-version }}
-          install-args: "--extra rna --extra report --extra tabpfn --extra tabicl --extra clustering
-            --group test_duration"
+          install-args: "--extra rna --extra report --extra tabpfn --extra tabicl --extra clustering --group test_duration"
+
+      - name: Cache HuggingFace and Torch models 🗂️
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/huggingface/hub
+            ~/.cache/torch
+          key: models-${{ runner.os }}-${{ hashFiles('**/pyproject.toml') }}
+          restore-keys: |
+            models-${{ runner.os }}-
 
       - name: Download TabPFN checkpoint
         run: |
@@ -109,6 +118,16 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           install-args: "--extra rna --extra report --extra tabpfn --extra tabicl --extra clustering
             --group test_duration"
+
+      - name: Cache HuggingFace and Torch models 🗂️
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/huggingface/hub
+            ~/.cache/torch
+          key: models-${{ runner.os }}-${{ hashFiles('**/pyproject.toml') }}
+          restore-keys: |
+            models-${{ runner.os }}-
 
       - name: Download TabPFN checkpoint
         run: |
