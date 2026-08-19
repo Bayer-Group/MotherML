@@ -501,3 +501,89 @@ class TestTabICLEmbeddingTransformer:
         transformer_reg = TabICLEmbeddingTransformer(model_type="regression", use_kfold=False, n_estimators=1)
         with pytest.raises(TypeError):
             transformer_reg._extract_representations(clf, self.X)
+
+
+@pytest.mark.slow
+class TestTabICLExplainability:
+    rng = np.random.default_rng(0)
+    # More than 10 features so shap.Explainer selects the "permutation" algorithm (which accepts max_evals)
+    # instead of "exact" (masker.shape[1] <= 10).
+    X = pd.DataFrame(rng.random((16, 12)), columns=[f"f{i}" for i in range(12)])
+    regression_y = pd.Series(rng.random(16))
+    classification_y = pd.Series(rng.integers(0, 2, size=16))
+    max_evals = 2 * X.shape[1] + 1
+
+    @pytest.fixture(autouse=True)
+    def _no_plot_show(self, monkeypatch):
+        # Prevent matplotlib from trying to open a display/window during plot(kind=...).
+        import matplotlib.pyplot as plt
+
+        monkeypatch.setattr(plt, "show", lambda *args, **kwargs: None)
+
+    def test_explain_unfitted_classifier_raises(self):
+        clf = TabICLClassifierMother(n_estimators=1)
+        with pytest.raises(NotFittedError):
+            clf.explain(self.X, max_evals=self.max_evals)
+
+    def test_explain_unfitted_regressor_raises(self):
+        reg = TabICLRegressorMother(n_estimators=1)
+        with pytest.raises(NotFittedError):
+            reg.explain(self.X, max_evals=self.max_evals)
+
+    def test_plot_before_explain_raises(self):
+        clf = TabICLClassifierMother(n_estimators=1).fit(self.X, self.classification_y)
+        assert getattr(clf, "shap_values_", None) is None
+        with pytest.raises(NotFittedError):
+            clf.plot_shap(kind="bar")
+
+    def test_explain_and_plot_classifier(self):
+        clf = TabICLClassifierMother(n_estimators=1).fit(self.X, self.classification_y)
+        shap_values = clf.explain(self.X, max_evals=self.max_evals)
+
+        assert shap_values is clf.shap_values_
+        assert shap_values.values.shape[0] == self.X.shape[0]
+        assert list(shap_values.feature_names) == list(self.X.columns)
+
+        clf.plot_shap(kind="bar")
+        clf.plot_shap(kind="beeswarm")
+
+    def test_explain_and_plot_regressor(self):
+        reg = TabICLRegressorMother(n_estimators=1).fit(self.X, self.regression_y)
+        shap_values = reg.explain(self.X, max_evals=self.max_evals)
+
+        assert shap_values is reg.shap_values_
+        assert shap_values.values.shape[0] == self.X.shape[0]
+        assert list(shap_values.feature_names) == list(self.X.columns)
+
+        reg.plot_shap(kind="bar")
+        reg.plot_shap(kind="beeswarm")
+
+    def test_explain_with_numpy_input_has_no_feature_names(self):
+        reg = TabICLRegressorMother(n_estimators=1).fit(self.X, self.regression_y)
+        shap_values = reg.explain(self.X.to_numpy(), max_evals=self.max_evals)
+
+        assert shap_values.values.shape[0] == self.X.shape[0]
+
+    def test_plot_reuses_cached_shap_values(self, monkeypatch):
+        reg = TabICLRegressorMother(n_estimators=1).fit(self.X, self.regression_y)
+        reg.explain(self.X, max_evals=self.max_evals)
+
+        calls = []
+        monkeypatch.setattr(
+            "mother.ml.models.m_tabicl.get_shap_values",
+            lambda *args, **kwargs: calls.append(1),
+        )
+
+        # plot must not recompute SHAP values, it should reuse shap_values_.
+        reg.plot_shap(kind="bar")
+        assert calls == []
+
+    def test_plot_with_explicit_shap_values_overrides_cache(self):
+        reg = TabICLRegressorMother(n_estimators=1).fit(self.X, self.regression_y)
+        clf = TabICLClassifierMother(n_estimators=1).fit(self.X, self.classification_y)
+
+        reg_shap_values = reg.explain(self.X, max_evals=self.max_evals)
+        clf.explain(self.X, max_evals=self.max_evals)
+
+        # Passing shap_values explicitly should plot those values, not the cached ones on clf.
+        clf.plot_shap(kind="bar", shap_values=reg_shap_values)

@@ -80,6 +80,9 @@ tabpfn = [
 tabicl = [
     "tabicl>=2.1.1",
     "torch>=2.11.0,<3",
+    "tabicl",
+    "tabicl[shap]",
+    "matplotlib>3.7.0"
 ]
 
 [dependency-groups]

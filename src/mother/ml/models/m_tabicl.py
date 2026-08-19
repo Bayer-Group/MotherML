@@ -49,6 +49,7 @@ from sklearn.model_selection import (
 from sklearn.utils import check_X_y
 from sklearn.utils.validation import check_is_fitted
 from tabicl import TabICLClassifier, TabICLRegressor
+from tabicl.shap import get_shap_values, plot_shap
 
 from mother.ml.core import AbstractMotherPipeline
 from mother.ml.models import utils
@@ -253,13 +254,125 @@ class _TabICLHyperParams(AbstractMotherPipeline):
 
         # Allow nan values since TabICL can handle them
         # Ensure_2d is True to enforce 2D X (n_samples, n_features), y remains 1D
-        check_X_y(X, y, ensure_2d=True, ensure_all_finite="allow-nan")
+        check_X_y(X, y, ensure_2d=True, ensure_all_finite="allow-nan")  # type: ignore
+
+
+# ======================================================================= TabICL Explainer class
+class _TabICLExplainerMother(BaseEstimator):
+    """Mixin adding SHAP-based explainability to TabICL Mother estimators.
+
+    Wraps the ``tabicl.shap`` workflow (``get_shap_values`` / ``plot_shap``)
+    so it can be mixed into a fitted TabICL estimator via multiple
+    inheritance: `explain` treats ``self`` as the fitted estimator to
+    explain, computes SHAP values once, and caches them on `shap_values_`
+    so `plot` can render several plot kinds without recomputing them.
+
+    Not meant to be instantiated on its own — combined with
+    `TabICLClassifierMother` and `TabICLRegressorMother`, which already
+    inherit from it, so `explain`/`plot` are called directly on a fitted
+    instance of either class.
+
+    .. warning::
+        This only works on a **bare** ``TabICLClassifierMother``/
+        ``TabICLRegressorMother``, not on a surrounding
+        `~mother.ml.core.PipelineWithHyperparameterRooting`. ``tabicl.shap``
+        masks/perturbs samples as plain NumPy arrays (column names are
+        dropped) before calling ``predict``/``predict_proba``, so any
+        preceding pipeline step that selects columns **by name** (e.g. a
+        `~sklearn.compose.ColumnTransformer`-based feature selector) breaks.
+        When the fitted model is inside a pipeline, call `explain` on the
+        final step directly with data already transformed by the preceding
+        steps, e.g. ``model.named_steps["ml_model"].explain(model[:-1].transform(X))``.
+
+        Can be worked around by overriding predict method of PipelineWithHyperparameterRooting
+        and rebuilding the X dataframe with the column's names on it before calling
+        the original predict method.
+
+    Attributes
+    ----------
+    shap_values_ : shap.Explanation or None
+        SHAP values computed by the last call to `explain`. ``None``
+        until `explain` has been called.
+
+    Examples
+    --------
+    >>> from mother.ml.models.m_tabicl import TabICLClassifierMother
+    >>> clf = TabICLClassifierMother().fit(X_train, y_train)
+    >>> shap_values = clf.explain(X_test, max_evals=2 * X_test.shape[1] + 1)
+    >>> clf.plot_shap(kind="beeswarm")
+    """
+
+    def explain(
+        self,
+        X: Union[np.ndarray, pd.DataFrame],
+        max_evals: Optional[int] = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Compute SHAP values for ``X`` and cache them on `shap_values_`.
+
+        Parameters
+        ----------
+        X : array-like or DataFrame of shape (n_samples, n_features)
+            Samples to explain, in the same (raw, untransformed) shape used
+            to `fit` this estimator.
+        max_evals : int or None, default=None
+            Number of model evaluations per sample allowed to estimate the
+            SHAP values.  ``tabicl.shap`` recommends ``2 * n_features + 1``.
+            Forwarded to ``shap.Explainer.__call__`` via
+            :func:`tabicl.shap.get_shap_values`.
+        **kwargs
+            Additional keyword arguments forwarded to
+            :func:`tabicl.shap.get_shap_values`.
+
+        Returns
+        -------
+        shap.Explanation
+            The computed SHAP values, also stored in `shap_values_`.
+        """
+        check_is_fitted(self)
+
+        attribute_names = X.columns.tolist() if isinstance(X, pd.DataFrame) else None
+
+        if max_evals is not None:
+            kwargs["max_evals"] = max_evals
+
+        self.shap_values_ = get_shap_values(
+            estimator=self,
+            X_test=X.values if isinstance(X, pd.DataFrame) else X,
+            attribute_names=attribute_names,
+            **kwargs,
+        )
+        return self.shap_values_
+
+    def plot_shap(self, kind: Union[str, Tuple[str, ...]] = "bar", shap_values: Optional[Any] = None) -> None:
+        """Plot previously computed (or supplied) SHAP values.
+
+        Parameters
+        ----------
+        kind : str or tuple of str, default="bar"
+            Any combination of ``"bar"``, ``"beeswarm"``, and ``"scatter"``.
+        shap_values : shap.Explanation or None, default=None
+            Values to plot.  Defaults to `shap_values_` (from the last
+            `explain` call) when ``None``.
+
+        Raises
+        ------
+        NotFittedError
+            If neither ``shap_values`` nor a cached `shap_values_` is
+            available (i.e. `explain` has not been called yet).
+        """
+        values = shap_values if shap_values is not None else getattr(self, "shap_values_", None)
+
+        if values is None:
+            raise NotFittedError("No SHAP values available. Call explain(X) first or pass shap_values explicitly.")
+
+        plot_shap(values, kind=kind)
 
 
 # =========================================================== Classifier model
 
 
-class TabICLClassifierMother(TabICLClassifier, _TabICLHyperParams):
+class TabICLClassifierMother(TabICLClassifier, _TabICLHyperParams, _TabICLExplainerMother):
     """Mother-compatible wrapper around :class:`tabicl.TabICLClassifier`.
 
     Combines TabICL's in-context-learning classifier with the MotherML
@@ -378,6 +491,9 @@ class TabICLClassifierMother(TabICLClassifier, _TabICLHyperParams):
             if key in self._init_params.keys():
                 self._init_params[key] = value
 
+            else:
+                raise ValueError(f"Unknown parameter '{key}'")
+
         # super class: TabICLClassifier to update the parameters
         super().set_params(**params)
         return self
@@ -469,7 +585,7 @@ class TabICLClassifierMother(TabICLClassifier, _TabICLHyperParams):
 
 
 # =========================================================== Regressor Model
-class TabICLRegressorMother(TabICLRegressor, _TabICLHyperParams):
+class TabICLRegressorMother(TabICLRegressor, _TabICLHyperParams, _TabICLExplainerMother):
     """Mother-compatible wrapper around :class:`tabicl.TabICLRegressor`.
 
     Combines TabICL's in-context-learning regressor with MotherML's
@@ -561,6 +677,8 @@ class TabICLRegressorMother(TabICLRegressor, _TabICLHyperParams):
         for key, value in iteritems(params):
             if key in self._init_params.keys():
                 self._init_params[key] = value
+            else:
+                raise ValueError(f"Unknown parameter '{key}'")
 
         # Update the original tabicl regressor class
         super().set_params(**params)
