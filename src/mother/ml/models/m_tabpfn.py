@@ -682,7 +682,7 @@ class TabPFNEmbeddingTransformer(BaseEstimator, TransformerMixin):
                     fold_model: Union[TabPFNClassifierMother, TabPFNRegressorMother] = model_class(
                         device=self.device,
                         ignore_pretraining_limits=self.ignore_pretraining_limits,
-                        **self.kwargs,
+                        **{**self.kwargs, "inference_precision": torch.float32},
                     )
                     fold_model.fit(X_array[train_idx], y_array[train_idx])
 
@@ -703,7 +703,7 @@ class TabPFNEmbeddingTransformer(BaseEstimator, TransformerMixin):
                 self.model = model_class(
                     device=self.device,
                     ignore_pretraining_limits=self.ignore_pretraining_limits,
-                    **self.kwargs,
+                    **{**self.kwargs, "inference_precision": torch.float32},
                 )
                 self.model.fit(X_array, y_array)
 
@@ -712,7 +712,7 @@ class TabPFNEmbeddingTransformer(BaseEstimator, TransformerMixin):
                 self.model = model_class(
                     device=self.device,
                     ignore_pretraining_limits=self.ignore_pretraining_limits,
-                    **self.kwargs,
+                    **{**self.kwargs, "inference_precision": torch.float32},
                 )
                 self.model.fit(X_array, y_array)
 
