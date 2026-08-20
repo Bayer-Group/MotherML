@@ -998,6 +998,7 @@ class TabICLEmbeddingTransformer(BaseEstimator, TransformerMixin):
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+    def _make_estimator(self) -> Union[TabICLClassifier, TabICLRegressor]:
         """Instantiate a new TabICL estimator with the configured parameters."""
         kwargs = dict(self.kwargs)
 
