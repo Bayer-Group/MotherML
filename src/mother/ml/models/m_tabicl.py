@@ -949,10 +949,55 @@ class TabICLEmbeddingTransformer(BaseEstimator, TransformerMixin):
                 "Set either use_kfold=False or model=None."
             )
 
+    def get_params(self, deep: bool = True) -> dict:  # noqa: ARG002
+        params = {
+            "model_type": self.model_type,
+            "n_folds": self.n_folds,
+            "use_kfold": self.use_kfold,
+            "random_state": self.random_state,
+            "embedding_column_name": self.embedding_column_name,
+            "return_separate_columns": self.return_separate_columns,
+            "model": self.model,
+        }
+        params.update(self.kwargs)
+        return params
+
+    def set_params(self, **params):
+        explicit_keys = {
+            "model_type",
+            "n_folds",
+            "use_kfold",
+            "random_state",
+            "embedding_column_name",
+            "return_separate_columns",
+            "model",
+        }
+
+        for key, value in params.items():
+            if key in explicit_keys:
+                setattr(self, key, value)
+            else:
+                self.kwargs[key] = value
+
+        # Keep derived state consistent with __init__ invariants.
+        self.pre_fitted = self.model is not None
+        if self.pre_fitted and self.use_kfold:
+            raise ValueError(
+                "Cannot use k-fold fitting when a pre-fitted model is already given. "
+                "Set either use_kfold=False or model=None."
+            )
+
+        if self.pre_fitted:
+            if isinstance(self.model, TabICLClassifier):
+                self.model_type = "classification"
+            elif isinstance(self.model, TabICLRegressor):
+                self.model_type = "regression"
+
+        return self
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-    def _make_estimator(self) -> Union[TabICLClassifier, TabICLRegressor]:
         """Instantiate a new TabICL estimator with the configured parameters."""
         kwargs = dict(self.kwargs)
 
