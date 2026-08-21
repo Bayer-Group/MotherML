@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Release preflight checks that complement semantic-release.
 
-This script does not write changelog entries. It validates the commit range since
-last tag and produces a markdown report to support manual release review steps.
+This script does not write changelog entries. It validates commits added after
+the main branch and produces a markdown report to support manual release review.
 """
 
 from __future__ import annotations
@@ -46,12 +46,22 @@ def run_git(args: list[str]) -> str:
     return result.stdout.strip()
 
 
-def get_last_tag() -> str:
-    return run_git(["describe", "--tags", "--abbrev=0"])
+def resolve_base_ref(base_ref: str) -> str:
+    candidates = (f"origin/{base_ref}", base_ref) if base_ref == "main" else (base_ref,)
+    for candidate in candidates:
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", candidate],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            return candidate
+    raise RuntimeError(f"could not resolve base ref: {base_ref}")
 
 
-def get_commits(base_tag: str) -> list[Commit]:
-    raw = run_git(["log", f"{base_tag}..HEAD", "--pretty=format:%H%x09%s"])
+def get_commits(base_ref: str) -> list[Commit]:
+    raw = run_git(["log", "--no-merges", f"{base_ref}..HEAD", "--pretty=format:%H%x09%s"])
     if not raw:
         return []
     commits: list[Commit] = []
@@ -71,7 +81,7 @@ def classify(commit: Commit) -> str | None:
     return commit_type
 
 
-def build_report(base_tag: str, commits: list[Commit]) -> tuple[str, int]:
+def build_report(base_ref: str, commits: list[Commit]) -> tuple[str, int]:
     categorized: dict[str, list[Commit]] = defaultdict(list)
     unknown: list[Commit] = []
     missing_issue_refs: list[Commit] = []
@@ -89,7 +99,7 @@ def build_report(base_tag: str, commits: list[Commit]) -> tuple[str, int]:
     lines: list[str] = []
     lines.append("# Release Preflight Report")
     lines.append("")
-    lines.append(f"Base tag: {base_tag}")
+    lines.append(f"Base ref: {base_ref}")
     lines.append(f"Commit count: {len(commits)}")
     lines.append("")
 
@@ -127,7 +137,7 @@ def build_report(base_tag: str, commits: list[Commit]) -> tuple[str, int]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Release preflight helper")
-    parser.add_argument("--base-tag", default="auto", help="Tag to compare against, or 'auto'")
+    parser.add_argument("--base-ref", default="main", help="Branch or ref to compare against")
     parser.add_argument("--output", default="release-preflight-report.md", help="Output markdown file")
     parser.add_argument(
         "--strict",
@@ -141,9 +151,9 @@ def main() -> int:
     args = parse_args()
 
     try:
-        base_tag = get_last_tag() if args.base_tag == "auto" else args.base_tag
-        commits = get_commits(base_tag)
-        report, unknown_count = build_report(base_tag, commits)
+        base_ref = resolve_base_ref(args.base_ref)
+        commits = get_commits(base_ref)
+        report, unknown_count = build_report(base_ref, commits)
         Path(args.output).write_text(report + "\n", encoding="utf-8")
 
         print(report)
