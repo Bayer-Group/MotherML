@@ -304,8 +304,8 @@ jobs:
 
   publish-pypi:
     name: Publish to PyPI
-    needs: release
-    if: needs.release.outputs.released == 'true'
+    needs: [release, test-pypi-publish]
+    if: needs.release.outputs.released == 'true' && needs.test-pypi-publish.result == 'success'
     environment:
       name: pypi
       url: https://pypi.org/project/mother-ml/
