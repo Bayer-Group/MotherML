@@ -151,19 +151,18 @@ from pathlib import Path
 
 durations_path = Path("durations.json")
 if durations_path.exists():
-  with durations_path.open("r", encoding="utf-8") as json_file:
-    data = json.load(json_file)
+    with durations_path.open("r", encoding="utf-8") as json_file:
+        data = json.load(json_file)
 else:
-  # Example fallback so the snippet can run as-is.
-  data = [
-    {"nodeid": "test/unit/test_core.py::test_fit", "duration": 0.12},
-    {"nodeid": "test/unit/test_ml.py::test_predict", "duration": 0.08},
-  ]
+    # Example fallback so the snippet can run as-is.
+    data = [
+        {"nodeid": "test/unit/test_core.py::test_fit", "duration": 0.12},
+        {"nodeid": "test/unit/test_ml.py::test_predict", "duration": 0.08},
+    ]
 
 test_durations = {item["nodeid"]: item["duration"] for item in data}
 for test_name, duration in test_durations.items():
     print(f"Test {test_name} took {duration:.2f} seconds")
-
 ```
 
 ## Credential Handling
@@ -268,12 +267,36 @@ output_format = "md"
 Releases are automatically triggered when commits are pushed to the `main` branch:
 
 1. **Analysis**: PSR analyzes commit messages since the last release
-2. **Version Calculation**: Determines the next version based on commit types
-3. **Changelog Generation**: Updates `docs/Changelog.md` with new changes
-4. **Version Bump**: Updates version in `pyproject.toml`
-5. **Build**: Creates distribution packages using uv
-6. **Release**: Creates a GitHub release with built artifacts
-7. **Publish**: Uploads packages to the configured repository
+2. **Preflight Audit**: CI runs `scripts/release_preflight.py` to create a release report artifact and fail on non-conventional commit subjects
+3. **Version Calculation**: Determines the next version based on commit types
+4. **Changelog Generation**: Updates `docs/Changelog.md` with new changes
+5. **Version Bump**: Updates version in `pyproject.toml`
+6. **Build**: Creates distribution packages using uv
+7. **Release**: Creates a GitHub release with built artifacts
+8. **Publish**: Uploads packages to the configured repository
+
+The preflight report is designed to complement the `update-docs` skill. It does not replace the skill's issue and milestone reconciliation, but it ensures contributors get an automatic reminder and an auditable report on every PR and on main.
+
+### PR Preflight Comment
+
+On pull requests, the `Release Preflight` workflow posts (and updates) a sticky bot comment that includes the full `release-preflight-report.md` output.
+
+Expected behavior:
+
+- The comment is updated on each workflow run instead of creating duplicates.
+- The report artifact is uploaded even if strict checks fail.
+- The job fails at the end if non-conventional commits are detected.
+
+Typical failure causes:
+
+- Commit subject does not follow Conventional Commits (for example `feat: ...`, `fix: ...`, `docs: ...`).
+- Unsupported commit type in the subject.
+
+How to resolve failures:
+
+1. Rewrite or squash commit subjects to Conventional Commit format.
+2. Re-run CI by pushing the updated branch.
+3. Verify the updated PR comment no longer lists non-conventional commits.
 
 ### Manual Release (if needed)
 
