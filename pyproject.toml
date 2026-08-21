@@ -253,7 +253,7 @@ warn_no_return = true
 extend_skip = [".gitignore", ".pylintrc", "sonar-project.properties"]
 
 [tool.semantic_release]
-version_toml = ["pyproject.toml:project.version"] # changelog file
+version_toml = ["pyproject.toml:project.version"]
 tag_format = "v{version}"
 upload_to_vcs_release = true
 
@@ -269,7 +269,6 @@ exclude_commit_patterns = [
   '''Initial [Cc]ommit.*''',
 ]
 mode = "update"
-changelog_file = "docs/Changelog.md"
 insertion_flag = "..\n    All versions below are listed in reverse chronological order"
 
 [tool.semantic_release.changelog.default_templates]
