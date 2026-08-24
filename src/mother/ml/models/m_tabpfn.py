@@ -67,9 +67,6 @@ try:
     from tabpfn import TabPFNClassifier, TabPFNRegressor
     from tabpfn.constants import ModelVersion
     from tabpfn.regressor import FullOutputDict
-
-    # Set global torch default dtype to avoid BFloat16 compatibility issues
-    torch.set_default_dtype(torch.float32)
 except ImportError as import_error:
     raise ExtrasDependencyImportError("tabpfn", import_error) from import_error
 
