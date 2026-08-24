@@ -116,5 +116,7 @@ To dump the default configuration as yaml file and to be able to modify it to yo
 In the following every highlighted subsection represents the settings for a different transformer. A specialty is the `model` section which contains also the information for feature selection which can be used to create a more complex feature selection pipeline. For example, `pipeline` contains all the required parameters to configure a scikit learn pipeline. Thus, parameters can be set once and reused at different stages of your pipeline.
 
 ~~~yaml hl_lines="8 15 18 31 36 45" title="mother/data/mother_config.yaml"
---8<-- "src/mother/data/mother_config.yaml"
+{%
+    include "../../../src/mother/data/mother_config.yaml"
+%}
 ~~~

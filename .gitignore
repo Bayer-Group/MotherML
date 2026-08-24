@@ -44,8 +44,8 @@ ENV/
 env.bak/
 venv.bak/
 
-# zensical documentation
-site/
+# mkdocs documentation
+mkdocs/site
 
 # mypy
 .mypy_cache/

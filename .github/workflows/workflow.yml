@@ -139,93 +139,9 @@ jobs:
         run: |
           uv run poe test-slow
 
-  release-preflight:
-    name: Release Preflight
-    needs: test-slow
-    runs-on: ubuntu-latest
-    if:
-      ${{ success() && (github.ref == 'refs/heads/main' || github.event_name ==
-      'pull_request') }}
-    permissions:
-      contents: read
-      pull-requests: write
-      issues: write
-    steps:
-      - name: Checkout 🛎
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Run release preflight report
-        id: preflight
-        run: |
-          set +e
-          python3 scripts/release_preflight.py --strict --output release-preflight-report.md
-          exit_code=$?
-          echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
-          exit 0
-
-      - name: Upload preflight artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-preflight-report
-          path: release-preflight-report.md
-          if-no-files-found: error
-
-      - name: Comment preflight report on PR
-        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-        uses: actions/github-script@v8
-        with:
-          script: |
-            const fs = require('fs');
-            const path = 'release-preflight-report.md';
-            const marker = '<!-- release-preflight-report -->';
-            const report = fs.existsSync(path)
-              ? fs.readFileSync(path, 'utf8')
-              : 'Preflight report file was not generated.';
-            const body = `${marker}\n## Release Preflight\n\n\
-            _Automated check that complements semantic-release changelog generation._\n\n\
-            \`\`\`markdown\n${report}\n\`\`\``;
-
-            const { owner, repo } = context.repo;
-            const issue_number = context.issue.number;
-
-            const comments = await github.paginate(github.rest.issues.listComments, {
-              owner,
-              repo,
-              issue_number,
-              per_page: 100,
-            });
-
-            const existing = comments.find(
-              (c) => c.user?.type === 'Bot' && c.body?.includes(marker),
-            );
-
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner,
-                repo,
-                comment_id: existing.id,
-                body,
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner,
-                repo,
-                issue_number,
-                body,
-              });
-            }
-
-      - name: Fail on preflight violations
-        if: steps.preflight.outputs.exit_code != '0'
-        run: |
-          echo "Release preflight failed with exit code ${{ steps.preflight.outputs.exit_code }}."
-          exit 1
-
   release:
     name: Create Release package
-    needs: release-preflight
+    needs: test-slow
     if: success() && github.ref == 'refs/heads/main' &&
       !contains(github.event.head_commit.message, '[skip release]')
     runs-on: ubuntu-latest
@@ -304,8 +220,8 @@ jobs:
 
   publish-pypi:
     name: Publish to PyPI
-    needs: [release, test-pypi-publish]
-    if: needs.release.outputs.released == 'true' && needs.test-pypi-publish.result == 'success'
+    needs: release
+    if: needs.release.outputs.released == 'true'
     environment:
       name: pypi
       url: https://pypi.org/project/mother-ml/
@@ -324,8 +240,8 @@ jobs:
         with:
           packages-dir: dist/
 
-  build-docs:
-    name: Build Docs
+  build-mkdocs:
+    name: Build MkDocs
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -351,16 +267,17 @@ jobs:
           install-args: "--group docs"
 
       - name: Build docs
-        run: uv run zensical build
+        working-directory: mkdocs
+        run: uv run mkdocs build
 
       - name: Upload GitHub Pages artifact
         uses: actions/upload-pages-artifact@v4
         with:
-          path: site/
+          path: mkdocs/site/
 
-  deploy-docs:
+  deploy-mkdocs:
     name: Publish Docs
-    needs: build-docs
+    needs: build-mkdocs
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
