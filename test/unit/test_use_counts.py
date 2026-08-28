@@ -87,13 +87,13 @@ class TestUseCountsFingerprintsGeneric:
             "Count and binary fingerprints should produce different outputs"
         )
 
-    def test_use_counts_default_is_false(self):
-        """RED if default changed: use_counts should default to False."""
+    def test_use_counts_default_is_true(self):
+        """use_counts should default to True."""
         fg = FingerprintsGeneric(
             fp_type="MorganFP",
             parameters={"radius": 2, "fpSize": 2048},
         )
-        assert fg.use_counts is False
+        assert fg.use_counts is True
 
     def test_output_shape_consistent(self, mols_with_repeated_substructures):
         """Both modes should produce the same output shape."""
@@ -123,14 +123,13 @@ class TestUseCountsFingerprintsGeneric:
 class TestUseCountsMorganFingerprints:
     """Tests for use_counts on the MorganFingerprints convenience class."""
 
-    def test_morgan_binary_default(self, mols_with_repeated_substructures):
-        """MorganFingerprints with default use_counts=False should produce binary output."""
+    def test_morgan_count_default(self, mols_with_repeated_substructures):
+        """MorganFingerprints with default use_counts=True should produce count output."""
         fg = MorganFingerprints(radius=2, fpSize=1024)
         fg.fit()
         result = fg.transform(mols_with_repeated_substructures)
 
-        unique_values = np.unique(result[~np.isnan(result)])
-        assert set(unique_values).issubset({0, 1})
+        assert np.nanmax(result) > 1
 
     def test_morgan_count_mode(self, mols_with_repeated_substructures):
         """RED if use_counts not wired through MorganFingerprints: should produce counts > 1."""
