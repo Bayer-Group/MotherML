@@ -125,7 +125,7 @@ class TestUseCountsMorganFingerprints:
 
     def test_morgan_count_default(self, mols_with_repeated_substructures):
         """MorganFingerprints with default use_counts=True should produce count output."""
-        fg = MorganFingerprints(radius=2, fpSize=1024)
+        fg = MorganFingerprints(radius=2, fpSize=2048)
         fg.fit()
         result = fg.transform(mols_with_repeated_substructures)
 
@@ -133,7 +133,7 @@ class TestUseCountsMorganFingerprints:
 
     def test_morgan_count_mode(self, mols_with_repeated_substructures):
         """RED if use_counts not wired through MorganFingerprints: should produce counts > 1."""
-        fg = MorganFingerprints(radius=2, fpSize=1024, use_counts=True)
+        fg = MorganFingerprints(radius=2, fpSize=2048, use_counts=True)
         fg.fit()
         result = fg.transform(mols_with_repeated_substructures)
 
@@ -142,7 +142,7 @@ class TestUseCountsMorganFingerprints:
 
     def test_morgan_use_counts_preserved_after_set_params(self, mols_with_repeated_substructures):
         """use_counts should persist after set_params on other parameters."""
-        fg = MorganFingerprints(radius=2, fpSize=1024, use_counts=True)
+        fg = MorganFingerprints(radius=2, fpSize=2048, use_counts=True)
         fg.set_params(radius=3)
         fg.fit()
         result = fg.transform(mols_with_repeated_substructures)
@@ -152,7 +152,7 @@ class TestUseCountsMorganFingerprints:
 
     def test_morgan_use_counts_toggled_via_set_params(self, mols_with_repeated_substructures):
         """RED if use_counts isn't a proper sklearn param: set_params should toggle it."""
-        fg = MorganFingerprints(radius=2, fpSize=1024, use_counts=False)
+        fg = MorganFingerprints(radius=2, fpSize=2048, use_counts=False)
         fg.set_params(use_counts=True)
         fg.fit()
         result = fg.transform(mols_with_repeated_substructures)
@@ -164,7 +164,7 @@ class TestUseCountsMorganFingerprints:
         """sklearn.clone should preserve use_counts parameter."""
         from sklearn.base import clone
 
-        fg = MorganFingerprints(radius=2, fpSize=1024, use_counts=True)
+        fg = MorganFingerprints(radius=2, fpSize=2048, use_counts=True)
         fg_cloned = clone(fg)
 
         assert fg_cloned.use_counts is True
@@ -172,7 +172,7 @@ class TestUseCountsMorganFingerprints:
 
     def test_morgan_get_params_includes_use_counts(self):
         """use_counts should be visible in get_params()."""
-        fg = MorganFingerprints(radius=2, fpSize=1024, use_counts=True)
+        fg = MorganFingerprints(radius=2, fpSize=2048, use_counts=True)
         params = fg.get_params()
         assert "use_counts" in params
         assert params["use_counts"] is True
