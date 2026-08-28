@@ -119,7 +119,7 @@ class FingerprintsGeneric(BaseEstimator, TransformerMixin, _TransformOnlyValidMo
 
 class MorganFingerprints(FingerprintsGeneric):
     def __init__(
-        self, radius: int = 2, fpSize=2048, include_chirality: bool = False, use_counts: bool = True, **kwargs
+        self, radius: int = 2, fpSize: int = 2048, include_chirality: bool = False, use_counts: bool = True, **kwargs
     ) -> None:
         super().__init__(
             "MorganFP",
