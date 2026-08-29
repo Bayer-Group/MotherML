@@ -218,6 +218,7 @@ class TabPFNRegressorMother(TabPFNRegressor, _TabPFNHyperParams):
         #   TabPFNRegressor.create_default_for_version(ModelVersion.V2)
         if "model_path" not in kwargs:
             kwargs["model_path"] = TabPFNRegressor.create_default_for_version(ModelVersion.V2).model_path
+        kwargs.setdefault("inference_precision", torch.float32)
 
         for key, val in self.default_parameters().items():
             if key not in list(kwargs):
@@ -381,6 +382,7 @@ class TabPFNClassifierMother(TabPFNClassifier, _TabPFNHyperParams):
         #   TabPFNClassifier.create_default_for_version(ModelVersion.V2)
         if "model_path" not in kwargs:
             kwargs["model_path"] = TabPFNClassifier.create_default_for_version(ModelVersion.V2).model_path
+        kwargs.setdefault("inference_precision", torch.float32)
 
         for key, val in self.default_parameters().items():
             if key not in list(kwargs):
