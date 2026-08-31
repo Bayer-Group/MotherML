@@ -1,0 +1,71 @@
+[project]
+site_name = "Mother for Machine Learning"
+site_url = "https://bayer-group.github.io/MotherML/"
+
+repo_url = "https://github.com/Bayer-Group/MotherML"
+repo_name = "MotherML"
+
+nav = [
+  { "Home" = "index.md" },
+  { "Development" = [ { "General Development" = "development/dev.md" }, { "PR Approval Process" = "development/pr_approval_guidelines.md" } ] },
+  { "Usage" = [ { "Overview" = "mother/overview.md" }, { "Configurator" = "mother/configurator.md" }, { "Specifics" = [ { "Models" = "mother/models.md" } ] } ] },
+  { "Tutorials" = "examples.md" },
+  { "Basic Cheminformatics" = [ { "Introduction" = "chemistry.md" }, { "Molecule Standardisation" = "standardization.md" }, { "Feature Generation" = "feature_generation.md" } ] },
+  { "Changelog" = "Changelog.md" },
+]
+
+[project.theme]
+features = [
+  "content.code.select",
+  "content.code.copy",
+  "content.code.annotate",
+  "content.tabs.link",
+]
+
+[project.theme.icon]
+repo = "fontawesome/brands/github"
+
+# Palette toggle for automatic mode
+[[project.theme.palette]]
+media = "(prefers-color-scheme)"
+toggle.icon = "lucide/sun-moon"
+toggle.name = "Switch to light mode"
+
+# Palette toggle for light mode
+[[project.theme.palette]]
+media = "(prefers-color-scheme: light)"
+scheme = "default"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+# Palette toggle for dark mode
+[[project.theme.palette]]
+media = "(prefers-color-scheme: dark)"
+scheme = "slate"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to system preference"
+
+[project.validation.links]
+anchors = "warn"
+not_found = "warn"
+
+[project.plugins]
+search = {}
+"markdown-exec" = {}
+
+[project.markdown_extensions]
+attr_list = {}
+pymdownx.snippets = { base_path = ["."], check_paths = true }
+admonition = {}
+pymdownx.highlight = {auto_title = true, anchor_linenums = true, line_spans = "__span", pygments_lang_class = true}
+pymdownx.superfences = {}
+pymdownx.tabbed = {alternate_style = true}
+pymdownx.emoji.emoji_generator = "zensical.extensions.emoji.to_svg"
+pymdownx.emoji.emoji_index = "zensical.extensions.emoji.twemoji"
+
+[project.plugins.mkdocstrings.handlers.python]
+inventories = ["https://docs.python.org/3/objects.inv"]
+paths = ["src"]
+options.docstring_style = "google"
+options.inherited_members = true
+options.show_source = false
