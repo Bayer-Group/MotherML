@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## v1.1.3 (2026-08-31)
+
+### Bug Fixes
+
+- Fix use count based fingerprints as default, including TabPFN precision handling and test updates
+  ([#75](https://github.com/Bayer-Group/MotherML/pull/75),
+  [`74cac2ec`](https://github.com/Bayer-Group/MotherML/commit/74cac2ec0f93fa7f436c5fc6f4f5c8f711ae1a8a))
+
+- (tabpfn) Restore upstream TabPFN precision handling with float32 for all operations
+
+
+## v1.1.2 (2026-08-25)
+
+### Bug Fixes
+
+- Solving the `max_features` parameter not being correctly passed to the superclass
+  ([#40](https://github.com/Bayer-Group/MotherML/pull/40),
+  [`4fd6869c`](https://github.com/Bayer-Group/MotherML/commit/4fd6869c3b3218cedf96060bcf4afe84ba70ece5))
+
+
+## v1.1.1 (2026-08-21)
+
+### Chores
+
+- Update changelog for version 1.1.0 with bug fixes and new features
+  ([`8a69fa24`](https://github.com/Bayer-Group/MotherML/commit/8a69fa246b449f257dacd93d0cbbd28b28090532))
+
+
 ## v1.1.0 (2026-08-20)
 
 ### Bug Fixes
