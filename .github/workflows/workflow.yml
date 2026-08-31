@@ -85,7 +85,7 @@ jobs:
         run: |
           uv run poe coverage
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: coverage-py${{ matrix.python-version }}
           path: ./coverage.xml
@@ -168,7 +168,7 @@ jobs:
           exit 0
 
       - name: Upload preflight artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-preflight-report
           path: release-preflight-report.md
@@ -194,7 +194,7 @@ jobs:
       pull-requests: write
     steps:
       - name: Download preflight artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           name: release-preflight-report

@@ -256,6 +256,12 @@ extend_skip = [".gitignore", ".pylintrc", "sonar-project.properties"]
 version_toml = ["pyproject.toml:project.version"]
 tag_format = "v{version}"
 upload_to_vcs_release = true
+# Keep uv.lock's own-package version in sync with the bump. build_command runs
+# after the version is written and before the release commit; assets adds the
+# regenerated lock to that same commit. uv is not present in the PSR action
+# container, so it is installed here first.
+build_command = "python3 -m pip install uv && uv lock"
+assets = ["uv.lock"]
 
 [tool.semantic_release.changelog]
 # Recommended patterns for conventional commits parser that is scope aware
