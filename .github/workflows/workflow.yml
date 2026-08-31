@@ -146,10 +146,12 @@ jobs:
     if:
       ${{ success() && (github.ref == 'refs/heads/main' || github.event_name ==
       'pull_request') }}
+    # Least privilege: this job checks out and runs untrusted PR code
+    # (scripts/release_preflight.py), so it must never hold a write-scoped token.
+    # Posting the report comment is handled by the separate comment-preflight
+    # job below, which never executes PR code.
     permissions:
       contents: read
-      pull-requests: write
-      issues: write
     steps:
       - name: Checkout 🛎
         uses: actions/checkout@v7
@@ -172,8 +174,32 @@ jobs:
           path: release-preflight-report.md
           if-no-files-found: error
 
+      - name: Fail on preflight violations
+        if: steps.preflight.outputs.exit_code != '0'
+        run: |
+          echo "Release preflight failed with exit code ${{ steps.preflight.outputs.exit_code }}."
+          exit 1
+
+  comment-preflight:
+    name: Comment Preflight Report
+    needs: release-preflight
+    runs-on: ubuntu-latest
+    # Isolated commenting job: it does NOT check out or execute any PR code, it
+    # only downloads the report artifact and posts it. This is the only job that
+    # holds a write-scoped token, and it is gated to same-repo PRs (fork PRs
+    # receive a read-only token from GitHub regardless). always() lets the
+    # comment post even when the preflight check fails upstream.
+    if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Download preflight artifact
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: release-preflight-report
+
       - name: Comment preflight report on PR
-        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/github-script@v8
         with:
           script: |
@@ -217,12 +243,6 @@ jobs:
               });
             }
 
-      - name: Fail on preflight violations
-        if: steps.preflight.outputs.exit_code != '0'
-        run: |
-          echo "Release preflight failed with exit code ${{ steps.preflight.outputs.exit_code }}."
-          exit 1
-
   release:
     name: Create Release package
     needs: release-preflight
@@ -253,7 +273,7 @@ jobs:
           install-args: "--extra report --extra rna --extra tabpfn --extra tabicl"
 
       - name: Python Semantic Release
-        uses: python-semantic-release/python-semantic-release@v10.2.0
+        uses: python-semantic-release/python-semantic-release@2896129e02bb7809d2cf0c1b8e9e795ee27acbcf # v10.2.0
         id: release
         with:
           github_token: ${{ secrets.PAT_RELEASE_PIPELINE }}
@@ -296,7 +316,7 @@ jobs:
           path: dist
 
       - name: Upload package to Test PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc # v1.12.4
         with:
           repository-url: https://test.pypi.org/legacy/
           skip-existing: true
@@ -320,7 +340,7 @@ jobs:
           path: dist/
 
       - name: Publish package distributions to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc # v1.12.4
         with:
           packages-dir: dist/
 
