@@ -773,6 +773,15 @@ wheels = [
 ]
 
 [[package]]
+name = "colour"
+version = "0.1.5"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/a0/d4/5911a7618acddc3f594ddf144ecd8a03c29074a540f4494670ad8f153efe/colour-0.1.5.tar.gz", hash = "sha256:af20120fefd2afede8b001fbef2ea9da70ad7d49fafdb6489025dae8745c3aee", size = 24776, upload-time = "2017-11-19T23:20:08.015Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/74/46/e81907704ab203206769dee1385dc77e1407576ff8f50a0681d0a6b541be/colour-0.1.5-py2.py3-none-any.whl", hash = "sha256:33f6db9d564fadc16e59921a56999b79571160ce09916303d35346dddc17978c", size = 23772, upload-time = "2017-11-19T23:20:04.56Z" },
+]
+
+[[package]]
 name = "comm"
 version = "0.2.3"
 source = { registry = "https://pypi.org/simple" }
@@ -1483,6 +1492,20 @@ wheels = [
 [package.optional-dependencies]
 http = [
     { name = "aiohttp" },
+]
+
+[[package]]
+name = "galois"
+version = "0.4.11"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numba" },
+    { name = "numpy" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/08/84/996f1c4a7e8fe973a7f8e4d7901e125a91d0abb62615e35076ff47e9383a/galois-0.4.11.tar.gz", hash = "sha256:f5055546c4b39d1e36decae9d4f21f3d66d9c6c7c9aec39189cb5d2284e9022f", size = 7402587, upload-time = "2026-05-02T18:21:28.615Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/05/89/dc69acbd34bde07b9dee9f9f88d7ce61ff97fd99d6d576d72d2db1461349/galois-0.4.11-py3-none-any.whl", hash = "sha256:d2e12a2b7fd44b108cc15d7de27dabcb8a98a556ea2c69c94fe695139629d9aa", size = 4197346, upload-time = "2026-05-02T18:21:26.868Z" },
 ]
 
 [[package]]
@@ -2786,7 +2809,7 @@ wheels = [
 
 [[package]]
 name = "mother-ml"
-version = "1.0.4"
+version = "1.1.2"
 source = { editable = "." }
 dependencies = [
     { name = "boruta" },
@@ -2821,6 +2844,11 @@ rna = [
     { name = "anndata" },
     { name = "scanpy", version = "1.11.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "scanpy", version = "1.12.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+]
+tabicl = [
+    { name = "matplotlib" },
+    { name = "tabicl", extra = ["shap"] },
+    { name = "torch" },
 ]
 tabpfn = [
     { name = "tabpfn" },
@@ -2876,6 +2904,7 @@ requires-dist = [
     { name = "kmedoids", marker = "extra == 'clustering'", specifier = ">=0.5.3.1,<0.6" },
     { name = "leidenalg", marker = "extra == 'report'", specifier = ">=0.10.2,<0.11" },
     { name = "matplotlib", marker = "extra == 'report'", specifier = ">3.7.0" },
+    { name = "matplotlib", marker = "extra == 'tabicl'", specifier = ">3.7.0" },
     { name = "numpy", specifier = ">=2.2,<2.3" },
     { name = "optuna", specifier = ">=4.2.0,<5" },
     { name = "pandas", specifier = ">=2.2,<3.0" },
@@ -2887,12 +2916,14 @@ requires-dist = [
     { name = "scikit-learn", specifier = ">=1.9.0,<1.10" },
     { name = "scipy", specifier = ">=1.11.1,<2" },
     { name = "seaborn", marker = "extra == 'report'", specifier = ">=0.13.2,<0.14" },
+    { name = "tabicl", extras = ["shap"], marker = "extra == 'tabicl'", specifier = ">=2.1.1" },
     { name = "tabpfn", marker = "extra == 'tabpfn'", specifier = "==8.2.0" },
+    { name = "torch", marker = "extra == 'tabicl'", specifier = ">=2.11.0,<3" },
     { name = "torch", marker = "extra == 'tabpfn'", specifier = ">=2.3.0,<3" },
     { name = "torch", marker = "extra == 'torch'", specifier = ">=2.3.0,<3" },
     { name = "umap-learn", marker = "extra == 'report'", specifier = ">=0.5.12,<0.6" },
 ]
-provides-extras = ["torch", "report", "rna", "clustering", "tabpfn"]
+provides-extras = ["torch", "report", "rna", "clustering", "tabpfn", "tabicl"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -5238,6 +5269,69 @@ wheels = [
 ]
 
 [[package]]
+name = "shapiq"
+version = "1.4.1"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version < '3.12'",
+]
+dependencies = [
+    { name = "colour" },
+    { name = "galois" },
+    { name = "joblib" },
+    { name = "matplotlib" },
+    { name = "networkx" },
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "pillow" },
+    { name = "requests" },
+    { name = "scikit-learn" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" } },
+    { name = "sparse-transform" },
+    { name = "tqdm" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a8/20/8e7bf8e1d2ad5e50c5ddb884760fe67657eee38b0ebe9d9996a0ab227221/shapiq-1.4.1.tar.gz", hash = "sha256:7f612c84fcfe4746ff826db72efa2944f9aa693c5c00c6e17a882613471534f8", size = 5781786, upload-time = "2025-11-10T19:43:31.882Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/af/cc/13fefd7203ffe71d5107221be939dd64945378b93f7c0a7cb82d7f281071/shapiq-1.4.1-py3-none-any.whl", hash = "sha256:c86667eb28ea0de56005fbe9fd072783242b74aa87fede11e07b6b915b93e7b3", size = 5871550, upload-time = "2025-11-10T19:43:29.858Z" },
+]
+
+[[package]]
+name = "shapiq"
+version = "1.7.0"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.12'",
+]
+dependencies = [
+    { name = "colour" },
+    { name = "joblib" },
+    { name = "matplotlib" },
+    { name = "networkx" },
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "pillow" },
+    { name = "requests" },
+    { name = "scikit-learn" },
+    { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" } },
+    { name = "tqdm" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/45/55/6b12e99772dd45a90d6473afd16a1c6438da1ab4d91c6b9b81ac4e958088/shapiq-1.7.0.tar.gz", hash = "sha256:17cad036c50ec5782a4e72550ba5b1e73955b8f06387acb6e20d436eb33eb44d", size = 15318066, upload-time = "2026-08-27T13:10:59.869Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d2/4b/d2866469cd6fb1beed9cc2345173128fdd4a21670f73cf0e04197f504039/shapiq-1.7.0-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:0a29d2e83decaf1fc6b7a3344c774b9466fed486684b01d4777ae4c96404190b", size = 16164581, upload-time = "2026-08-27T13:10:31.132Z" },
+    { url = "https://files.pythonhosted.org/packages/80/98/f16b1a36869135d2512bf050cec1f1e0070ed12e849ddcca8802fb30ac5c/shapiq-1.7.0-cp312-cp312-macosx_12_0_arm64.whl", hash = "sha256:2a97f078678672655391a62638060fbdc1129a6095e81fbbe9e5ba088b05a2a6", size = 16147370, upload-time = "2026-08-27T13:10:33.595Z" },
+    { url = "https://files.pythonhosted.org/packages/83/fd/c5e31e17e6fb09c376e997c996c60b6008bd64d0fbb348b597af98ab48a7/shapiq-1.7.0-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:fc2e556f5b3a9c5e3f55f402f1e43276917e4228ba21a97f104dea0d8cc8c9e5", size = 17928337, upload-time = "2026-08-27T13:10:35.945Z" },
+    { url = "https://files.pythonhosted.org/packages/41/42/560dc3a2a3627200ddfe8ded67ca79e7adf7426f5e1b21b627ce2b68055e/shapiq-1.7.0-cp312-cp312-win_amd64.whl", hash = "sha256:474ead88733724319fe016ba5d670200e23c3796b813feacfde8be553900d956", size = 16043784, upload-time = "2026-08-27T13:10:38.129Z" },
+    { url = "https://files.pythonhosted.org/packages/d0/36/c5e3f6f52012367c80f5d36d4a2b2611986af08b5dd50c87be24306fc483/shapiq-1.7.0-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:a3e00c0b0a3d3ee01ff8334926329bbbb1b8f8d9cabe81f1a5f16e622efe9a91", size = 16164596, upload-time = "2026-08-27T13:10:40.407Z" },
+    { url = "https://files.pythonhosted.org/packages/e2/17/4cde51ee3c819f456a63824c56effa73cc419441b5711d0444b599e3c34e/shapiq-1.7.0-cp313-cp313-macosx_12_0_arm64.whl", hash = "sha256:870f622f3c4962b56046babcbda9b8f36b32ae59b9e8413993fc9b646128a3dd", size = 16147373, upload-time = "2026-08-27T13:10:43.429Z" },
+    { url = "https://files.pythonhosted.org/packages/18/17/3b890f3adf731725467c93f1becfef19bdcaaa5194a2bb651f0e3061991a/shapiq-1.7.0-cp313-cp313-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:9ba078726fa6401278d83c8fd4ad8fa28cc851374c5cc56aa2890984c6022441", size = 17940714, upload-time = "2026-08-27T13:10:45.883Z" },
+    { url = "https://files.pythonhosted.org/packages/b9/e6/f609f790273ae06fb97d19d3b1e834baff7569f878ca6ab8bfcc7e61ba7a/shapiq-1.7.0-cp313-cp313-win_amd64.whl", hash = "sha256:adb39eaa225d8cd50aee7cee5153e0c3baa4fdf7b43f1c396540a17381de7409", size = 16043797, upload-time = "2026-08-27T13:10:48.212Z" },
+    { url = "https://files.pythonhosted.org/packages/4b/96/7182581836dc98d18a8813e5e0565887c05ba7e92b7ce4301677336c6cdb/shapiq-1.7.0-cp314-cp314-macosx_10_15_x86_64.whl", hash = "sha256:0a5db3f3587ba581e521c5e6e8a4c46634da194885c4dc93fcafab7dcd3345fc", size = 16164721, upload-time = "2026-08-27T13:10:50.552Z" },
+    { url = "https://files.pythonhosted.org/packages/3b/3d/c1978dac495effbfec4fff4490ade240f12506ad2ac5871a432173be2083/shapiq-1.7.0-cp314-cp314-macosx_12_0_arm64.whl", hash = "sha256:d50e2c21cf7b15a9040d0e7da7505e4754ca32ea9b0564dbbeab49f6add2a223", size = 16147558, upload-time = "2026-08-27T13:10:53.048Z" },
+    { url = "https://files.pythonhosted.org/packages/ee/87/e35d493374eb2d9a54b49fdd120f651f9e29bcc3102a82c30cebb0da9e05/shapiq-1.7.0-cp314-cp314-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:116ac5797692d5b687fa4bafed32a0149612aefdb3b1e0c5f3057f953ce916db", size = 17941056, upload-time = "2026-08-27T13:10:55.329Z" },
+    { url = "https://files.pythonhosted.org/packages/a4/a2/5d004323f1027f0ca176e2340492aa3d0d3eced8730af8667ff057de559e/shapiq-1.7.0-cp314-cp314-win_amd64.whl", hash = "sha256:7fce0912d865eb3d793b1f6f1171b96c9e4df3b83476dcf8ee7bca1709bc6881", size = 15928709, upload-time = "2026-08-27T13:10:57.563Z" },
+]
+
+[[package]]
 name = "shellingham"
 version = "1.5.4"
 source = { registry = "https://pypi.org/simple" }
@@ -5280,6 +5374,22 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/80/f1/93422647dd7e461f23d254e6b2bfa687a85b53aeb4903fcdbb74474d4584/soupsieve-2.9.tar.gz", hash = "sha256:acee8417325c5653e1377dc31eccad59eb82cbc65942afe6174c53b3aaad63fc", size = 122122, upload-time = "2026-07-19T01:35:18.425Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/7b/d6/3185ab5ad1280319b31986898f3206dd7227cd75e293d4dba2a5e6bf27a0/soupsieve-2.9-py3-none-any.whl", hash = "sha256:a2b2c76d67df2382d245409fd71e321a571717e58463efa32ace87dcadac2c12", size = 37387, upload-time = "2026-07-19T01:35:17.106Z" },
+]
+
+[[package]]
+name = "sparse-transform"
+version = "0.2.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "galois" },
+    { name = "numpy" },
+    { name = "scikit-learn" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" } },
+    { name = "tqdm" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d5/da/82132137fdc207c4a14abb52fedcd8cc3dd697175f548cfb8689bd2afab8/sparse_transform-0.2.1.tar.gz", hash = "sha256:470d54c884600d97254469a3d85fac775480d18a8aa2c43574350695e1015c66", size = 24803, upload-time = "2025-04-03T08:11:39.47Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/64/ec/c85f95289e4638faf889ca02b588ad3af0f3ef8f92b99bee3ce936ef3860/sparse_transform-0.2.1-py3-none-any.whl", hash = "sha256:d01b19f8add68e2b4c98a17272830af0e03d163667f03b1dc2b0c9eb8471727b", size = 27034, upload-time = "2025-04-03T08:11:38.551Z" },
 ]
 
 [[package]]
@@ -5394,6 +5504,35 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/83/d3/803453b36afefb7c2bb238361cd4ae6125a569b4db67cd9e79846ba2d68c/sympy-1.14.0.tar.gz", hash = "sha256:d3d3fe8df1e5a0b42f0e7bdf50541697dbe7d23746e894990c030e2b05e72517", size = 7793921, upload-time = "2025-04-27T18:05:01.611Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a2/09/77d55d46fd61b4a135c444fc97158ef34a095e5681d0a6c10b75bf356191/sympy-1.14.0-py3-none-any.whl", hash = "sha256:e091cc3e99d2141a0ba2847328f5479b05d94a6635cb96148ccb3f34671bd8f5", size = 6299353, upload-time = "2025-04-27T18:04:59.103Z" },
+]
+
+[[package]]
+name = "tabicl"
+version = "2.1.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "einops" },
+    { name = "huggingface-hub" },
+    { name = "numpy" },
+    { name = "psutil" },
+    { name = "scikit-learn" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "torch" },
+    { name = "tqdm" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e0/c3/ef8bcc7645bc1eedae4563df6429f6f5438aaea5e293682a9367bf2c2ddb/tabicl-2.1.1.tar.gz", hash = "sha256:7abdb1fa878e7a1edfa1c6606bf4189e9cccc20935e8011d7e690f4693c9c5c5", size = 224680, upload-time = "2026-04-29T15:57:46.302Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/60/d3/f6eadcef58322b1b0253df1c17d9230db9934274f52e0d952458f6c6ab41/tabicl-2.1.1-py3-none-any.whl", hash = "sha256:cb4405cc93335c688bc9bcb703c7944032fcf542b43ebb66820f1a5acb5651b1", size = 252909, upload-time = "2026-04-29T15:57:47.775Z" },
+]
+
+[package.optional-dependencies]
+shap = [
+    { name = "matplotlib" },
+    { name = "numba" },
+    { name = "shap" },
+    { name = "shapiq", version = "1.4.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "shapiq", version = "1.7.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
 
 [[package]]

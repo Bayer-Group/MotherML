@@ -31,12 +31,12 @@ for k, v in Descriptors.descList:
 
     #### Binary vs. Count Fingerprints
 
-    By default, fingerprints are generated as **binary** vectors — each bit is either `0` (substructure absent) or `1` (substructure present). You can switch to **count-based** fingerprints by setting `use_counts=True`, which records ***how many times*** each substructure occurs in the molecule. Count fingerprints can improve model performance when the frequency of substructures is informative.
+    By default, `FingerprintsGeneric` and `MorganFingerprints` generate **count-based** vectors, which record ***how many times*** each substructure occurs in a molecule. Count fingerprints can improve model performance when substructure frequency is informative. Set `use_counts=False` to generate a binary vector, where each bit is either `0` (substructure absent) or `1` (substructure present).
 
     | Mode | Parameter | Output values | Use case |
     |------|-----------|---------------|----------|
-    | Binary (default) | `use_counts=False` | 0 or 1 | General-purpose fingerprinting |
-    | Count | `use_counts=True` | 0, 1, 2, … | When substructure frequency matters |
+    | Count (default) | `use_counts=True` | 0, 1, 2, ... | When substructure frequency matters |
+    | Binary | `use_counts=False` | 0 or 1 | When only substructure presence matters |
 
     The `use_counts` parameter is available on both `FingerprintsGeneric` and the `MorganFingerprints` convenience class:
 
@@ -46,17 +46,19 @@ from mother.feature_generation import FingerprintsGeneric, MorganFingerprints
 
 molecule_objects = [Chem.MolFromSmiles(smi) for smi in ["CCO", "CCN", "c1ccccc1"]]
 
-# Count-based Morgan fingerprints via the convenience class
-morgan_counts = MorganFingerprints(radius=2, fpSize=1024, use_counts=True)
+# Count-based Morgan fingerprints are the default
+morgan_counts = MorganFingerprints(radius=2, fpSize=2048)
 features = morgan_counts.fit_transform(molecule_objects)
 
 # Count-based fingerprints via the generic class (works with any supported fp_type)
 fp_counts = FingerprintsGeneric(
     fp_type="AtomPairFP",
     parameters={"fpSize": 2048},
-    use_counts=True,
 )
 features = fp_counts.fit_transform(molecule_objects)
+
+# Opt in to binary Morgan fingerprints
+morgan_binary = MorganFingerprints(radius=2, fpSize=2048, use_counts=False)
 ```
 
     !!! note
@@ -86,10 +88,12 @@ from mother.feature_generation import ChemicalDescriptors, MorganFingerprints
 
 molecule_objects = [Chem.MolFromSmiles(smi) for smi in ["CCO", "CCN", "c1ccccc1"]]
 
-feature_generator = FeatureUnion([
-    ("descriptors", ChemicalDescriptors(descriptor_list=["MolWt", "MolLogP"])),
-    ("morgan_fp", MorganFingerprints(radius=2, fpSize=1024)),
-])
+feature_generator = FeatureUnion(
+    [
+        ("descriptors", ChemicalDescriptors(descriptor_list=["MolWt", "MolLogP"])),
+        ("morgan_fp", MorganFingerprints(radius=2, fpSize=2048)),
+    ]
+)
 features = feature_generator.fit_transform(molecule_objects)
 ```
 

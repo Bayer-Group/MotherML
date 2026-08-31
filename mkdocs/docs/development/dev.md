@@ -254,7 +254,7 @@ The semantic release configuration is defined in `pyproject.toml`:
 [tool.semantic_release]
 version_toml = ["pyproject.toml:project.version"]
 build_command = "uv build"
-upload_to_release = true
+upload_to_vcs_release = true
 
 [tool.semantic_release.changelog]
 mode = "update"
@@ -280,14 +280,11 @@ Releases are automatically triggered when commits are pushed to the `main` branc
 While releases are automated, you can manually trigger a release:
 
 ```bash
-# Dry run to see what would happen
-uv run semantic-release version --no-push
+# Print the next version without changing files
+uv run semantic-release version --print
 
 # Generate changelog only
 uv run semantic-release changelog
-
-# Print current version
-uv run semantic-release version --print
 ```
 
 ### Best Practices
