@@ -273,7 +273,7 @@ jobs:
           install-args: "--extra report --extra rna --extra tabpfn --extra tabicl"
 
       - name: Python Semantic Release
-        uses: python-semantic-release/python-semantic-release@2896129e02bb7809d2cf0c1b8e9e795ee27acbcf # v10.2.0
+        uses: python-semantic-release/python-semantic-release@9a026e9303981c866c3425723009becb2437c757 # v10.6.2
         id: release
         with:
           github_token: ${{ secrets.PAT_RELEASE_PIPELINE }}
