@@ -536,6 +536,11 @@ class TabPFNEmbeddingTransformer(BaseEstimator, TransformerMixin):
         torch.manual_seed(self.random_state)
         np.random.seed(self.random_state)
 
+    def _prepare_prefitted_model_for_embeddings(self) -> None:
+        if self.model is None:
+            raise RuntimeError("A pre-fitted model is required to extract embeddings.")
+        self.model.use_autocast_ = False
+
     def _get_best_embeddings(
         self,
         embeddings: np.ndarray,
@@ -633,6 +638,7 @@ class TabPFNEmbeddingTransformer(BaseEstimator, TransformerMixin):
             module_logger.info(
                 "A pre-fitted model has been given. The new data will not be used for fitting the model."
             )
+            self._prepare_prefitted_model_for_embeddings()
             self.train_embeddings_ = self.model.get_embeddings(X_array)
             self._embedding_dim = self.train_embeddings_.shape[1]
         else:
@@ -777,6 +783,8 @@ class TabPFNEmbeddingTransformer(BaseEstimator, TransformerMixin):
             X_array = np.asarray(X, dtype=np.float32)
 
         # Get embeddings for new data using the main model
+        if self.pre_fitted:
+            self._prepare_prefitted_model_for_embeddings()
         embeddings = self.model.get_embeddings(X_array)
         # collapse the additional column caused by estimators (avg)
         if len(embeddings.shape) == 3:

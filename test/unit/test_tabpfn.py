@@ -208,6 +208,7 @@ class TestTabPFNEmbeddingTransformer:
         )
 
         result_prefitted = transformer_prefitted.transform(self.X)
+        assert transformer_prefitted.model.use_autocast_ is False
 
         transformer_newfit = TabPFNEmbeddingTransformer(
             model_type="regression", use_kfold=False, n_estimators=1, random_state=0
