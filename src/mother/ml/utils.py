@@ -796,7 +796,7 @@ def groupwise_topk_analysis(
     """Perform groupwise top-k uncertainty analysis across ranking groups.
 
     For each ranking group, computes:
-    - ``topk_disagreement_prob``: fraction of ensembles disagreeing about each item's top-k membership
+    - ``topk_disagreement_prob``: pairwise probability that ensembles disagree about each item's top-k membership
     - ``topk_score_var``: score variance for items in the top-k (0 otherwise)
     - ``topk_member``: whether the item is in the consensus top-k (based on mean rank)
 
@@ -830,6 +830,8 @@ def groupwise_topk_analysis(
         raise ValueError(f"Expected 2D score_ensembles, got {score_arr.ndim}D.")
     if len(uncertainty_df) != len(group_arr) or score_arr.shape[0] != len(group_arr):
         raise ValueError("uncertainty_df, score_ensembles, and group_ids must have the same number of rows.")
+    if pd.isna(group_arr).any():
+        raise ValueError("group_ids must not contain missing values.")
     if k < 1:
         raise ValueError(f"k must be >= 1, got {k}.")
     if not np.isfinite(score_arr).all():

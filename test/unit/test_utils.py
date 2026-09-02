@@ -268,6 +268,16 @@ def test_groupwise_topk_analysis_respects_group_boundaries():
     np.testing.assert_allclose(result["topk_score_var"], [0.5, 0.0, 4.5, 0.0])
 
 
+def test_groupwise_topk_analysis_rejects_missing_group_ids():
+    uncertainty_df = pd.DataFrame({"mean_predictions": [1.0, 2.0], "knowledge_uncertainty": [0.0, 0.0]})
+    score_ensembles = np.array([[2.0, 3.0], [1.0, 0.0]])
+
+    with pytest.raises(ValueError, match="group_ids must not contain missing values"):
+        mother.ml.utils.groupwise_topk_analysis(
+            uncertainty_df, score_ensembles, np.array(["a", np.nan], dtype=object), k=1
+        )
+
+
 def test_numeric_columns_all_numeric():
     df = pd.DataFrame({"a": [1, 2, 3], "b": [4.0, 5.0, 6.0]})
     result = utils.get_numeric_columns(df)
