@@ -4,7 +4,7 @@ from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
-from catboost import CatBoost, CatBoostClassifier, CatBoostRegressor
+from catboost import CatBoost, CatBoostClassifier, CatBoostRanker, CatBoostRegressor
 from optuna.trial import Trial
 from scipy.sparse import csr_matrix, issparse
 from scipy.stats import rankdata
@@ -31,6 +31,25 @@ import mother.errors as errors
 import mother.ml.properties as props
 
 module_logger: logging.Logger = logging.getLogger(__name__)
+
+
+def scores_to_ranks(scores: np.ndarray) -> np.ndarray:
+    """Convert scores to 1-based ranks, with rank 1 assigned to the highest score."""
+    scores = np.asarray(scores).reshape(-1)
+    order = np.argsort(-scores, kind="mergesort")
+    ranks = np.empty_like(order)
+    ranks[order] = np.arange(1, scores.size + 1)
+    return ranks
+
+
+def scores_matrix_to_ranks(score_matrix: np.ndarray) -> np.ndarray:
+    """Convert score matrix columns to per-ensemble 1-based ranks."""
+    arr = np.asarray(score_matrix)
+    if arr.ndim != 2:
+        raise ValueError(f"Expected 2D score_matrix, got {arr.ndim}D.")
+    return np.column_stack([scores_to_ranks(arr[:, ensemble_idx]) for ensemble_idx in range(arr.shape[1])]).astype(
+        float
+    )
 
 
 def default_loss_function(
@@ -411,15 +430,34 @@ class MotherTransformedTargetRegressor(TransformedTargetRegressor, AbstractMothe
             )
 
 
+@typing.overload
+def get_virtual_prediction(
+    X: pd.DataFrame,
+    model: CatBoostRanker,
+    virtual_ensembles_count: int = 10,
+    thread_count: int = 1,
+) -> typing.Tuple[pd.DataFrame, np.ndarray]: ...
+
+
+@typing.overload
+def get_virtual_prediction(
+    X: pd.DataFrame,
+    model: typing.Union[CatBoostRegressor, CatBoostClassifier],
+    virtual_ensembles_count: int = 10,
+    thread_count: int = 1,
+) -> pd.DataFrame: ...
+
+
 def get_virtual_prediction(
     X: pd.DataFrame,
     model: typing.Union[
         CatBoostRegressor,
         CatBoostClassifier,
+        CatBoostRanker,
     ],
     virtual_ensembles_count: int = 10,
     thread_count: int = 1,
-) -> pd.DataFrame:
+) -> typing.Union[pd.DataFrame, typing.Tuple[pd.DataFrame, np.ndarray]]:
     """
     Generates virtual ensemble predictions using CatBoost's built-in uncertainty prediction.
 
@@ -430,33 +468,90 @@ def get_virtual_prediction(
     ----------
     X : pd.DataFrame
         DataFrame containing the features for prediction.
-    model : typing.Union[CatBoostRegressor, CatBoostClassifier]
-        Trained CatBoost model (either regressor or classifier).
+    model : typing.Union[CatBoostRegressor, CatBoostClassifier, CatBoostRanker]
+        Trained CatBoost model (regressor, classifier, or ranker).
     virtual_ensembles_count : int, optional
         Number of virtual ensembles to use for uncertainty estimation. Default is 10.
     thread_count : int, optional
-        Number of threads is equal to the number of processor cores. Default is 1 (use all available threads).
-
+        Number of threads. Use -1 to use all available threads. Default is 1.
     Returns
     -------
-    pd.DataFrame
-        A DataFrame containing the predictions and uncertainty components with the following columns:
-        - 'mean_predictions': Mean prediction values (None for classifiers)
-        - 'knowledge_uncertainty': Model's epistemic uncertainty (uncertainty in model parameters)
-        - 'data_uncertainty': Aleatoric uncertainty (inherent data noise/variability)
-        - 'total_uncertainty': Sum of knowledge and data uncertainty components
+    pd.DataFrame or tuple[pd.DataFrame, np.ndarray]
+        For ``CatBoostRegressor`` and ``CatBoostClassifier``: a DataFrame with columns
+        ``mean_predictions``, ``knowledge_uncertainty``, ``data_uncertainty``, ``total_uncertainty``.
+
+        For ``CatBoostRanker``: a tuple ``(uncertainty_df, raw_scores)`` where
+        ``uncertainty_df`` has the same columns as above and ``raw_scores`` is a float
+        array of shape ``(n_samples, virtual_ensembles_count)`` with the raw score from
+        each virtual ensemble.  Callers can apply ``scores_to_ranks`` column-wise to
+        ``raw_scores`` to obtain per-ensemble rank distributions.
 
     Notes:
     ---------
     Regression:
-        CatBoost returns preedictive uncertainties as variances. We convert them to standard deviations
-        to improve interpretability.For regression models not using 'RMSEWithUncertainty' loss,
+        CatBoost returns predictive uncertainties as variances. We convert them to standard deviations
+        to improve interpretability. For regression models not using 'RMSEWithUncertainty' loss,
         only mean_predictions and knowledge_uncertainty will have values.
     Classification:
         Uncertainties are entropy-based as defined by CatBoost and are returned without transformation.
+    Ranking:
+        Returns mean raw ranking scores and epistemic uncertainty from virtual ensembles.
+        Knowledge uncertainty is the standard deviation of the virtual-ensemble scores.
     """
 
+    if (
+        not isinstance(virtual_ensembles_count, (int, np.integer))
+        or isinstance(virtual_ensembles_count, bool)
+        or virtual_ensembles_count < 1
+    ):
+        raise ValueError(f"virtual_ensembles_count must be a positive integer, got {virtual_ensembles_count}.")
+    virtual_ensembles_count = int(virtual_ensembles_count)
+
+    if not isinstance(model, (CatBoostRegressor, CatBoostClassifier, CatBoostRanker)):
+        raise ValueError("model must be an instance of CatBoostRegressor, CatBoostClassifier, or CatBoostRanker.")
+
     module_logger.info("Using catboost's builtin uncertainty prediction")
+
+    if isinstance(model, CatBoostRanker):
+        # For rankers, VirtEnsembles gives one score column per virtual ensemble
+        # (shape: n_samples × virtual_ensembles_count), which lets us compute
+        # mean and std directly without a separate TotalUncertainty call.
+        raw_scores = np.asarray(
+            model.virtual_ensembles_predict(
+                X,
+                prediction_type="VirtEnsembles",
+                ntree_end=0,
+                virtual_ensembles_count=virtual_ensembles_count,
+                thread_count=thread_count,
+                verbose=None,
+            )
+        )
+
+        # CatBoost may return either (n_samples, n_ensembles) or
+        # (n_samples, n_ensembles, 1). Handle both shapes safely.
+        if raw_scores.ndim == 3 and raw_scores.shape[-1] == 1:
+            raw_scores = raw_scores[..., 0]
+        elif raw_scores.ndim != 2:
+            raise ValueError(
+                "Unexpected shape returned by CatBoostRanker.virtual_ensembles_predict("
+                f"prediction_type='VirtEnsembles'): {raw_scores.shape}. "
+                "Expected (n_samples, n_ensembles) or (n_samples, n_ensembles, 1)."
+            )
+
+        ddof = 1 if virtual_ensembles_count > 1 else 0
+        knowledge_uncertainty = np.nan_to_num(raw_scores.std(axis=1, ddof=ddof), nan=0.0)
+
+        uncertainty_df = pd.DataFrame(
+            {
+                "mean_predictions": raw_scores.mean(axis=1),
+                "knowledge_uncertainty": knowledge_uncertainty,
+                "data_uncertainty": None,
+                "total_uncertainty": None,
+            },
+            index=X.index,
+        )
+
+        return uncertainty_df, raw_scores
 
     virtual_prediction = model.virtual_ensembles_predict(
         X,
@@ -509,7 +604,7 @@ def get_virtual_prediction(
         )
 
     else:
-        raise ValueError("The model must inherit either CatboostClassifier or CatboostRegressor")
+        raise ValueError("The model must inherit CatBoostClassifier, CatBoostRegressor, or CatBoostRanker")
 
 
 def single_group_rank_pred(
@@ -592,3 +687,171 @@ def avg_ndcg_score(
     if verbose:
         print(f"List of every group ndcg score: {ndcg_list}")
     return np.average(ndcg_list)
+
+
+def topk_rank_disagreement(
+    rank_ensembles: np.ndarray,
+    k: int,
+) -> np.ndarray:
+    """Compute per-item probability of disagreement about top-k membership.
+
+    For each sample, let ``p`` be the fraction of ensemble members that place
+    it in the top-k positions. This returns ``2 * p * (1 - p)``, the probability
+    that two independently selected ensemble members disagree about membership.
+    A value of 0.0 means all ensembles agree, whether the item is in or out of
+    the top-k; larger values indicate less stable membership.
+
+    Parameters
+    ----------
+    rank_ensembles : np.ndarray, shape (n_samples, n_ensembles)
+        Rank matrix where each column contains 1-based ranks from one virtual ensemble.
+    k : int
+        Number of top positions to consider.
+
+    Returns
+    -------
+    np.ndarray, shape (n_samples,)
+        Pairwise disagreement probability for each item's top-k membership
+        (range [0, 0.5]).
+    """
+    arr = np.asarray(rank_ensembles)
+    if arr.ndim != 2:
+        raise ValueError(f"Expected 2D rank_ensembles, got {arr.ndim}D.")
+    if k < 1:
+        raise ValueError(f"k must be >= 1, got {k}.")
+    if k > arr.shape[0]:
+        raise ValueError(f"k must be <= the number of items ({arr.shape[0]}), got {k}.")
+    if not np.isfinite(arr).all():
+        raise ValueError("rank_ensembles must contain only finite values.")
+    if (arr < 1).any() or (arr > arr.shape[0]).any():
+        raise ValueError(f"rank_ensembles must be 1-based values in [1, {arr.shape[0]}].")
+    in_topk = arr <= k
+    membership_probability = in_topk.mean(axis=1)
+    return 2.0 * membership_probability * (1.0 - membership_probability)
+
+
+def topk_score_variance(
+    score_ensembles: np.ndarray,
+    k: int,
+    reference_ranks: typing.Optional[np.ndarray] = None,
+) -> typing.Tuple[np.ndarray, np.ndarray]:
+    """Compute score variance for items in the top-k of a reference ranking.
+
+    Identifies items that are in the top-k of a reference ranking (or the
+    ensemble-mean ranking if not provided) and returns their score variance
+    across ensemble members.
+
+    Parameters
+    ----------
+    score_ensembles : np.ndarray, shape (n_samples, n_ensembles)
+        Raw score matrix from virtual ensembles.
+    k : int
+        Number of top positions to select.
+    reference_ranks : np.ndarray, shape (n_samples,), optional
+        1-based ranks to determine which items are top-k. If None, ranks
+        are derived from the mean of ``score_ensembles``.
+
+    Returns
+    -------
+    topk_mask : np.ndarray, shape (n_samples,), dtype bool
+        Boolean mask indicating items in the top-k.
+    variances : np.ndarray, shape (n_samples,)
+        Score variance across ensembles (0.0 for items outside top-k).
+    """
+    arr = np.asarray(score_ensembles, dtype=float)
+    if arr.ndim != 2:
+        raise ValueError(f"Expected 2D score_ensembles, got {arr.ndim}D.")
+    if k < 1:
+        raise ValueError(f"k must be >= 1, got {k}.")
+    if k > arr.shape[0]:
+        raise ValueError(f"k must be <= the number of items ({arr.shape[0]}), got {k}.")
+    if not np.isfinite(arr).all():
+        raise ValueError("score_ensembles must contain only finite values.")
+
+    if reference_ranks is None:
+        mean_scores = arr.mean(axis=1)
+        reference_ranks = scores_to_ranks(mean_scores)
+    reference_ranks = np.asarray(reference_ranks).reshape(-1)
+    if len(reference_ranks) != arr.shape[0]:
+        raise ValueError("reference_ranks must have one entry per score_ensembles row.")
+    if not np.isfinite(reference_ranks).all():
+        raise ValueError("reference_ranks must contain only finite values.")
+    if (reference_ranks < 1).any() or (reference_ranks > arr.shape[0]).any():
+        raise ValueError(f"reference_ranks must be 1-based values in [1, {arr.shape[0]}].")
+
+    topk_mask = reference_ranks <= k
+    variances = np.zeros(arr.shape[0])
+    if topk_mask.any():
+        ddof = 1 if arr.shape[1] > 1 else 0
+        variances[topk_mask] = arr[topk_mask].var(axis=1, ddof=ddof)
+    return topk_mask, variances
+
+
+def groupwise_topk_analysis(
+    uncertainty_df: pd.DataFrame,
+    score_ensembles: np.ndarray,
+    group_ids: np.ndarray,
+    k: int,
+) -> pd.DataFrame:
+    """Perform groupwise top-k uncertainty analysis across ranking groups.
+
+    For each ranking group, computes:
+    - ``topk_disagreement_prob``: pairwise probability that ensembles disagree about each item's top-k membership
+    - ``topk_score_var``: score variance for items in the top-k (0 otherwise)
+    - ``topk_member``: whether the item is in the consensus top-k (based on mean rank)
+
+    Parameters
+    ----------
+    uncertainty_df : pd.DataFrame
+        Output from ``predict_uncertainty`` containing ``mean_predictions`` and
+        ``knowledge_uncertainty`` columns.
+    score_ensembles : np.ndarray, shape (n_samples, n_ensembles)
+        Raw score matrix from virtual ensembles (obtained from ``get_virtual_prediction``).
+    group_ids : np.ndarray
+        Group IDs aligned with rows.
+    k : int
+        Number of top positions to analyse.
+
+    Returns
+    -------
+    pd.DataFrame
+        Copy of ``uncertainty_df`` with added columns ``topk_disagreement_prob`` (the
+        disagreement probability),
+        ``topk_score_var``, and ``topk_member``.
+    """
+    result = uncertainty_df.copy()
+    result["topk_disagreement_prob"] = 0.0
+    result["topk_score_var"] = 0.0
+    result["topk_member"] = False
+
+    group_arr = np.asarray(group_ids).reshape(-1)
+    score_arr = np.asarray(score_ensembles, dtype=float)
+    if score_arr.ndim != 2:
+        raise ValueError(f"Expected 2D score_ensembles, got {score_arr.ndim}D.")
+    if len(uncertainty_df) != len(group_arr) or score_arr.shape[0] != len(group_arr):
+        raise ValueError("uncertainty_df, score_ensembles, and group_ids must have the same number of rows.")
+    if pd.isna(group_arr).any():
+        raise ValueError("group_ids must not contain missing values.")
+    if k < 1:
+        raise ValueError(f"k must be >= 1, got {k}.")
+    if not np.isfinite(score_arr).all():
+        raise ValueError("score_ensembles must contain only finite values.")
+
+    for g in pd.unique(group_arr):
+        idx = np.flatnonzero(group_arr == g)
+        if k > len(idx):
+            raise ValueError(f"k must be <= the number of items in every group; group {g!r} has {len(idx)} items.")
+        group_scores = score_arr[idx]
+        group_ranks = scores_matrix_to_ranks(group_scores)
+
+        result.iloc[idx, result.columns.get_loc("topk_disagreement_prob")] = topk_rank_disagreement(group_ranks, k)
+
+        # Consensus ordering is the mean of the per-ensemble ranks; negated because
+        # rank 1 is best while scores_to_ranks expects higher-is-better.
+        mean_ranks = group_ranks.mean(axis=1)
+        ref_ranks = scores_to_ranks(-mean_ranks)
+        _, var = topk_score_variance(group_scores, k, reference_ranks=ref_ranks)
+        result.iloc[idx, result.columns.get_loc("topk_score_var")] = var
+        result.iloc[idx, result.columns.get_loc("topk_member")] = ref_ranks <= k
+
+    return result

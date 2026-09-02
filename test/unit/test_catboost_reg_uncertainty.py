@@ -296,21 +296,28 @@ class TestCatboostModels(unittest.TestCase):
         self.assertEqual(params["samples"], 10)
         self.assertEqual(params["prior_iterations"], 100)
         self.assertEqual(params["model_type"], "regression")
-        self.assertFalse(params["tune_boosting_type"])
-        self.assertTrue(params["tune_tree_structure_type"])
+        self.assertNotIn("tune_boosting_type", params)
+        self.assertNotIn("tune_tree_structure_type", params)
+        self.assertNotIn("tune_loss_function", params)
 
     def test_CatboostGaussianProcessRegressorMother_get_set_params(self) -> None:
         """Test parameter getting and setting."""
         model: CatboostGaussianProcessRegressorMother = CatboostGaussianProcessRegressorMother(
-            samples=15, learning_rate=0.2, prior_iterations=500, tune_boosting_type=True, tune_tree_structure_type=False
+            samples=15,
+            learning_rate=0.2,
+            prior_iterations=500,
         )
         # Test get_params
         params = model.get_params()
         self.assertEqual(params["samples"], 15)
         self.assertAlmostEqual(params["learning_rate"], 0.2)
         self.assertEqual(params["prior_iterations"], 500)
-        self.assertTrue(params["tune_boosting_type"])
-        self.assertFalse(params["tune_tree_structure_type"])
+        self.assertNotIn("tune_boosting_type", params)
+        self.assertNotIn("tune_tree_structure_type", params)
+        self.assertNotIn("tune_loss_function", params)
+        self.assertFalse(model.tune_boosting_type)
+        self.assertFalse(model.tune_tree_structure_type)
+        self.assertFalse(model.tune_loss_function)
 
         # Test set_params
         model.set_params(samples=20, learning_rate=0.3, prior_iterations=600)
@@ -479,9 +486,7 @@ class TestCatboostModels(unittest.TestCase):
 
     def test_CatboostGaussianProcessRegressorMother_cloning(self) -> None:
         """Test model cloning functionality."""
-        model = CatboostGaussianProcessRegressorMother(
-            samples=15, prior_iterations=100, learning_rate=0.2, tune_boosting_type=True
-        )
+        model = CatboostGaussianProcessRegressorMother(samples=15, prior_iterations=100, learning_rate=0.2)
         model.fit(self.X, self.y_regression)
 
         # Test cloning preserves parameters
@@ -502,9 +507,7 @@ class TestCatboostModels(unittest.TestCase):
 
     def test_CatboostGaussianProcessRegressorMother_state_persistence(self) -> None:
         """Test __getstate__ and __setstate__ methods."""
-        model = CatboostGaussianProcessRegressorMother(
-            samples=10, prior_iterations=50, tune_boosting_type=True, tune_tree_structure_type=False
-        )
+        model = CatboostGaussianProcessRegressorMother(samples=10, prior_iterations=50)
         model.fit(self.X, self.y_regression)
 
         # Test state saving and loading
