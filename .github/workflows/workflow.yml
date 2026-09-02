@@ -24,7 +24,7 @@ jobs:
         uses: ./.github/actions/setup-uv-env
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          install-args: "--extra report --extra rna --extra tabpfn"
+          install-args: "--extra report --extra rna --extra tabpfn --extra tabicl"
 
       # - name: Run type checks #needs a lot of type fixing
       #   run: |
@@ -62,9 +62,17 @@ jobs:
         uses: ./.github/actions/setup-uv-env
         with:
           python-version: ${{ matrix.python-version }}
-          install-args:
-            "--extra rna --extra report --extra tabpfn --extra clustering
-            --group test_duration"
+          install-args: "--extra rna --extra report --extra tabpfn --extra tabicl --extra clustering --group test_duration"
+
+      - name: Cache HuggingFace and Torch models 🗂️
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/huggingface/hub
+            ~/.cache/torch
+          key: models-${{ runner.os }}-${{ hashFiles('**/pyproject.toml') }}
+          restore-keys: |
+            models-${{ runner.os }}-
 
       - name: Download TabPFN checkpoint
         run: |
@@ -77,7 +85,7 @@ jobs:
         run: |
           uv run poe coverage
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: coverage-py${{ matrix.python-version }}
           path: ./coverage.xml
@@ -108,9 +116,17 @@ jobs:
         uses: ./.github/actions/setup-uv-env
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          install-args:
-            "--extra rna --extra report --extra tabpfn --extra clustering
-            --group test_duration"
+          install-args: "--extra rna --extra report --extra tabpfn --extra tabicl --extra clustering --group test_duration"
+
+      - name: Cache HuggingFace and Torch models 🗂️
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/huggingface/hub
+            ~/.cache/torch
+          key: models-${{ runner.os }}-${{ hashFiles('**/pyproject.toml') }}
+          restore-keys: |
+            models-${{ runner.os }}-
 
       - name: Download TabPFN checkpoint
         run: |
@@ -123,9 +139,113 @@ jobs:
         run: |
           uv run poe test-slow
 
+  release-preflight:
+    name: Release Preflight
+    needs: test-slow
+    runs-on: ubuntu-latest
+    if:
+      ${{ success() && (github.ref == 'refs/heads/main' || github.event_name ==
+      'pull_request') }}
+    # Least privilege: this job checks out and runs untrusted PR code
+    # (scripts/release_preflight.py), so it must never hold a write-scoped token.
+    # Posting the report comment is handled by the separate comment-preflight
+    # job below, which never executes PR code.
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout 🛎
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Run release preflight report
+        id: preflight
+        run: |
+          set +e
+          python3 scripts/release_preflight.py --strict --output release-preflight-report.md
+          exit_code=$?
+          echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Upload preflight artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-preflight-report
+          path: release-preflight-report.md
+          if-no-files-found: error
+
+      - name: Fail on preflight violations
+        if: steps.preflight.outputs.exit_code != '0'
+        run: |
+          echo "Release preflight failed with exit code ${{ steps.preflight.outputs.exit_code }}."
+          exit 1
+
+  comment-preflight:
+    name: Comment Preflight Report
+    needs: release-preflight
+    runs-on: ubuntu-latest
+    # Isolated commenting job: it does NOT check out or execute any PR code, it
+    # only downloads the report artifact and posts it. This is the only job that
+    # holds a write-scoped token, and it is gated to same-repo PRs (fork PRs
+    # receive a read-only token from GitHub regardless). always() lets the
+    # comment post even when the preflight check fails upstream.
+    if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Download preflight artifact
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: release-preflight-report
+
+      - name: Comment preflight report on PR
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            const path = 'release-preflight-report.md';
+            const marker = '<!-- release-preflight-report -->';
+            const report = fs.existsSync(path)
+              ? fs.readFileSync(path, 'utf8')
+              : 'Preflight report file was not generated.';
+            const body = `${marker}\n## Release Preflight\n\n\
+            _Automated check that complements semantic-release changelog generation._\n\n\
+            \`\`\`markdown\n${report}\n\`\`\``;
+
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+              per_page: 100,
+            });
+
+            const existing = comments.find(
+              (c) => c.user?.type === 'Bot' && c.body?.includes(marker),
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number,
+                body,
+              });
+            }
+
   release:
     name: Create Release package
-    needs: test-slow
+    needs: release-preflight
     if: success() && github.ref == 'refs/heads/main' &&
       !contains(github.event.head_commit.message, '[skip release]')
     runs-on: ubuntu-latest
@@ -150,9 +270,10 @@ jobs:
         uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+          install-args: "--extra report --extra rna --extra tabpfn --extra tabicl"
 
       - name: Python Semantic Release
-        uses: python-semantic-release/python-semantic-release@v10.2.0
+        uses: python-semantic-release/python-semantic-release@2896129e02bb7809d2cf0c1b8e9e795ee27acbcf # v10.2.0
         id: release
         with:
           github_token: ${{ secrets.PAT_RELEASE_PIPELINE }}
@@ -195,7 +316,7 @@ jobs:
           path: dist
 
       - name: Upload package to Test PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc # v1.12.4
         with:
           repository-url: https://test.pypi.org/legacy/
           skip-existing: true
@@ -203,8 +324,8 @@ jobs:
 
   publish-pypi:
     name: Publish to PyPI
-    needs: release
-    if: needs.release.outputs.released == 'true'
+    needs: [release, test-pypi-publish]
+    if: needs.release.outputs.released == 'true' && needs.test-pypi-publish.result == 'success'
     environment:
       name: pypi
       url: https://pypi.org/project/mother-ml/
@@ -219,12 +340,12 @@ jobs:
           path: dist/
 
       - name: Publish package distributions to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc # v1.12.4
         with:
           packages-dir: dist/
 
-  build-mkdocs:
-    name: Build MkDocs
+  build-docs:
+    name: Build Docs
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -250,17 +371,16 @@ jobs:
           install-args: "--group docs"
 
       - name: Build docs
-        working-directory: mkdocs
-        run: uv run mkdocs build
+        run: uv run zensical build
 
       - name: Upload GitHub Pages artifact
         uses: actions/upload-pages-artifact@v4
         with:
-          path: mkdocs/site/
+          path: site/
 
-  deploy-mkdocs:
+  deploy-docs:
     name: Publish Docs
-    needs: build-mkdocs
+    needs: build-docs
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:

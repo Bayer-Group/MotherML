@@ -1,6 +1,6 @@
 [project]
 name = "mother-ml"
-version = "1.0.4"
+version = "1.2.0"
 readme = "README.md"
 description = "A ML framework that takes care"
 requires-python = ">=3.11, <3.15"
@@ -31,6 +31,7 @@ dependencies = [
   "pydantic-settings>=2.4.0,<3",
   "rdkit>=2024.9.1",
   "scikit-learn>=1.9.0,<1.10",
+  "scipy>=1.11.1,<2",
   "colorama>=0.4.6,<0.5",
   "boruta>=0.4.3,<0.5",
   "quantile-forest>=1.4.2,<2"
@@ -71,10 +72,16 @@ clustering = [
 
 ### TabPFN
 tabpfn = [
-  "tabpfn==8.0.8",
+  "tabpfn==8.2.0",
   "torch>=2.3.0,<3",
 ]
 
+### TabICL
+tabicl = [
+    "tabicl[shap]>=2.1.1",
+    "torch>=2.11.0,<3",
+    "matplotlib>3.7.0"
+]
 
 [dependency-groups]
 dev = [
@@ -96,14 +103,9 @@ examples = [
   "shap>=0.47.2,<0.48",
 ]
 docs = [
-  "mkdocs",
-  "mkdocs-git-revision-date-localized-plugin",
-  "mkdocs-include-markdown-plugin",
-  "mkdocs-material",
+  "zensical",
   "mkdocstrings[python]",
-  "markdown-exec[ansi]>=1.7.0,<2",
-  "mkdocs-jupyter>=0.25.1,<0.26",
-  "mkdocs-git-authors-plugin>=0.9.2,<0.10",
+  "markdown-exec[ansi]>=1.7.0,<2"
 ]
 test_duration = [
   "pytest-html>=4.0.2,<5",
@@ -251,9 +253,15 @@ warn_no_return = true
 extend_skip = [".gitignore", ".pylintrc", "sonar-project.properties"]
 
 [tool.semantic_release]
-version_toml = ["pyproject.toml:project.version"] # changelog file
+version_toml = ["pyproject.toml:project.version"]
 tag_format = "v{version}"
 upload_to_vcs_release = true
+# Keep uv.lock's own-package version in sync with the bump. build_command runs
+# after the version is written and before the release commit; assets adds the
+# regenerated lock to that same commit. uv is not present in the PSR action
+# container, so it is installed here first.
+build_command = "python3 -m pip install uv && uv lock"
+assets = ["uv.lock"]
 
 [tool.semantic_release.changelog]
 # Recommended patterns for conventional commits parser that is scope aware
@@ -270,7 +278,7 @@ mode = "update"
 insertion_flag = "..\n    All versions below are listed in reverse chronological order"
 
 [tool.semantic_release.changelog.default_templates]
-changelog_file = "mkdocs/docs/Changelog.md"
+changelog_file = "docs/Changelog.md"
 output_format = "md"
 
 [tool.semantic_release.branches.main]
@@ -335,7 +343,7 @@ dist-test = [
   "build",
   { shell = "cd dist && ../test/test-dist.bash `uv run --with tomli python -c \"import tomli; print('mother_ml-' + tomli.load(open('../pyproject.toml','rb'))['project']['version'] + '-py3-none-any.whl')\"`", help = "check build package in its own environment" },
 ]
-docs = { shell = "cd mkdocs; mkdocs build", help = "Build documentation" }
+docs = { cmd = "zensical build", help = "Build documentation" }
 docs-python-fences = { cmd = "python scripts/check_docs_python_fences.py", help = "Execute python fenced code blocks in docs markdown" }
 format = { cmd = "ruff format src test examples", help = "Perform code style format" }
 install-hook = "pre-commit install"
@@ -344,7 +352,7 @@ serve-coverage = [
   "coverage",
   { shell = "coverage html -d coverage-html && cd coverage-html; python -m http.server --bind 127.0.0.1", help = "Generate coverage html report" },
 ]
-serve-docs = { shell = "cd mkdocs; JUPYTER_PLATFORM_DIRS=1 mkdocs serve", help = "Serve project html documentation" }
+serve-docs = { cmd = "zensical serve", help = "Serve project html documentation" }
 sort-imports = { cmd = "isort . --sg=old --profile black", help = "apply import sort ordering" }
 style = ["sort-imports", "format"]
 test-unit = { shell = "pytest test -m 'not slow and not serial' -n auto && pytest test -m 'serial and not slow' -n 0" }

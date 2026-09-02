@@ -348,6 +348,7 @@ class MotherSelectFromModel(SelectFromModel, ml.AbstractMotherPipeline):
         self,
         estimator: typing.Union[MotherCatboostImportance, MotherPermutationImportance],
         threshold=np.finfo(np.float64).tiny,
+        max_features: typing.Optional[int] = None,
         **kwargs,
     ):
         """
@@ -359,11 +360,13 @@ class MotherSelectFromModel(SelectFromModel, ml.AbstractMotherPipeline):
             The base estimator from which the feature importances are obtained.
         threshold : str, float, or None, optional
             The threshold value to use for feature selection. Passed to the superclass.
+        max_features : int, optional
+            The maximum number of features to select. Passed to the superclass.
         kwargs : dict
             Additional arguments passed to the superclass.
         """
         # Pass the threshold and other arguments to the superclass
-        super().__init__(estimator=estimator, threshold=threshold, **kwargs)
+        super().__init__(estimator=estimator, threshold=threshold, max_features=max_features, **kwargs)
 
     def default_parameters(self, prefix: str = "") -> dict:
         return {

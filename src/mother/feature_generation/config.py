@@ -139,7 +139,7 @@ class FeatureGenerationConfig(BaseModel):
     fingerprints: List[Dict[str, Any]] = Field(default=[], description="List of fingerprint generator settings")
     maccs: bool = Field(default=False, description="Flag if maccs fingerprints should be generated")
     chemical_descriptors: Optional[ChemicalDescriptorsParams] = Field(default=None)
-    use_counts: bool = Field(default=False, description="Whether to use count fingerprints")
+    use_counts: bool = Field(default=True, description="Whether to use count fingerprints")
 
     @field_validator("fingerprints", mode="before")
     @classmethod

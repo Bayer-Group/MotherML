@@ -445,7 +445,7 @@ class CatboostRegressorMother(CatBoostRegressor, _CatboostModelMotherBase, _Catb
         return models_utils.add_prefix_to_dict_keys(
             {
                 "learning_rate": 0.03,
-                "bootstrap_type": "Bayesian",
+                "bootstrap_type": "MVS",
                 "random_strength": 1,
                 "grow_policy": "SymmetricTree",
                 "boosting_type": "Plain",
@@ -932,7 +932,7 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostModelMo
         # Use the same defaults as CatboostRegressorMother for consistency
         base_defaults = {
             "learning_rate": 0.03,
-            "bootstrap_type": "Bayesian",
+            "bootstrap_type": "MVS",
             "random_strength": 1,
             "grow_policy": "SymmetricTree",
             "boosting_type": "Plain",
@@ -1288,7 +1288,7 @@ class CatboostClassifierMother(CatBoostClassifier, _CatboostModelMotherBase, _Ca
         return models_utils.add_prefix_to_dict_keys(
             {
                 "learning_rate": 0.03,
-                "bootstrap_type": "Bayesian",
+                "bootstrap_type": "MVS",
                 "random_strength": 1,
                 "grow_policy": "SymmetricTree",
                 "boosting_type": "Plain",

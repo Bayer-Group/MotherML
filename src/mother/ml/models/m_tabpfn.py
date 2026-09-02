@@ -46,7 +46,6 @@ from typing import (
 
 import numpy as np
 import pandas as pd
-import torch
 from optuna.trial import Trial
 from six import iteritems
 from sklearn.base import BaseEstimator, TransformerMixin, clone
@@ -60,9 +59,16 @@ from sklearn.model_selection import (
 )
 from sklearn.utils import check_array
 from sklearn.utils.validation import check_is_fitted
-from tabpfn import TabPFNClassifier, TabPFNRegressor
-from tabpfn.constants import ModelVersion
-from tabpfn.regressor import FullOutputDict
+
+from mother.errors import ExtrasDependencyImportError
+
+try:
+    import torch
+    from tabpfn import TabPFNClassifier, TabPFNRegressor
+    from tabpfn.constants import ModelVersion
+    from tabpfn.regressor import FullOutputDict
+except ImportError as import_error:
+    raise ExtrasDependencyImportError("tabpfn", import_error) from import_error
 
 from mother.ml.core import AbstractMotherPipeline
 from mother.ml.models import utils
@@ -605,16 +611,16 @@ class TabPFNEmbeddingTransformer(BaseEstimator, TransformerMixin):
 
         if is_dataframe:
             self.input_features_ = X.columns.tolist()
-            X_array: np.ndarray = X.values
+            X_array: np.ndarray = X.to_numpy(dtype=np.float32)
         else:
             self.input_features_ = None
-            X_array: np.ndarray = X
+            X_array = np.asarray(X, dtype=np.float32)
 
         if y is None:
             raise ValueError("TabPFN requires target values for fitting when no prefitted_model is provided.")
 
         # Convert y to numpy array if it's a pandas Series
-        y_array: np.ndarray = y.values if isinstance(y, pd.Series) else y
+        y_array: np.ndarray = y.to_numpy() if isinstance(y, pd.Series) else np.asarray(y)
 
         # Convert groups to numpy array if it's a pandas Series
         if groups is not None and isinstance(groups, pd.Series):
@@ -676,7 +682,7 @@ class TabPFNEmbeddingTransformer(BaseEstimator, TransformerMixin):
                     fold_model: Union[TabPFNClassifierMother, TabPFNRegressorMother] = model_class(
                         device=self.device,
                         ignore_pretraining_limits=self.ignore_pretraining_limits,
-                        **self.kwargs,
+                        **{**self.kwargs, "inference_precision": torch.float32},
                     )
                     fold_model.fit(X_array[train_idx], y_array[train_idx])
 
@@ -697,7 +703,7 @@ class TabPFNEmbeddingTransformer(BaseEstimator, TransformerMixin):
                 self.model = model_class(
                     device=self.device,
                     ignore_pretraining_limits=self.ignore_pretraining_limits,
-                    **self.kwargs,
+                    **{**self.kwargs, "inference_precision": torch.float32},
                 )
                 self.model.fit(X_array, y_array)
 
@@ -706,7 +712,7 @@ class TabPFNEmbeddingTransformer(BaseEstimator, TransformerMixin):
                 self.model = model_class(
                     device=self.device,
                     ignore_pretraining_limits=self.ignore_pretraining_limits,
-                    **self.kwargs,
+                    **{**self.kwargs, "inference_precision": torch.float32},
                 )
                 self.model.fit(X_array, y_array)
 
@@ -733,7 +739,11 @@ class TabPFNEmbeddingTransformer(BaseEstimator, TransformerMixin):
         self._embedding_dim = self.train_embeddings_.shape[1]
         return self
 
-    def transform(self, X: pd.DataFrame, only_best_embeddings: bool = False) -> pd.DataFrame:
+    def transform(
+        self,
+        X: Union[np.ndarray, pd.DataFrame],
+        only_best_embeddings: bool = False,
+    ) -> pd.DataFrame:
         """
         Transform new data into TabPFN embeddings using the fitted model.
 
@@ -762,9 +772,9 @@ class TabPFNEmbeddingTransformer(BaseEstimator, TransformerMixin):
                 missing_features: set = set(self.input_features_) - set(X.columns)
                 raise ValueError(f"Features {missing_features} used for training are missing")
             # Use the same column order as during training
-            X_array: np.ndarray = X[self.input_features_].values
+            X_array: np.ndarray = X[self.input_features_].to_numpy(dtype=np.float32)
         else:
-            X_array: np.ndarray = X.values
+            X_array = np.asarray(X, dtype=np.float32)
 
         # Get embeddings for new data using the main model
         embeddings = self.model.get_embeddings(X_array)
