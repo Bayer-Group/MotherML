@@ -11,6 +11,24 @@ from mother.ml.models.m_tabpfn import (
 )
 
 
+def test_prefitted_tabpfn_embedding_transformer_uses_configured_device():
+    class PrefittedModel:
+        device = "cpu"
+
+        def to(self, device):
+            self.received_device = device
+            return self
+
+        def get_embeddings(self, X):
+            return np.zeros((len(X), 2))
+
+    model = PrefittedModel()
+    transformer = TabPFNEmbeddingTransformer(model=model, device="cuda", use_kfold=False)
+    transformer.fit(np.array([[1.0], [2.0]]), np.array([0.0, 1.0]))
+
+    assert model.received_device == "cuda"
+
+
 def get_data_containers(X, y):
     """
     Convert X and y into different container formats for testing.
