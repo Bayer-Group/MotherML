@@ -1,7 +1,10 @@
+import numpy as np
 import pytest
+from rdkit import Chem
 from rdkit.Chem import rdFingerprintGenerator as rdFG
 
 from mother.feature_generation.fp_gen import FingerprintFactory
+from mother.feature_generation.fp_gnn_gen import CheMeleonFingerprintTransformer
 
 
 def test_initialization() -> None:
@@ -58,6 +61,19 @@ def test_countSimulation_property() -> None:
 def test_is_supported() -> None:
     assert FingerprintFactory.is_supported("MorganFP") is True
     assert FingerprintFactory.is_supported("InvalidFP") is False
+
+
+def test_chemeleon_transform_flattens_single_column_object_array() -> None:
+    molecule = Chem.MolFromSmiles("CCO")
+    transformer = CheMeleonFingerprintTransformer(
+        output_dim=2,
+        embedder=lambda smiles: np.ones((len(smiles), 2), dtype=np.float32),
+    ).fit([molecule])
+
+    result = transformer.transform(np.array([[molecule]], dtype=object))
+
+    assert result.shape == (1, 2)
+    assert np.all(result == 1.0)
 
 
 if __name__ == "__main__":
