@@ -1153,6 +1153,8 @@ class CatboostClassifierMother(CatBoostClassifier, _CatboostModelMotherBase, _Ca
         Target variable type.
     tune_boosting_type : bool
         Whether boosting type tuning is enabled.
+    tune_bootstrap_level : bool
+        Whether bootstrap level parameter tuning is enabled.
 
     Methods
     -------
@@ -1180,6 +1182,7 @@ class CatboostClassifierMother(CatBoostClassifier, _CatboostModelMotherBase, _Ca
         tune_boosting_type: bool = False,
         model_type: props.ModelType = "classification_binary",
         tune_tree_structure_type: bool = True,
+        tune_bootstrap_level: bool = False,
         **kwargs,
     ):
         """
@@ -1190,11 +1193,12 @@ class CatboostClassifierMother(CatBoostClassifier, _CatboostModelMotherBase, _Ca
             tune_boosting_type (bool): Whether to tune boosting_type.
             model_type (str): Model type ("classification_binary" or "classification_multiclass").
             tune_tree_structure_type (bool): Whether to include the "grow_policy" parameter in hyperparameter tuning.
+            tune_bootstrap_level (bool): Whether to tune bootstrap level parameters (subsample, bagging_temperature).
             **kwargs: Additional CatBoostClassifier parameters.
         """
 
         # Initialize hyperparameter tuning configuration
-        _CatboostHyperParams.__init__(self, tune_boosting_type, tune_tree_structure_type)
+        _CatboostHyperParams.__init__(self, tune_boosting_type, tune_tree_structure_type, tune_bootstrap_level)
 
         self.model_type = model_type
         self.target_type = target_type
@@ -1244,6 +1248,7 @@ class CatboostClassifierMother(CatBoostClassifier, _CatboostModelMotherBase, _Ca
                 "tune_boosting_type": self.tune_boosting_type,
                 "model_type": self.model_type,
                 "tune_tree_structure_type": self.tune_tree_structure_type,
+                "tune_bootstrap_level": self.tune_bootstrap_level,
             }
         )
         return params
@@ -1462,7 +1467,7 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
     tune_tree_structure_type : bool
         Whether to include the "grow_policy" parameter in the hyperparameter space for tuning.
     tune_bootstrap_level : bool
-        Whether to include the "bootstrap_type" parameter in the hyperparameter space for tuning.
+        Whether to include bootstrap level parameters in the hyperparameter space for tuning.
 
     Methods
     -------
@@ -1494,7 +1499,7 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
             tune_tree_structure_type : bool, optional
                 Whether to include the "grow_policy" parameter in hyperparameter tuning.
             tune_bootstrap_level : bool, optional
-                Whether to include the "bootstrap_type" parameter in hyperparameter tuning.
+                Whether to tune bootstrap level parameters (subsample, bagging_temperature).
             **kwargs
                 Additional CatBoostRanker parameters.
         """
