@@ -633,8 +633,6 @@ class TabPFNEmbeddingTransformer(BaseEstimator, TransformerMixin):
             module_logger.info(
                 "A pre-fitted model has been given. The new data will not be used for fitting the model."
             )
-            self.model.inference_precision = torch.float32
-            self.model.to(self.device)
             self.train_embeddings_ = self.model.get_embeddings(X_array)
             self._embedding_dim = self.train_embeddings_.shape[1]
         else:
