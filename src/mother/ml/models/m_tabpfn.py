@@ -540,7 +540,8 @@ class TabPFNEmbeddingTransformer(BaseEstimator, TransformerMixin):
         # Autocast returns bfloat16 tensors, which cannot be converted to NumPy.
         if self.model is None:
             raise RuntimeError("A pre-fitted model is required to extract embeddings.")
-        self.model.use_autocast_ = False
+        if hasattr(self.model, "use_autocast_"):
+            self.model.use_autocast_ = False
 
     def _get_best_embeddings(
         self,

@@ -743,7 +743,6 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostModelMo
         eps: float = 1e-4,
         tune_boosting_type: bool = False,
         tune_tree_structure_type: bool = True,
-        tune_bootstrap_level: bool = False,
         verbose: bool = False,
         model_type: str = "regression",
         target_type: props.TargetType = "single_target",
@@ -784,8 +783,8 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostModelMo
             **kwargs : dict
                 Additional parameters for CatBoost's `sample_gaussian_process` method.
         """
-        # Initialize hyperparameter tuning configuration
-        _CatboostHyperParams.__init__(self, tune_boosting_type, tune_tree_structure_type)
+        # sample_gaussian_process ignores bootstrap parameters, so bootstrap-level tuning stays off here.
+        _CatboostHyperParams.__init__(self, tune_boosting_type, tune_tree_structure_type, tune_bootstrap_level=False)
 
         # Check for 'model_type'
         if model_type != "regression":
@@ -890,7 +889,6 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostModelMo
             "target_type",
             "tune_boosting_type",
             "tune_tree_structure_type",
-            "tune_bootstrap_level",
             "samples",
             "prior_iterations",
             "sigma",
