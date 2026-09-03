@@ -29,9 +29,11 @@ class MLPHead(nn.Module):
         activation: str = "ReLU",
         norm: str = "batch",
     ) -> None:
+        """Build a stack of Linear/Norm/activation/Dropout blocks from `input_dim` to `output_dim`."""
         super().__init__()
 
         def _make_activation() -> nn.Module:
+            """Instantiate the configured activation module by name."""
             if activation == "ReLU":
                 return nn.ReLU()
             if activation == "GELU":
@@ -68,6 +70,7 @@ class MLPHead(nn.Module):
                     nn.init.zeros_(module.bias)
 
     def forward(self, x: Optional[torch.Tensor] = None, **kwargs: Any) -> torch.Tensor:
+        """Flatten the input (or concatenate tensor `**kwargs`) and run it through the MLP."""
         if x is None:
             if not kwargs:
                 raise ValueError("No input data provided to forward()")
@@ -89,6 +92,7 @@ class FlowHead(nn.Module):
 
     @staticmethod
     def _move_nested_tensors_to_device(obj: Any, device: torch.device, visited: Optional[set[int]] = None) -> Any:
+        """Recursively move any tensors found inside `obj` (dict/list/tuple/object graph) to `device` in place."""
         if visited is None:
             visited = set()
 
@@ -143,6 +147,7 @@ class FlowHead(nn.Module):
         mlp_activation: str = "GELU",
         mlp_norm: str = "batch",
     ) -> None:
+        """Build a zuko conditional flow of type `flow_type`, with an optional MLP conditioner encoder."""
         super().__init__()
         if zuko is None:  # pragma: no cover
             raise ModuleNotFoundError(
@@ -154,6 +159,7 @@ class FlowHead(nn.Module):
         if self.mlp_hidden_dims:
 
             def _make_activation() -> nn.Module:
+                """Instantiate the configured MLP-conditioner activation module by name."""
                 if mlp_activation == "ReLU":
                     return nn.ReLU()
                 if mlp_activation == "GELU":
@@ -216,6 +222,18 @@ class FlowHead(nn.Module):
             raise ValueError(f"Unsupported flow_type: {flow_type}. Choose from {self.SUPPORTED_FLOW_TYPES}.")
 
     def forward(self, x: Optional[torch.Tensor] = None, **kwargs: Any) -> Any:
+        """
+        Build a conditional predictive distribution from node embeddings.
+
+        Args:
+            x: Node embeddings, shape ``[batch_size, input_dim]``. If ``None``,
+                built from `**kwargs` tensor values instead (concatenated column-wise).
+            **kwargs: Alternative tensor inputs used when `x` is not provided.
+
+        Returns:
+            A zuko distribution object conditioned on `x`, exposing `.sample()`,
+            `.rsample()` and `.log_prob()` for downstream sampling and density evaluation.
+        """
         if x is None:
             if not kwargs:
                 raise ValueError("No input data provided to forward()")

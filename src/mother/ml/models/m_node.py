@@ -205,6 +205,7 @@ class InputOutputShapeSetter(skorch.callbacks.Callback):
         max_embedding_dim: int = 16,
         min_embedding_dim: int = 2,
     ) -> None:
+        """Store feature-type configuration; encoders and dimensions are learned during `fit`."""
         self.categorical_columns = categorical_columns
         self.max_embedding_dim = max_embedding_dim
         self.min_embedding_dim = min_embedding_dim
@@ -460,6 +461,7 @@ class NODEBackbone(nn.Module):
     """
 
     def __init__(self, config: Any, **kwargs: Any) -> None:
+        """Build the Dense ODST block (and its activation/binning functions) from `config`."""
         super().__init__()
         self.hparams = config
 
@@ -527,6 +529,7 @@ class LinearHead(nn.Module):
     """
 
     def __init__(self, input_dim: int, output_dim: int) -> None:
+        """Create the linear projection from `input_dim` flattened tree outputs to `output_dim`."""
         super().__init__()
         self.input_dim = input_dim
         self.output_dim = output_dim
@@ -551,6 +554,7 @@ class NODEModel(nn.Module):
     """
 
     def __init__(self, config: Any, **kwargs: Any) -> None:
+        """Store the config namespace and build the embedding/backbone/head submodules."""
         super().__init__()
         self.hparams = config
         self._build_network()
@@ -576,17 +580,21 @@ class NODEModel(nn.Module):
 
     @property
     def backbone(self) -> NODEBackbone:
+        """The Dense ODST backbone submodule."""
         return self._backbone
 
     @property
     def embedding_layer(self) -> Embedding1dLayer:
+        """The continuous/categorical embedding submodule."""
         return self._embedding_layer
 
     @property
     def head(self) -> nn.Module:
+        """The prediction head submodule (subset/linear/mlp/flow)."""
         return self._head
 
     def _build_network(self) -> None:
+        """Construct the backbone, embedding layer, and head, and wire them onto this module."""
         self._backbone = NODEBackbone(self.hparams)
         # Embedding Layer
         self._embedding_layer = self._backbone._build_embedding_layer()
@@ -738,6 +746,7 @@ class CompletePyTorchTabularNODE(nn.Module):
         flow_signal: int = 16,  # Hidden signal dim (NAF, UNAF)
         flow_components: int = 8,  # Mixture components (GMM)
     ) -> None:
+        """Configure and build the embedding, Dense ODST backbone, and head (see class docstring for args)."""
         super().__init__()
 
         # Store configuration
@@ -1769,6 +1778,7 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         y: Union[pd.DataFrame, pd.Series, npt.NDArray[Any]],
         prefix: str,
     ) -> Dict[str, Any]:
+        """Hook for subclasses to add loss-specific tunable parameters; base implementation is a no-op."""
         return suggested_params
 
     def suggested_params_head(
@@ -1947,6 +1957,7 @@ class NODERegressor(BaseNODEEstimator):
         tune_head: bool = True,  # Tune head params during hyperparameter search
         **kwargs: Any,
     ) -> None:
+        """Configure the NODE regressor's architecture, head, dropout, and training settings (see class docstring)."""
         # Store Mother framework compatibility parameters
         if model_type != "regression":
             raise ValueError("model_type for NODERegressor must be 'regression'.")
@@ -3233,6 +3244,7 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
         tune_head: bool = True,  # Tune head params during hyperparameter search
         **kwargs: Any,
     ) -> None:
+        """Configure the NODE classifier's architecture, head, dropout, and training settings (see class docstring)."""
         # Store Mother framework compatibility parameters
         if model_type not in ["classification_binary", "classification_multiclass", "classification_multilabel"]:
             module_logger.warning(

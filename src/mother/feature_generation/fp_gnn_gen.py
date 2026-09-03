@@ -21,6 +21,7 @@ _CHEMELEON_SHA256 = "c376624d3407204e780a0ed13a9ac097cc9bb1c13ef89cdbc633c1715c1
 
 
 def _sha256(path: Path) -> str:
+    """Compute the SHA256 hex digest of a file, reading it in 1 MiB chunks."""
     digest = hashlib.sha256()
     with path.open("rb") as file:
         for chunk in iter(lambda: file.read(1024 * 1024), b""):
@@ -103,6 +104,7 @@ def _default_chemeleon_embedder(
     model = cp_models.MPNN(mp, agg, ffn, batch_norm=False).to(device).eval()
 
     def _embed(smiles_batch: Sequence[str]) -> np.ndarray:
+        """Run a batch of SMILES through the loaded CheMeleon MPNN and return their fingerprints."""
         dataset = MoleculeDataset([MoleculeDatapoint.from_smi(smi) for smi in smiles_batch])
         batch = collate_batch([dataset[i] for i in range(len(dataset))])
         bmg, V_d, X_d, *_ = batch
@@ -137,6 +139,7 @@ class CheMeleonFingerprintTransformer(BaseEstimator, TransformerMixin):
         device: str = "cpu",
         embedder: Optional[Callable[[Sequence[str]], np.ndarray]] = None,
     ) -> None:
+        """Validate and store CheMeleon embedding configuration for later use in `fit`."""
         if output_dim <= 0:
             raise ValueError(f"output_dim must be a positive integer, got {output_dim}.")
         if batch_size <= 0:
@@ -148,6 +151,7 @@ class CheMeleonFingerprintTransformer(BaseEstimator, TransformerMixin):
         self.embedder = embedder
 
     def fit(self, X: Iterable, y: object | None = None) -> "CheMeleonFingerprintTransformer":
+        """Load the CheMeleon embedder (or use the injected one) and mark the transformer as fitted."""
         if self.embedder is None:
             self.embedder_ = _default_chemeleon_embedder(
                 checkpoint_path=self.checkpoint_path,
@@ -160,6 +164,7 @@ class CheMeleonFingerprintTransformer(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X: Iterable) -> np.ndarray:
+        """Convert RDKit Mol objects to CheMeleon fingerprints, NaN-filling any invalid molecules."""
         check_is_fitted(self, "is_fitted_")
 
         values = np.array(list(X), dtype=object).reshape(-1)
@@ -192,9 +197,11 @@ class CheMeleonFingerprintTransformer(BaseEstimator, TransformerMixin):
         return out
 
     def get_output_dimension(self) -> int:
+        """Return the number of embedding dimensions produced by this transformer."""
         return self.output_dim
 
     def get_feature_names_out(self, input_features: Optional[Iterable[str]] = None) -> List[str]:
+        """Return sklearn-style output feature names, one per embedding dimension."""
         return [f"CheMeleonGNNFP_{i}" for i in range(self.output_dim)]
 
 
@@ -209,6 +216,7 @@ class CheMeleonFingerprintFactory:
         device: str = "cpu",
         embedder: Optional[Callable[[Sequence[str]], np.ndarray]] = None,
     ) -> None:
+        """Validate and store the configuration used to build fingerprint transformers."""
         if output_dim <= 0:
             raise ValueError(f"output_dim must be a positive integer, got {output_dim}.")
         if batch_size <= 0:
@@ -220,6 +228,7 @@ class CheMeleonFingerprintFactory:
         self.embedder = embedder
 
     def get_fingerprint_generator(self) -> CheMeleonFingerprintTransformer:
+        """Build a `CheMeleonFingerprintTransformer` using this factory's stored configuration."""
         if self.embedder is None:
             # Keep dependency optional until the factory is actively used.
             _check_chemprop()

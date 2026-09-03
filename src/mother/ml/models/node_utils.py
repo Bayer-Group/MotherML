@@ -125,6 +125,7 @@ class Entmoid15(Function):
 
     @staticmethod
     def forward(ctx: Any, input: Tensor) -> Tensor:
+        """Compute Entmoid15(input) and cache the output for the backward pass."""
         output = Entmoid15._forward(input)
         ctx.save_for_backward(output)
         return output
@@ -132,6 +133,7 @@ class Entmoid15(Function):
     @staticmethod
     @script
     def _forward(x: Tensor) -> Tensor:
+        """JIT-compiled closed-form forward pass for Entmoid15 (1.5-entmax over [x, 0])."""
         x_abs, is_pos = abs(x), x >= 0
         tau = (x_abs + torch.sqrt(F.relu(8 - x_abs**2))) / 2
         tau.masked_fill_(tau <= x_abs, 2.0)
@@ -140,11 +142,13 @@ class Entmoid15(Function):
 
     @staticmethod
     def backward(ctx: Any, grad_output: Tensor) -> Tensor:
+        """Compute the gradient of Entmoid15 using the saved forward output."""
         return Entmoid15._backward(ctx.saved_tensors[0], grad_output)
 
     @staticmethod
     @script
     def _backward(output: Tensor, grad_output: Tensor) -> Tensor:
+        """JIT-compiled closed-form gradient computation for Entmoid15."""
         gppr0, gppr1 = output.sqrt(), (1 - output).sqrt()
         grad_input = grad_output * gppr0
         q = grad_input / (gppr0 + gppr1)
@@ -223,6 +227,7 @@ class SparsemaxFunction(Function):
 
     @classmethod
     def forward(cls, ctx: Any, X: Tensor, dim: int = -1, k: Optional[int] = None) -> Tensor:
+        """Project `X` onto the probability simplex along `dim`, producing a sparse output."""
         ctx.dim = dim
         max_val, _ = X.max(dim=dim, keepdim=True)
         X = X - max_val  # same numerical stability trick as softmax
@@ -233,6 +238,7 @@ class SparsemaxFunction(Function):
 
     @classmethod
     def backward(cls, ctx: Any, grad_output: Tensor) -> Tuple[Tensor, None, None]:
+        """Backpropagate through the sparsemax projection using the cached support size."""
         supp_size, output = ctx.saved_tensors
         dim = ctx.dim
         grad_input = grad_output.clone()
@@ -249,6 +255,7 @@ class Entmax15Function(Function):
 
     @classmethod
     def forward(cls, ctx: Any, X: Tensor, dim: int = 0, k: Optional[int] = None) -> Tensor:
+        """Project `X` onto the simplex under the 1.5-entmax transform along `dim`."""
         ctx.dim = dim
 
         max_val, _ = X.max(dim=dim, keepdim=True)
@@ -263,6 +270,7 @@ class Entmax15Function(Function):
 
     @classmethod
     def backward(cls, ctx: Any, dY: Tensor) -> Tuple[Tensor, None, None]:
+        """Backpropagate through the 1.5-entmax projection using the cached output."""
         (Y,) = ctx.saved_tensors
         gppr = Y.sqrt()  # = 1 / g'' (Y)
         dX = dY * gppr
@@ -305,6 +313,7 @@ class ModuleWithInit(nn.Module):
     """Base class for pytorch module with data-aware initializer on first batch."""
 
     def __init__(self) -> None:
+        """Set up the initialization-tracking buffer, initially marked as not-yet-initialized."""
         super().__init__()
         # Persistent buffer (NOT an nn.Parameter): it is a bookkeeping flag, not a
         # trainable weight, so it must stay out of model.parameters() / optimisers
@@ -320,6 +329,7 @@ class ModuleWithInit(nn.Module):
         raise NotImplementedError("Please implement initialize() in subclass")
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        """Run `initialize()` on the first call only, then forward normally on every call."""
         if self._is_initialized_bool is None:
             self._is_initialized_bool = bool(self._is_initialized_tensor.item())
         if not self._is_initialized_bool:
@@ -342,6 +352,7 @@ class Lambda(nn.Module):
         self.func = func
 
     def forward(self, *args: Any, **kwargs: Any) -> Any:
+        """Call the wrapped function with the given arguments."""
         return self.func(*args, **kwargs)
 
 
@@ -349,6 +360,7 @@ class Residual(nn.Module):
     """Residual connection wrapper: output = layer(x) + x."""
 
     def __init__(self, layer: Callable[..., Tensor]) -> None:
+        """Store the wrapped layer/callable to add its output to the residual input."""
         super().__init__()
         self.layer = layer
 
@@ -379,6 +391,7 @@ class Embedding1dLayer(nn.Module):
         embedding_dropout: float = 0.0,
         batch_norm_continuous_input: bool = False,
     ) -> None:
+        """Build optional continuous-feature batch norm and per-column categorical embeddings."""
         super().__init__()
 
         if categorical_embedding_dims is None:
@@ -493,6 +506,7 @@ class ODST(ModuleWithInit):
         threshold_init_cutoff: float = 1.0,
         random_state: Optional[int] = None,
     ) -> None:
+        """Allocate leaf responses, feature-selection logits, and (data-initialized) thresholds/temperatures."""
         super().__init__()
 
         self.depth = depth
@@ -582,6 +596,7 @@ class ODST(ModuleWithInit):
                     # Capture the non-tensor ``tree_slice`` in a closure so only
                     # tensors are passed to ``checkpoint`` (it inspects tensor args).
                     def slice_forward(inp: Tensor, sel: Tensor, _tree_slice: slice = tree_slice) -> Tensor:
+                        """Recompute one tree slice's output (used by gradient checkpointing)."""
                         return self._forward_tree_slice(inp, sel, _tree_slice)
 
                     slice_outputs.append(
@@ -693,6 +708,7 @@ class ODST(ModuleWithInit):
             self.log_temperatures.data[...] = torch.log(torch.as_tensor(temperatures) + eps)
 
     def __repr__(self) -> str:
+        """Return a compact string summarising the tree ensemble's shape hyperparameters."""
         return (
             f"{self.__class__.__name__}(in_features={self.feature_selection_logits.shape[0]},"
             f" num_trees={self.num_trees},"
