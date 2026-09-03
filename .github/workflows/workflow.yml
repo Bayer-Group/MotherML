@@ -65,7 +65,7 @@ jobs:
           install-args: "--extra rna --extra report --extra tabpfn --extra tabicl --extra clustering --group test_duration"
 
       - name: Cache HuggingFace and Torch models 🗂️
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cache/huggingface/hub
@@ -119,7 +119,7 @@ jobs:
           install-args: "--extra rna --extra report --extra tabpfn --extra tabicl --extra clustering --group test_duration"
 
       - name: Cache HuggingFace and Torch models 🗂️
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cache/huggingface/hub
