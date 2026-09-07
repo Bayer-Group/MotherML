@@ -1145,13 +1145,13 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostModelMo
         # Get state from CatBoostRegressor
         state = super().__getstate__()
 
-        # Add our custom attributes
+        # Add our custom attributes. The tune_* flags are intentionally *not* included:
+        # GP posterior sampling never supports tuning, so they must stay False regardless
+        # of what was pickled (see __setstate__).
         state.update(
             {
                 "model_type": self.model_type,
                 "target_type": self.target_type,
-                "tune_boosting_type": self.tune_boosting_type,
-                "tune_tree_structure_type": self.tune_tree_structure_type,
                 "samples": self.samples,
                 "prior_iterations": self.prior_iterations,
                 "sigma": self.sigma,
@@ -1168,9 +1168,15 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostModelMo
         # Extract our custom attributes
         self.model_type = state.pop("model_type", "regression")
         self.target_type = state.pop("target_type", "single_target")
-        self.tune_boosting_type = state.pop("tune_boosting_type", False)
-        self.tune_tree_structure_type = state.pop("tune_tree_structure_type", False)
-        self.tune_loss_function = state.pop("tune_loss_function", False)
+        # GP posterior sampling never supports tuning. Discard any legacy tune_* values
+        # from older pickles instead of restoring them, so unpickling can't re-enable
+        # tuning behavior that __init__ always disables for this class.
+        state.pop("tune_boosting_type", None)
+        state.pop("tune_tree_structure_type", None)
+        state.pop("tune_loss_function", None)
+        self.tune_boosting_type = False
+        self.tune_tree_structure_type = False
+        self.tune_loss_function = False
         self.samples = state.pop("samples", 10)
         self.prior_iterations = state.pop("prior_iterations", 100)
         self.sigma = state.pop("sigma", 0.1)
