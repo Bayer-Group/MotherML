@@ -84,7 +84,7 @@ class MotherModelRegistry:
                         self.model_classes[name] = obj
                         self.model_classes_lower[name.lower()] = name  # Add lower-case mapping
 
-                        algo: str = model_file.lower().lstrip("m_")
+                        algo: str = model_file.lower().removeprefix("m_")
 
                         if algo not in self.supported_algorithms:
                             self.supported_algorithms[algo] = set()

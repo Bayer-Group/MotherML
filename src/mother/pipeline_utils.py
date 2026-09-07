@@ -876,6 +876,8 @@ def mother_cv(
         }
         module_logger.info("Returning performance_data with estimators as tuple")
         return performance_data, estimator_output
+    else:
+        module_logger.info("Returning performance_data only")
 
     return performance_data
 

@@ -76,11 +76,23 @@ tabpfn = [
   "torch>=2.3.0,<3",
 ]
 
+### NODE (neural oblivious decision trees)
+node = [
+  "skorch>=1.4.0,<2",
+  "zuko>=1.6.0,<2",
+  "torch>=2.3.0,<3",
+]
+
+### Chemprop-based fingerprints (CheMeleon/GNN)
+chemprop = [
+  "chemprop>=2.0,<3",
+]
+
 ### TabICL
 tabicl = [
-    "tabicl[shap]>=2.1.1",
-    "torch>=2.11.0,<3",
-    "matplotlib>3.7.0"
+  "tabicl[shap]>=2.1.1",
+  "torch>=2.11.0,<3",
+  "matplotlib>3.7.0",
 ]
 
 [dependency-groups]

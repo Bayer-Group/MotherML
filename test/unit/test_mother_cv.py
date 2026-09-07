@@ -25,6 +25,15 @@ from mother.ml.models.m_randomForest import (
 from mother.optimization.core import MotherTuner
 from mother.pipeline_utils import get_feature_selection_pipeline, mother_cv
 
+# NODE ("node") depends on non-standard optional dependencies
+# (skorch, torch, zuko) and is neural-network based. It is covered separately
+# in the dedicated neural suites (test_node_unit.py,
+# test_node_uncertainty.py). Exclude it from the
+# generic algorithm sweep here so these CV tests remain runnable without the
+# optional "node" extra installed.
+_OPTIONAL_DEP_ALGORITHMS = {"node"}
+STANDARD_ALGORITHMS = [a for a in get_available_algorithms() if a not in _OPTIONAL_DEP_ALGORITHMS]
+
 
 @pytest.fixture()
 def scorer_regression(request):
@@ -226,7 +235,7 @@ def synthetic_data_classification() -> tuple[pd.DataFrame, pd.DataFrame, pd.Data
     return X, y, y_multitask
 
 
-@pytest.fixture(params=get_available_algorithms())
+@pytest.fixture(params=STANDARD_ALGORITHMS)
 def all_classification_algorithms(request) -> BaseEstimator:
     algorithm = request.param
 
@@ -251,7 +260,7 @@ def all_classification_algorithms(request) -> BaseEstimator:
     return model
 
 
-@pytest.fixture(params=get_available_algorithms())
+@pytest.fixture(params=STANDARD_ALGORITHMS)
 def all_regression_algorithms(request) -> BaseEstimator:
     algorithm = request.param
 

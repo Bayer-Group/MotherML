@@ -1,0 +1,929 @@
+"""
+NODE Architecture Utilities
+
+This module contains the core building blocks of the Neural Oblivious Decision
+Ensembles (NODE) architecture:
+- Sparse activation functions (sparsemax, entmax15, sparsemoid, entmoid15)
+- Base module classes (ModuleWithInit, Lambda, Residual)
+- Embedding layer for tabular data
+- ODST (Oblivious Differentiable Sparsemax Tree) - the fundamental tree structure
+- DenseODSTBlock - stacks multiple ODST layers
+
+These are the "raw" NODE architecture components that are independent of
+the Skorch/sklearn wrappers and can be used standalone in PyTorch.
+"""
+
+import logging
+from typing import Any, Callable, Dict, List, Optional, Tuple
+from warnings import warn
+
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.utils.checkpoint
+from torch import Tensor
+from torch.autograd import Function
+from torch.jit import script
+
+module_logger = logging.getLogger(__name__)
+
+# ==============================================================================
+# UTILITY FUNCTIONS FOR SPARSE ACTIVATIONS
+# ==============================================================================
+
+
+def _make_ix_like(X: Tensor, dim: int) -> Tensor:
+    """Create index tensor matching shape of X along specified dimension."""
+    d = X.size(dim)
+    rho = torch.arange(1, d + 1, device=X.device, dtype=X.dtype)
+    view = [1] * X.dim()
+    view[0] = -1
+    return rho.view(view).transpose(0, dim)
+
+
+def _roll_last(X: Tensor, dim: int) -> Tensor:
+    """Roll specified dimension to last position."""
+    if dim == -1:
+        return X
+    elif dim < 0:
+        dim = X.dim() + dim
+
+    perm = [i for i in range(X.dim()) if i != dim] + [dim]
+    return X.permute(perm)
+
+
+def balsa_emd_from_mc_samples(
+    samples_by_batch: List[List[Tensor]],
+    reduction: str = "sum",
+    sliced_directions: int = 0,
+) -> np.ndarray:
+    """Compute sampled BALSA-EMD disagreement from MC-dropout flow samples.
+
+    Args:
+        samples_by_batch: Nested list indexed as ``[batch_chunk][mc_pass]`` where
+            each tensor has shape ``(S, B, D)``.
+        reduction: ``"sum"`` (default) aggregates consecutive-pair distances,
+            ``"mean"`` averages over ``T-1`` pairs.
+        sliced_directions: Number of random directions for multi-target
+            sliced-Wasserstein. ``0`` uses ``max(50, 10 * D)``.
+
+    Returns:
+        Per-sample BALSA-EMD style disagreement scores (1D numpy array).
+    """
+    if reduction not in {"sum", "mean"}:
+        raise ValueError("reduction must be one of {'sum', 'mean'}")
+
+    out: List[Tensor] = []
+
+    with torch.no_grad():
+        for samples_b in samples_by_batch:
+            T = len(samples_b)
+            S, B, D = samples_b[0].shape
+            device = samples_b[0].device
+            emd_sum = torch.zeros(B, device=device)
+
+            if D > 1:
+                n_dirs = sliced_directions if sliced_directions > 0 else max(50, 10 * D)
+                dirs = torch.randn(n_dirs, D, device=device)
+                dirs = dirs / dirs.norm(dim=1, keepdim=True)
+
+            for t in range(T - 1):
+                a = samples_b[t]  # (S, B, D)
+                b = samples_b[t + 1]  # (S, B, D)
+
+                if D == 1:
+                    a_s, _ = a[..., 0].sort(dim=0)  # (S, B)
+                    b_s, _ = b[..., 0].sort(dim=0)  # (S, B)
+                    emd_t = (a_s - b_s).abs().mean(dim=0)  # (B,)
+                else:
+                    a_proj = torch.einsum("sbd,rd->rsb", a, dirs)
+                    b_proj = torch.einsum("sbd,rd->rsb", b, dirs)
+                    a_ps, _ = a_proj.sort(dim=1)
+                    b_ps, _ = b_proj.sort(dim=1)
+                    emd_t = (a_ps - b_ps).abs().mean(dim=1).mean(dim=0)  # (B,)
+
+                emd_sum = emd_sum + emd_t
+
+            if reduction == "mean" and T > 1:
+                emd_sum = emd_sum / (T - 1)
+
+            out.append(emd_sum.clamp(min=0.0))
+
+    return torch.cat(out, dim=0).detach().cpu().numpy()
+
+
+# ==============================================================================
+# SPARSE ACTIVATION FUNCTIONS
+# ==============================================================================
+# Implementation of entmax (Peters et al., 2019) and sparsemax (Martins & Astudillo, 2016)
+# Author: Ben Peters, Vlad Niculae <vlad@vene.ro>
+
+
+class Entmoid15(Function):
+    """A highly optimized equivalent of lambda x: Entmax15([x, 0])"""
+
+    @staticmethod
+    def forward(ctx: Any, input: Tensor) -> Tensor:
+        """Compute Entmoid15(input) and cache the output for the backward pass."""
+        output = Entmoid15._forward(input)
+        ctx.save_for_backward(output)
+        return output
+
+    @staticmethod
+    @script
+    def _forward(x: Tensor) -> Tensor:
+        """JIT-compiled closed-form forward pass for Entmoid15 (1.5-entmax over [x, 0])."""
+        x_abs, is_pos = abs(x), x >= 0
+        tau = (x_abs + torch.sqrt(F.relu(8 - x_abs**2))) / 2
+        tau.masked_fill_(tau <= x_abs, 2.0)
+        y_neg = 0.25 * F.relu(tau - x_abs, inplace=True) ** 2
+        return torch.where(is_pos, 1 - y_neg, y_neg)
+
+    @staticmethod
+    def backward(ctx: Any, grad_output: Tensor) -> Tensor:
+        """Compute the gradient of Entmoid15 using the saved forward output."""
+        return Entmoid15._backward(ctx.saved_tensors[0], grad_output)
+
+    @staticmethod
+    @script
+    def _backward(output: Tensor, grad_output: Tensor) -> Tensor:
+        """JIT-compiled closed-form gradient computation for Entmoid15."""
+        gppr0, gppr1 = output.sqrt(), (1 - output).sqrt()
+        grad_input = grad_output * gppr0
+        q = grad_input / (gppr0 + gppr1)
+        grad_input -= q * gppr0
+        return grad_input
+
+
+def sparsemoid(input: Tensor) -> Tensor:
+    """Sparse sigmoid-like activation for binary splits."""
+    return (0.5 * input + 0.5).clamp_(0, 1)
+
+
+def _sparsemax_threshold_and_support(X: Tensor, dim: int = -1, k: Optional[int] = None) -> Tuple[Tensor, Tensor]:
+    """Core computation for sparsemax: optimal threshold and support size."""
+    if k is None or k >= X.shape[dim]:  # do full sort
+        topk, _ = torch.sort(X, dim=dim, descending=True)
+    else:
+        topk, _ = torch.topk(X, k=k, dim=dim)
+
+    topk_cumsum = topk.cumsum(dim) - 1
+    rhos = _make_ix_like(topk, dim)
+    support = rhos * topk > topk_cumsum
+
+    support_size = support.sum(dim=dim).unsqueeze(dim)
+    tau = topk_cumsum.gather(dim, support_size - 1)
+    tau /= support_size.to(X.dtype)
+
+    if k is not None and k < X.shape[dim]:
+        unsolved = (support_size == k).squeeze(dim)
+
+        if torch.any(unsolved):
+            in_ = _roll_last(X, dim)[unsolved]
+            tau_, ss_ = _sparsemax_threshold_and_support(in_, dim=-1, k=2 * k)
+            _roll_last(tau, dim)[unsolved] = tau_
+            _roll_last(support_size, dim)[unsolved] = ss_
+
+    return tau, support_size
+
+
+def _entmax_threshold_and_support(X: Tensor, dim: int = -1, k: Optional[int] = None) -> Tuple[Tensor, Tensor]:
+    """Core computation for 1.5-entmax: optimal threshold and support size."""
+    if k is None or k >= X.shape[dim]:  # do full sort
+        Xsrt, _ = torch.sort(X, dim=dim, descending=True)
+    else:
+        Xsrt, _ = torch.topk(X, k=k, dim=dim)
+
+    rho = _make_ix_like(Xsrt, dim)
+    mean = Xsrt.cumsum(dim) / rho
+    mean_sq = (Xsrt**2).cumsum(dim) / rho
+    ss = rho * (mean_sq - mean**2)
+    delta = (1 - ss) / rho
+
+    # NOTE this is not exactly the same as in reference algo
+    # Fortunately it seems the clamped values never wrongly
+    # get selected by tau <= sorted_z. Prove this!
+    delta_nz = torch.clamp(delta, 0)
+    tau = mean - torch.sqrt(delta_nz)
+
+    support_size = (tau <= Xsrt).sum(dim).unsqueeze(dim)
+    tau_star = tau.gather(dim, support_size - 1)
+
+    if k is not None and k < X.shape[dim]:
+        unsolved = (support_size == k).squeeze(dim)
+
+        if torch.any(unsolved):
+            X_ = _roll_last(X, dim)[unsolved]
+            tau_, ss_ = _entmax_threshold_and_support(X_, dim=-1, k=2 * k)
+            _roll_last(tau_star, dim)[unsolved] = tau_
+            _roll_last(support_size, dim)[unsolved] = ss_
+
+    return tau_star, support_size
+
+
+class SparsemaxFunction(Function):
+    """Sparsemax activation function (PyTorch autograd)."""
+
+    @classmethod
+    def forward(cls, ctx: Any, X: Tensor, dim: int = -1, k: Optional[int] = None) -> Tensor:
+        """Project `X` onto the probability simplex along `dim`, producing a sparse output."""
+        ctx.dim = dim
+        max_val, _ = X.max(dim=dim, keepdim=True)
+        X = X - max_val  # same numerical stability trick as softmax
+        tau, supp_size = _sparsemax_threshold_and_support(X, dim=dim, k=k)
+        output = torch.clamp(X - tau, min=0)
+        ctx.save_for_backward(supp_size, output)
+        return output
+
+    @classmethod
+    def backward(cls, ctx: Any, grad_output: Tensor) -> Tuple[Tensor, None, None]:
+        """Backpropagate through the sparsemax projection using the cached support size."""
+        supp_size, output = ctx.saved_tensors
+        dim = ctx.dim
+        grad_input = grad_output.clone()
+        grad_input[output == 0] = 0
+
+        v_hat = grad_input.sum(dim=dim) / supp_size.to(output.dtype).squeeze(dim)
+        v_hat = v_hat.unsqueeze(dim)
+        grad_input = torch.where(output != 0, grad_input - v_hat, grad_input)
+        return grad_input, None, None
+
+
+class Entmax15Function(Function):
+    """1.5-entmax activation function (PyTorch autograd)."""
+
+    @classmethod
+    def forward(cls, ctx: Any, X: Tensor, dim: int = 0, k: Optional[int] = None) -> Tensor:
+        """Project `X` onto the simplex under the 1.5-entmax transform along `dim`."""
+        ctx.dim = dim
+
+        max_val, _ = X.max(dim=dim, keepdim=True)
+        X = X - max_val  # same numerical stability trick as for softmax
+        X = X / 2  # divide by 2 to solve actual Entmax
+
+        tau_star, _ = _entmax_threshold_and_support(X, dim=dim, k=k)
+
+        Y = torch.clamp(X - tau_star, min=0) ** 2
+        ctx.save_for_backward(Y)
+        return Y
+
+    @classmethod
+    def backward(cls, ctx: Any, dY: Tensor) -> Tuple[Tensor, None, None]:
+        """Backpropagate through the 1.5-entmax projection using the cached output."""
+        (Y,) = ctx.saved_tensors
+        gppr = Y.sqrt()  # = 1 / g'' (Y)
+        dX = dY * gppr
+        q = dX.sum(ctx.dim) / gppr.sum(ctx.dim)
+        q = q.unsqueeze(ctx.dim)
+        dX -= q * gppr
+        return dX, None, None
+
+
+def sparsemax(X: Tensor, dim: int = -1, k: Optional[int] = None) -> Tensor:
+    """Sparsemax: normalizing sparse transform (a la softmax).
+
+    Solves the projection:  min_p ||x - p||_2   s.t.  p >= 0, sum(p) == 1.
+
+    References:
+        Martins, A. & Astudillo, R. (2016). From Softmax to Sparsemax.
+    """
+    return SparsemaxFunction.apply(X, dim, k)
+
+
+def entmax15(X: Tensor, dim: int = -1, k: Optional[int] = None) -> Tensor:
+    """1.5-entmax: normalizing sparse transform (a la softmax).
+
+    Solves: max_p <x, p> - H_1.5(p)    s.t.    p >= 0, sum(p) == 1.
+    where H_1.5(p) is the Tsallis alpha-entropy with alpha=1.5.
+    """
+    return Entmax15Function.apply(X, dim, k)
+
+
+# Convenience aliases
+entmoid15 = Entmoid15.apply
+
+
+# ==============================================================================
+# BASE MODULE CLASSES
+# ==============================================================================
+
+
+class ModuleWithInit(nn.Module):
+    """Base class for pytorch module with data-aware initializer on first batch."""
+
+    def __init__(self) -> None:
+        """Set up the initialization-tracking buffer, initially marked as not-yet-initialized."""
+        super().__init__()
+        # Persistent buffer (NOT an nn.Parameter): it is a bookkeeping flag, not a
+        # trainable weight, so it must stay out of model.parameters() / optimisers
+        # while still being saved in state_dict.
+        self.register_buffer("_is_initialized_tensor", torch.tensor(0, dtype=torch.uint8))
+        self._is_initialized_bool: Optional[bool] = None
+        # A cached python bool mirrors the buffer to avoid a tensor .item() sync on
+        # every forward call.
+        # please DO NOT use these flags in child modules
+
+    def initialize(self, *args: Any, **kwargs: Any) -> None:
+        """Initialize module tensors using first batch of data."""
+        raise NotImplementedError("Please implement initialize() in subclass")
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        """Run `initialize()` on the first call only, then forward normally on every call."""
+        if self._is_initialized_bool is None:
+            self._is_initialized_bool = bool(self._is_initialized_tensor.item())
+        if not self._is_initialized_bool:
+            self.initialize(*args, **kwargs)
+            with torch.no_grad():
+                self._is_initialized_tensor.fill_(1)
+            self._is_initialized_bool = True
+        return super().__call__(*args, **kwargs)
+
+
+class Lambda(nn.Module):
+    """A wrapper for a lambda function as a pytorch module."""
+
+    def __init__(self, func: Callable) -> None:
+        """Initialize lambda module
+        Args:
+            func: any function/callable
+        """
+        super().__init__()
+        self.func = func
+
+    def forward(self, *args: Any, **kwargs: Any) -> Any:
+        """Call the wrapped function with the given arguments."""
+        return self.func(*args, **kwargs)
+
+
+class Residual(nn.Module):
+    """Residual connection wrapper: output = layer(x) + x."""
+
+    def __init__(self, layer: Callable[..., Tensor]) -> None:
+        """Store the wrapped layer/callable to add its output to the residual input."""
+        super().__init__()
+        self.layer = layer
+
+    def forward(self, x: Tensor, **kwargs: Any) -> Tensor:
+        """Apply residual connection: output = layer(input) + input."""
+        return self.layer(x, **kwargs) + x
+
+
+# ==============================================================================
+# EMBEDDING LAYER
+# ==============================================================================
+
+
+class Embedding1dLayer(nn.Module):
+    """
+    Embedding layer for tabular data with continuous and categorical features.
+
+    Handles:
+    - Continuous features: optional BatchNorm normalization
+    - Categorical features: learned dense embeddings with dropout
+    - Concatenation of both feature types into a single tensor
+    """
+
+    def __init__(
+        self,
+        continuous_dim: int = 0,
+        categorical_embedding_dims: Optional[list] = None,
+        embedding_dropout: float = 0.0,
+        batch_norm_continuous_input: bool = False,
+    ) -> None:
+        """Build optional continuous-feature batch norm and per-column categorical embeddings."""
+        super().__init__()
+
+        if categorical_embedding_dims is None:
+            categorical_embedding_dims = []
+
+        self.continuous_dim = continuous_dim
+        self.categorical_embedding_dims = categorical_embedding_dims
+        self.embedding_dropout = embedding_dropout
+        self.batch_norm_continuous_input = batch_norm_continuous_input
+
+        # Categorical embedding layers
+        if len(categorical_embedding_dims) > 0:
+            self.cat_embedding_layers = nn.ModuleList(
+                [nn.Embedding(vocab_size, embedding_dim) for vocab_size, embedding_dim in categorical_embedding_dims]
+            )
+            self.embedding_dropout_layer = nn.Dropout(embedding_dropout)
+        else:
+            self.cat_embedding_layers = None
+
+        # Optional batch normalization for continuous features
+        if batch_norm_continuous_input and continuous_dim > 0:
+            self.cont_batch_norm = nn.BatchNorm1d(continuous_dim)
+        else:
+            self.cont_batch_norm = None
+
+    @property
+    def embedded_cat_dim(self) -> int:
+        """Total dimension of all categorical embeddings combined."""
+        if self.cat_embedding_layers is not None:
+            return sum([embedding_dim for vocab_size, embedding_dim in self.categorical_embedding_dims])
+        else:
+            return 0
+
+    def forward(self, x_dict: Dict[str, Optional[Tensor]]) -> Tensor:
+        """
+        Process continuous and categorical features into a single tensor.
+
+        Args:
+            x_dict: Dict with 'continuous' and/or 'categorical' tensors.
+
+        Returns:
+            Concatenated feature tensor [batch_size, total_feature_dim].
+        """
+        continuous = x_dict.get("continuous", None)
+        categorical = x_dict.get("categorical", None)
+
+        # Process continuous features
+        if continuous is not None and self.continuous_dim > 0:
+            if self.cont_batch_norm is not None:
+                continuous = self.cont_batch_norm(continuous)
+        else:
+            continuous = None
+
+        # Process categorical features through embeddings
+        if categorical is not None and self.cat_embedding_layers is not None:
+            cat_embed = []
+            for i, embedding_layer in enumerate(self.cat_embedding_layers):
+                embedded_feature = embedding_layer(categorical[:, i])
+                cat_embed.append(embedded_feature)
+            categorical = torch.cat(cat_embed, dim=1)
+            if self.embedding_dropout > 0:
+                categorical = self.embedding_dropout_layer(categorical)
+        else:
+            categorical = None
+
+        # Concatenate
+        if continuous is not None and categorical is not None:
+            x = torch.cat([continuous, categorical], dim=1)
+        elif continuous is not None:
+            x = continuous
+        elif categorical is not None:
+            x = categorical
+        else:
+            raise ValueError("Both continuous and categorical inputs are None")
+
+        return x
+
+
+# ==============================================================================
+# ODST - OBLIVIOUS DIFFERENTIABLE SPARSEMAX TREE
+# ==============================================================================
+
+
+class ODST(ModuleWithInit):
+    """
+    Oblivious Differentiable Sparsemax Tree (ODST) — core building block of NODE.
+
+    An oblivious decision tree where all nodes at the same depth share the same
+    splitting feature and threshold. Differentiable via soft split functions
+    (sparsemoid/entmoid15) and sparse feature selection (sparsemax/entmax15),
+    enabling end-to-end gradient-based optimization.
+
+    Key properties:
+    - Oblivious structure: same feature/threshold at each depth level → efficient vectorization
+    - Soft decisions: probabilistic splits instead of hard left/right
+    - Sparse feature selection: focuses on most relevant features per depth level
+    - Data-aware initialization: thresholds set from data quantiles for stable training
+    """
+
+    def __init__(
+        self,
+        in_features: int,
+        num_trees: int,
+        depth: int = 6,
+        tree_output_dim: int = 1,
+        flatten_output: bool = True,
+        choice_function: Callable = entmax15,
+        bin_function: Callable = entmoid15,
+        initialize_response_: Callable = nn.init.normal_,
+        initialize_selection_logits_: Callable = nn.init.uniform_,
+        threshold_init_beta: float = 1.0,
+        threshold_init_cutoff: float = 1.0,
+        random_state: Optional[int] = None,
+    ) -> None:
+        """Allocate leaf responses, feature-selection logits, and (data-initialized) thresholds/temperatures."""
+        super().__init__()
+
+        self.depth = depth
+        self.num_trees = num_trees
+        self.tree_dim = tree_output_dim
+        self.flatten_output = flatten_output
+        self.choice_function = choice_function
+        self.bin_function = bin_function
+        self.threshold_init_beta = threshold_init_beta
+        self.threshold_init_cutoff = threshold_init_cutoff
+        self.random_state = random_state
+
+        # Leaf response values: [num_trees, tree_output_dim, 2^depth]
+        self.response = nn.Parameter(torch.zeros([num_trees, tree_output_dim, 2**depth]), requires_grad=True)
+        initialize_response_(self.response)
+
+        # Feature selection logits: [in_features, num_trees, depth]
+        self.feature_selection_logits = nn.Parameter(torch.zeros([in_features, num_trees, depth]), requires_grad=True)
+        initialize_selection_logits_(self.feature_selection_logits)
+
+        # Decision thresholds and temperatures (initialized from data in initialize())
+        self.feature_thresholds = nn.Parameter(
+            torch.full([num_trees, depth], float("nan"), dtype=torch.float32),
+            requires_grad=True,
+        )
+        self.log_temperatures = nn.Parameter(
+            torch.full([num_trees, depth], float("nan"), dtype=torch.float32),
+            requires_grad=True,
+        )
+
+        # Pre-computed binary codes for mapping soft decisions to leaf indices
+        with torch.no_grad():
+            indices = torch.arange(2**self.depth)
+            offsets = 2 ** torch.arange(self.depth)
+            bin_codes = (indices.view(1, -1) // offsets.view(-1, 1) % 2).to(torch.float32)
+            bin_codes_1hot = torch.stack([bin_codes, 1.0 - bin_codes], dim=-1)
+            # Shape: [depth, 2^depth, 2]
+            self.register_buffer("bin_codes_1hot", bin_codes_1hot)
+
+    # Wide single-layer ensembles (e.g. 2048 trees) materialise very large
+    # per-tree intermediates at once. Evaluating trees in fixed-width slices
+    # caps the peak transient/activation memory to roughly one slice, matching
+    # the footprint of an equivalent multi-layer split, without changing the
+    # computed result. Auto-applied whenever num_trees exceeds this width.
+    _AUTO_TREE_CHUNK_SIZE = 256
+
+    def forward(self, input: Tensor) -> Tensor:
+        """
+        Forward pass: feature selection → threshold comparison → soft leaf routing → response.
+
+        Steps:
+        1. Sparse feature selection via choice_function (sparsemax/entmax)
+        2. Extract selected feature values (dense projection, tree-sliced for memory)
+        3. Compare to learned thresholds, scaled by temperature
+        4. Soft binary decisions via bin_function (sparsemoid/entmoid)
+        5. Compute leaf probabilities from decision products
+        6. Weighted sum of leaf responses
+
+        Args:
+            input: [batch_size, in_features]
+
+        Returns:
+            [batch_size, num_trees * tree_output_dim] if flatten_output else
+            [batch_size, num_trees, tree_output_dim]
+        """
+        assert len(input.shape) >= 2
+        if len(input.shape) > 2:
+            return self.forward(input.reshape(-1, input.shape[-1])).reshape(*input.shape[:-1], -1)
+
+        # 1. Sparse feature selection (entmax/sparsemax over input features).
+        feature_logits = self.feature_selection_logits  # [in_features, num_trees, depth]
+        feature_selectors = self.choice_function(feature_logits, dim=0)
+
+        # 2. Evaluate trees. Wide ensembles are processed in fixed-width slices to
+        #    cap peak memory; the concatenation reproduces the full-width result.
+        chunk_size = self._AUTO_TREE_CHUNK_SIZE
+        if chunk_size is None or self.num_trees <= chunk_size:
+            response = self._forward_tree_slice(input, feature_selectors, slice(0, self.num_trees))
+        else:
+            use_checkpoint = self.training and torch.is_grad_enabled()
+            slice_outputs = []
+            for start in range(0, self.num_trees, chunk_size):
+                tree_slice = slice(start, min(start + chunk_size, self.num_trees))
+                if use_checkpoint:
+                    # Recompute each slice in backward so saved activations stay
+                    # bounded to one slice; numerically identical (no RNG here).
+                    # Capture the non-tensor ``tree_slice`` in a closure so only
+                    # tensors are passed to ``checkpoint`` (it inspects tensor args).
+                    def slice_forward(inp: Tensor, sel: Tensor, _tree_slice: slice = tree_slice) -> Tensor:
+                        """Recompute one tree slice's output (used by gradient checkpointing)."""
+                        return self._forward_tree_slice(inp, sel, _tree_slice)
+
+                    slice_outputs.append(
+                        torch.utils.checkpoint.checkpoint(
+                            slice_forward,
+                            input,
+                            feature_selectors,
+                            use_reentrant=False,
+                        )
+                    )
+                else:
+                    slice_outputs.append(self._forward_tree_slice(input, feature_selectors, tree_slice))
+            response = torch.cat(slice_outputs, dim=1)
+
+        return response.flatten(1, 2) if self.flatten_output else response
+
+    def _forward_tree_slice(self, input: Tensor, feature_selectors: Tensor, tree_slice: slice) -> Tensor:
+        """Compute soft-tree responses for the trees in ``tree_slice`` only.
+
+        Slicing the tree axis of the selectors, thresholds, temperatures and leaf
+        responses yields exactly the same per-tree outputs as the full-width path,
+        so concatenating slices reconstructs the unchunked result.
+        """
+        selectors_slice = feature_selectors[:, tree_slice, :]
+        n_trees = selectors_slice.shape[1]
+        selectors_2d = selectors_slice.reshape(selectors_slice.shape[0], -1)
+
+        feature_values = input @ selectors_2d
+        feature_values = feature_values.reshape(input.shape[0], n_trees, self.depth)
+
+        # Threshold comparison with temperature scaling
+        threshold_logits = (feature_values - self.feature_thresholds[tree_slice]) * torch.exp(
+            -self.log_temperatures[tree_slice]
+        )
+        # Bin functions are applied to symmetric logits [-t, t]. For entmoid15
+        # and sparsemoid this yields complementary probabilities that sum to 1.
+        threshold_logits = torch.stack([-threshold_logits, threshold_logits], dim=-1)
+
+        # Soft binary decisions
+        bins = self.bin_function(threshold_logits)
+
+        # Leaf probability computation via binary code matching
+        bin_matches = torch.einsum("btds,dcs->btdc", bins, self.bin_codes_1hot)
+        response_weights = torch.prod(bin_matches, dim=-2)
+
+        # Weighted response aggregation for this slice of trees
+        return torch.einsum("bnd,ncd->bnc", response_weights, self.response[tree_slice])
+
+    def initialize(self, input: Tensor, eps: float = 1e-6) -> None:
+        """
+        Data-aware initialization of thresholds and temperatures from first batch.
+
+        Sets thresholds to data quantiles and temperatures based on data distribution
+        to ensure meaningful initial decisions and proper gradient flow.
+        """
+        assert len(input.shape) == 2
+
+        if input.shape[0] < 256:
+            warn(
+                "Data-aware initialization is performed on less than 256 data points. "
+                "This may reduce threshold initialization quality on some datasets. "
+                "Prefer at least 256 samples for stable initialization; 512+ can be more robust "
+                "when memory allows. You can run manual initialization before training, ideally "
+                "under torch.no_grad() for memory efficiency."
+            )
+
+        with torch.no_grad():
+            if not isinstance(input, torch.Tensor):
+                input_tensor = torch.as_tensor(input, dtype=torch.float32)
+            else:
+                input_tensor = input
+
+            # Compute feature values using current selection weights
+            feature_selectors = self.choice_function(self.feature_selection_logits, dim=0)
+            feature_values = torch.einsum("bi,ind->bnd", input_tensor, feature_selectors)
+
+            # Initialize thresholds from sampled data quantiles (Beta distribution)
+            rng = np.random.default_rng(self.random_state)
+            percentiles_q = 100 * rng.beta(
+                self.threshold_init_beta,
+                self.threshold_init_beta,
+                size=[self.num_trees, self.depth],
+            )
+
+            feature_values_np = feature_values.detach().cpu().numpy()
+            thresholds = np.zeros([self.num_trees, self.depth])
+            for tree_idx in range(self.num_trees):
+                for depth_idx in range(self.depth):
+                    thresholds[tree_idx, depth_idx] = np.percentile(
+                        feature_values_np[:, tree_idx, depth_idx], percentiles_q[tree_idx, depth_idx]
+                    )
+
+            self.feature_thresholds.data[...] = torch.as_tensor(
+                thresholds,
+                dtype=feature_values.dtype,
+                device=feature_values.device,
+            )
+
+            # Initialize temperatures from data spread around thresholds
+            feature_threshold_diffs = abs(feature_values - self.feature_thresholds).detach().cpu().numpy()
+            temperatures = np.zeros([self.num_trees, self.depth])
+            for tree_idx in range(self.num_trees):
+                for depth_idx in range(self.depth):
+                    temperatures[tree_idx, depth_idx] = np.percentile(
+                        feature_threshold_diffs[:, tree_idx, depth_idx], q=100 * min(1.0, self.threshold_init_cutoff)
+                    )
+
+            temperatures /= max(1.0, self.threshold_init_cutoff)
+            self.log_temperatures.data[...] = torch.log(torch.as_tensor(temperatures) + eps)
+
+    def __repr__(self) -> str:
+        """Return a compact string summarising the tree ensemble's shape hyperparameters."""
+        return (
+            f"{self.__class__.__name__}(in_features={self.feature_selection_logits.shape[0]},"
+            f" num_trees={self.num_trees},"
+            f" depth={self.depth},"
+            f" tree_dim={self.tree_dim},"
+            f" flatten_output={self.flatten_output})"
+        )
+
+
+# ==============================================================================
+# DENSE ODST BLOCK
+# ==============================================================================
+
+
+class DenseODSTBlock(nn.Sequential):
+    """
+    Dense block of ODST layers with skip connections.
+
+    Stacks multiple ODST layers where each layer receives all previous outputs
+    (like DenseNet). Supports dimension capping to prevent memory explosion.
+
+    Under ``max_layers_retained``, retention is layer-aligned: the block always keeps
+    all original input features plus as many *full* previous layer outputs as
+    fit in budget (newest-first). Partial layer slices are never retained.
+
+    Two independent dropout mechanisms regularize the block. Their reach is
+    controlled by ``input_dropout_only_input`` / ``tree_dropout_only_head``:
+
+    - ``input_dropout`` masks *individual features* of each layer's input.
+    - ``tree_dropout`` masks *entire trees* (all output dimensions of a tree are
+      dropped together).
+
+    With ``input_dropout_only_input=False`` both mechanisms overlap on the
+    between-layer features. Use ``input_dropout_only_input=True`` together
+    with ``tree_dropout_only_head=False`` to separate them cleanly: input
+    features are regularized feature-wise, everything downstream tree-wise.
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        num_trees: int,
+        num_layers: int,
+        tree_output_dim: int = 1,
+        max_layers_retained: Optional[int] = None,
+        input_dropout: float = 0.0,
+        input_dropout_only_input: bool = False,
+        tree_dropout: float = 0.0,
+        tree_dropout_only_head: bool = True,
+        flatten_output: bool = False,
+        Module: type = ODST,
+        **kwargs: Any,
+    ) -> None:
+        """
+        Build a dense stack of ODST layers.
+
+        Args:
+            input_dim: Number of input features.
+            num_trees: Number of trees per layer.
+            num_layers: Number of ODST layers to stack.
+            tree_output_dim: Output dimension per tree (output_dim + additional).
+            max_layers_retained: Number of previous ODST layer outputs to retain
+                in the next layer's input. ``None`` keeps all previous layers;
+                ``1`` keeps only the most recent previous layer, ``2`` the two
+                most recent, and so on.
+            input_dropout: Feature-wise dropout rate on each layer's input.
+            input_dropout_only_input: If True, apply ``input_dropout`` only to
+                the original input features. If False, apply it to the whole
+                concatenated layer input (original NODE behaviour).
+            tree_dropout: Probability of dropping an entire tree.
+            tree_dropout_only_head: If True, leave tree dropout to the caller
+                (applied once on the block output); if False, apply it inside
+                the block to every layer output.
+            flatten_output: If True, return ``[batch, layers*trees*dim]``;
+                otherwise ``[batch, layers*trees, dim]``.
+            Module: ODST class (or compatible) to use for each layer.
+            **kwargs: Forwarded to each ``Module(...)`` constructor.
+        """
+        if not 0 <= tree_dropout < 1:
+            raise ValueError(f"tree_dropout must be in the interval [0, 1), got {tree_dropout!r}.")
+
+        # Ensure max_layers_retained is never smaller than 1
+        effective_max_layers_retained = max_layers_retained
+
+        if effective_max_layers_retained is not None and effective_max_layers_retained < 1:
+            warn(
+                f"max_layers_retained={effective_max_layers_retained} is smaller than 1; "
+                "using max_layers_retained=1 to keep dimensions consistent."
+            )
+            effective_max_layers_retained = 1
+
+        base_input_dim = input_dim
+        layer_output_width = num_trees * tree_output_dim
+        if effective_max_layers_retained is None:
+            max_prev_layers_kept = None
+        else:
+            # it should always select at least one previous layer, even if the budget is very tight
+            max_prev_layers_kept = effective_max_layers_retained
+
+        layers = []
+        current_input_dim = base_input_dim
+        for layer_idx in range(num_layers):
+            oddt = Module(current_input_dim, num_trees, tree_output_dim=tree_output_dim, flatten_output=True, **kwargs)
+            layers.append(oddt)
+
+            # Next layer input size under full-layer retention.
+            if max_prev_layers_kept is None:
+                current_input_dim = current_input_dim + layer_output_width
+            else:
+                kept_prev_layers = min(layer_idx + 1, max_prev_layers_kept)
+                current_input_dim = base_input_dim + kept_prev_layers * layer_output_width
+
+        super().__init__(*layers)
+        self.num_layers = num_layers
+        self.layer_dim = num_trees
+        self.tree_dim = tree_output_dim
+        self.max_layers_retained = effective_max_layers_retained
+        self._layer_output_width = layer_output_width
+        self._max_prev_layers_kept = max_prev_layers_kept
+        self.flatten_output = flatten_output
+        self.input_dropout = input_dropout
+        self.input_dropout_only_input = input_dropout_only_input
+        self.tree_dropout = tree_dropout
+        self.tree_dropout_only_head = tree_dropout_only_head
+
+    def _apply_input_dropout(self, layer_inp: Tensor, initial_features: int) -> Tensor:
+        """Apply feature-wise dropout to a layer input, honouring the input-only flag.
+
+        Args:
+            layer_inp: Concatenated layer input ``[batch, features]``. The first
+                ``initial_features`` columns are the original input features; the
+                remainder are tree outputs from previous layers.
+            initial_features: Width of the original input feature block.
+
+        Returns:
+            The (partially) dropped layer input.
+        """
+        if not self.input_dropout_only_input:
+            return F.dropout(layer_inp, self.input_dropout)
+
+        # "input_only": leave the between-layer tree outputs untouched.
+        dropped_inputs = F.dropout(layer_inp[..., :initial_features], self.input_dropout)
+        if layer_inp.shape[-1] <= initial_features:
+            return dropped_inputs
+        return torch.cat([dropped_inputs, layer_inp[..., initial_features:]], dim=-1)
+
+    def _apply_tree_dropout(self, layer_output: Tensor) -> Tensor:
+        """Drop entire trees from a single ODST layer output (inverted dropout).
+
+        Args:
+            layer_output: Flattened layer output ``[batch, num_trees * tree_output_dim]``.
+
+        Returns:
+            The layer output with a fraction ``tree_dropout`` of its trees zeroed
+            and the survivors rescaled so the expectation is preserved.
+        """
+        if not 0 <= self.tree_dropout < 1:
+            raise ValueError(f"tree_dropout must be in the interval [0, 1), got {self.tree_dropout!r}.")
+        keep_prob = 1.0 - self.tree_dropout
+        per_tree = layer_output.view(*layer_output.shape[:-1], self.layer_dim, self.tree_dim)
+        # One Bernoulli draw per tree, broadcast across that tree's output dims.
+        keep_mask = torch.bernoulli(torch.full_like(per_tree[..., :1], keep_prob))
+        return (per_tree * keep_mask / keep_prob).reshape(layer_output.shape)
+
+    def forward(self, x: Tensor) -> Tensor:
+        """Forward with dense (DenseNet-style) connections and optional dropout.
+
+        Each layer receives the concatenation of the original features and all
+        previous layer outputs.  If ``max_layers_retained`` is set, the concatenated
+        tensor is trimmed to keep only the original features and as many full previous
+        layers as defined by ``max_layers_retained``:
+        ``max_layers_retained == 1`` keeps only the previous layer,
+        ``max_layers_retained == 2`` keeps the previous two layers, etc.
+
+        Args:
+            x: Input features ``[batch_size, input_dim]``.
+
+        Returns:
+            Tree outputs.  Shape depends on ``flatten_output``:
+            - ``True``:  ``[batch, num_layers * num_trees * tree_output_dim]``
+            - ``False``: ``[batch, num_layers * num_trees, tree_output_dim]``
+        """
+        initial_features = x.shape[-1]
+        for layer in self:
+            layer_inp = x
+            if self.max_layers_retained is not None:
+                prev_generated_width = max(layer_inp.shape[-1] - initial_features, 0)
+                prev_generated_layers = prev_generated_width // self._layer_output_width
+                keep_prev_layers = min(prev_generated_layers, self._max_prev_layers_kept or 0)
+
+                if keep_prev_layers > 0:
+                    tail_features = keep_prev_layers * self._layer_output_width
+                    layer_inp = torch.cat(
+                        [
+                            layer_inp[..., :initial_features],
+                            layer_inp[..., -tail_features:],
+                        ],
+                        dim=-1,
+                    )
+                else:
+                    # Keep only original features when no full previous layer fits.
+                    layer_inp = layer_inp[..., :initial_features]
+            if self.training and self.input_dropout:
+                # Feature-wise dropout on the combined features (continuous +
+                # categorical embeddings, plus retained previous-layer outputs when
+                # input_dropout_only_input is False.
+                layer_inp = self._apply_input_dropout(layer_inp, initial_features)
+            h = layer(layer_inp)
+            if self.training and self.tree_dropout > 0 and not self.tree_dropout_only_head:
+                # Drop whole trees here so the mask affects both the next layer's
+                # input and the block output consumed by the head.
+                h = self._apply_tree_dropout(h)
+            x = torch.cat([x, h], dim=-1)
+
+        outputs = x[..., initial_features:]
+        if not self.flatten_output:
+            outputs = outputs.view(*outputs.shape[:-1], self.num_layers * self.layer_dim, self.tree_dim)
+        return outputs

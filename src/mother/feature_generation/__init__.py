@@ -5,6 +5,10 @@ from mother.feature_generation.core import (
     MaccsFingerprints,
     MorganFingerprints,
 )
+from mother.feature_generation.fp_gnn_gen import (
+    CheMeleonFingerprintFactory,
+    CheMeleonFingerprintTransformer,
+)
 
 __all__ = [
     "FeatureGenerationConfig",
@@ -12,4 +16,6 @@ __all__ = [
     "MaccsFingerprints",
     "ChemicalDescriptors",
     "FingerprintsGeneric",
+    "CheMeleonFingerprintFactory",
+    "CheMeleonFingerprintTransformer",
 ]
