@@ -219,7 +219,9 @@ def test_get_virtual_prediction_accepts_numpy_integer_ensemble_count(monkeypatch
 
     monkeypatch.setattr(mother.ml.utils, "CatBoostRanker", FakeRanker)
     result, raw_scores = mother.ml.utils.get_virtual_prediction(
-        pd.DataFrame(index=[0, 1]), model=FakeRanker(), virtual_ensembles_count=np.int64(2)
+        pd.DataFrame(index=[0, 1]),
+        model=FakeRanker(),
+        virtual_ensembles_count=np.int64(2),
     )
 
     assert result.shape[0] == 2
@@ -314,7 +316,13 @@ def test_numeric_columns_with_nan():
 
 
 def test_get_categorical_column_names_all_categorical():
-    df = pd.DataFrame({"a": ["x", "y", "z"], "b": [True, False, True], "c": pd.Categorical(["cat1", "cat2", "cat3"])})
+    df = pd.DataFrame(
+        {
+            "a": ["x", "y", "z"],
+            "b": [True, False, True],
+            "c": pd.Categorical(["cat1", "cat2", "cat3"]),
+        }
+    )
     result = utils.get_categorical_column_names(df)
     expected = ["a", "b", "c"]
     assert result == expected
@@ -369,11 +377,19 @@ def test_get_categorical_column_names_with_nan():
         (CatBoostRegressor, {}, 6),  # Default regressor
         (CatBoostRegressor, {"depth": 10}, 10),  # Custom depth regressor
         (CatBoostRegressor, {"max_depth": 7}, 7),  # Custom max_depth regressor
-        (CatBoostRegressor, {"depth": 4, "max_depth": 9}, 9),  # Both depth and max_depth regressor
+        (
+            CatBoostRegressor,
+            {"depth": 4, "max_depth": 9},
+            9,
+        ),  # Both depth and max_depth regressor
         (CatBoostClassifier, {}, 6),  # Default classifier
         (CatBoostClassifier, {"depth": 8}, 8),  # Custom depth classifier
         (CatBoostClassifier, {"max_depth": 11}, 11),  # Custom max_depth classifier
-        (CatBoostClassifier, {"depth": 3, "max_depth": 13}, 13),  # Both depth and max_depth classifier
+        (
+            CatBoostClassifier,
+            {"depth": 3, "max_depth": 13},
+            13,
+        ),  # Both depth and max_depth classifier
         (CatBoostRanker, {}, 6),  # Default ranker
         (CatBoostRanker, {"depth": 5}, 5),  # Custom depth ranker
         (CatBoostRanker, {"max_depth": 16}, 16),  # Custom max_depth ranker
@@ -655,7 +671,12 @@ class TestOrdinalLabelBinarizer:
 
         # Step 2: Train CatBoost with MultiLogloss
         model = CatBoostClassifier(
-            loss_function="MultiLogloss", iterations=100, depth=4, learning_rate=0.1, verbose=False, random_seed=42
+            loss_function="MultiLogloss",
+            iterations=100,
+            depth=4,
+            learning_rate=0.1,
+            verbose=False,
+            random_seed=42,
         )
 
         # Fit model on binary targets
@@ -973,7 +994,11 @@ class TestOrdinalLabelBinarizer:
             y_reconstructed = binarizer.inverse_transform(y_transformed)
 
             # Must be exactly equal for ordinal encoding
-            np.testing.assert_array_equal(y_reconstructed, y_sample, err_msg=f"Round-trip failed for test case {i}")
+            np.testing.assert_array_equal(
+                y_reconstructed,
+                y_sample,
+                err_msg=f"Round-trip failed for test case {i}",
+            )
 
             # Test 2: Individual class reconstruction
             for cls in binarizer.all_classes_:
@@ -1009,7 +1034,9 @@ class TestOrdinalLabelBinarizer:
             reconstructed_counts = np.bincount(y_all_reconstructed, minlength=max(y_data) + 1)
 
             np.testing.assert_array_equal(
-                original_counts, reconstructed_counts, err_msg=f"Class distribution not preserved for case {i}"
+                original_counts,
+                reconstructed_counts,
+                err_msg=f"Class distribution not preserved for case {i}",
             )
 
         print("✅ Comprehensive strict inverse property test passed!")

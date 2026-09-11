@@ -33,25 +33,6 @@ import mother.ml.properties as props
 module_logger: logging.Logger = logging.getLogger(__name__)
 
 
-def scores_to_ranks(scores: np.ndarray) -> np.ndarray:
-    """Convert scores to 1-based ranks, with rank 1 assigned to the highest score."""
-    scores = np.asarray(scores).reshape(-1)
-    order = np.argsort(-scores, kind="mergesort")
-    ranks = np.empty_like(order)
-    ranks[order] = np.arange(1, scores.size + 1)
-    return ranks
-
-
-def scores_matrix_to_ranks(score_matrix: np.ndarray) -> np.ndarray:
-    """Convert score matrix columns to per-ensemble 1-based ranks."""
-    arr = np.asarray(score_matrix)
-    if arr.ndim != 2:
-        raise ValueError(f"Expected 2D score_matrix, got {arr.ndim}D.")
-    return np.column_stack([scores_to_ranks(arr[:, ensemble_idx]) for ensemble_idx in range(arr.shape[1])]).astype(
-        float
-    )
-
-
 def default_loss_function(
     model_type: props.ModelType = "classification_binary",
     target_type: props.TargetType = "single_target",
@@ -605,6 +586,24 @@ def get_virtual_prediction(
 
     else:
         raise ValueError("The model must inherit CatBoostClassifier, CatBoostRegressor, or CatBoostRanker")
+
+
+def scores_to_ranks(scores: np.ndarray) -> np.ndarray:
+    """Convert scores to 1-based ranks, with rank 1 assigned to the highest score."""
+    return pd.Series(
+        pd.Series(scores).rank(ascending=False, na_option="bottom", method="dense"),
+        dtype=int,
+    ).to_numpy()
+
+
+def scores_matrix_to_ranks(score_matrix: np.ndarray) -> np.ndarray:
+    """Convert score matrix columns to per-ensemble 1-based ranks."""
+    arr = np.asarray(score_matrix)
+    if arr.ndim != 2:
+        raise ValueError(f"Expected 2D score_matrix, got {arr.ndim}D.")
+    return np.column_stack([scores_to_ranks(arr[:, ensemble_idx]) for ensemble_idx in range(arr.shape[1])]).astype(
+        float
+    )
 
 
 def single_group_rank_pred(

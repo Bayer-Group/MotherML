@@ -53,10 +53,6 @@ module_logger = logging.getLogger(__name__)
 DEFAULT_QUANTILES: list[float] = [0.25, 0.5, 0.75]
 
 
-scores_to_ranks = utils.scores_to_ranks
-scores_matrix_to_ranks = utils.scores_matrix_to_ranks
-
-
 def _validate_ranking_group_id(group_id: np.ndarray, n_samples: int) -> np.ndarray:
     """Validate and normalise a group ID array to 1-D, aligned with X rows."""
     group_arr = np.asarray(group_id).reshape(-1)
@@ -1920,16 +1916,21 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
             in ``X``, optionally normalised by group size.
         """
         preds = super().predict(
-            X, ntree_start=ntree_start, ntree_end=ntree_end, thread_count=thread_count, verbose=verbose, **kwargs
+            X,
+            ntree_start=ntree_start,
+            ntree_end=ntree_end,
+            thread_count=thread_count,
+            verbose=verbose,
+            **kwargs,
         )
 
         if not use_ranks:
             return preds
 
-        rank_values = utils.scores_to_ranks(preds).astype(float)
+        rank_values: np.ndarray = utils.scores_to_ranks(preds)
         if normalize_by_group_size:
             return np.round(rank_values / len(X), 4)
-        return rank_values.astype(int)
+        return rank_values
 
     def predict_uncertainty(
         self,
@@ -2018,7 +2019,13 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
         if uncertainty_for_opt:
             result_df = pd.DataFrame(index=result_index, columns=["knowledge_uncertainty"])
         else:
-            base_cols = ["pred", "mean_predictions", "knowledge_uncertainty", "data_uncertainty", "total_uncertainty"]
+            base_cols = [
+                "pred",
+                "mean_predictions",
+                "knowledge_uncertainty",
+                "data_uncertainty",
+                "total_uncertainty",
+            ]
             if return_quantiles:
                 base_cols += quantile_columns
             result_df = pd.DataFrame(index=result_index, columns=base_cols)

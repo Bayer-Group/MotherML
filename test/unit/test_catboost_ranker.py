@@ -10,6 +10,7 @@ from sklearn.datasets import make_regression
 from sklearn.model_selection import KFold
 
 import mother.ml.models.m_catboost as m_catboost
+from mother.ml import utils
 from mother.ml.core import AbstractMotherPipeline
 from mother.ml.models.m_catboost import CatboostRankerMother
 from mother.pipeline_utils import mother_cv
@@ -28,8 +29,8 @@ pytestmark = pytest.mark.usefixtures("preserve_metadata_routing")
         # Descending: higher score -> better (lower) rank
         (np.array([0.5, 0.9, 0.1, 0.7]), np.array([3, 1, 4, 2])),
         (np.array([10, 5, 20, 15]), np.array([3, 4, 1, 2])),
-        # Identical scores - stable sort preserves input order
-        (np.array([1.0, 1.0, 1.0]), np.array([1, 2, 3])),
+        # Identical scores - returns identical ranks
+        (np.array([1.0, 1.0, 1.0]), np.array([1, 1, 1])),
         # Single value
         (np.array([5.0]), np.array([1])),
         # Negative values: least negative = highest = rank 1
@@ -37,19 +38,19 @@ pytestmark = pytest.mark.usefixtures("preserve_metadata_routing")
         # Mixed positive/negative
         (np.array([1.0, -1.0, 0.0, 2.0]), np.array([2, 4, 3, 1])),
         # Zeros with one positive and one negative
-        (np.array([0.0, 1.0, -1.0, 0.0]), np.array([2, 1, 4, 3])),
+        (np.array([0.0, 1.0, -1.0, 0.0]), np.array([2, 1, 3, 2])),
     ],
 )
 def test_scores_to_ranks(scores, expected):
     """scores_to_ranks uses descending order: highest score -> rank 1."""
-    result = m_catboost.scores_to_ranks(scores)
+    result = utils.scores_to_ranks(scores)
     np.testing.assert_array_equal(result, expected)
 
 
 def test_scores_to_ranks_preserves_input_order():
     """Output positions correspond to input positions (not sorted positions)."""
     scores = np.array([0.3, 0.7, 0.1, 0.9, 0.5])
-    ranks = m_catboost.scores_to_ranks(scores)
+    ranks = utils.scores_to_ranks(scores)
 
     assert len(ranks) == len(scores)
     assert set(ranks) == set(range(1, len(scores) + 1))
@@ -69,15 +70,15 @@ def test_scores_matrix_to_ranks_matches_columnwise_scores_to_ranks():
     )
 
     expected = np.column_stack(
-        [m_catboost.scores_to_ranks(score_matrix[:, i]) for i in range(score_matrix.shape[1])]
+        [utils.scores_to_ranks(score_matrix[:, i]) for i in range(score_matrix.shape[1])]
     ).astype(float)
-    got = m_catboost.scores_matrix_to_ranks(score_matrix)
+    got = utils.scores_matrix_to_ranks(score_matrix)
     np.testing.assert_array_equal(got, expected)
 
 
 def test_scores_matrix_to_ranks_rejects_non_2d_input():
     with pytest.raises(ValueError, match="Expected 2D score_matrix"):
-        _ = m_catboost.scores_matrix_to_ranks(np.array([0.1, 0.2, 0.3]))
+        _ = utils.scores_matrix_to_ranks(np.array([0.1, 0.2, 0.3]))
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +218,7 @@ def test_predict_groupwise_ranks_for_multiple_groups(fitted_ranker_data):
     expected = np.empty(len(scores), dtype=float)
     for group in np.unique(groups_multi):
         idx = np.flatnonzero(groups_multi == group)
-        expected[idx] = m_catboost.scores_to_ranks(scores[idx])
+        expected[idx] = utils.scores_to_ranks(scores[idx])
 
     np.testing.assert_array_equal(ranks, expected)
 
@@ -233,7 +234,13 @@ def test_output_schema(fitted_ranker_data):
     X_group = fitted_ranker_data["X_group"]
     result = model.predict_uncertainty(X_group)
     assert isinstance(result, pd.DataFrame)
-    for col in ("pred", "mean_predictions", "knowledge_uncertainty", "data_uncertainty", "total_uncertainty"):
+    for col in (
+        "pred",
+        "mean_predictions",
+        "knowledge_uncertainty",
+        "data_uncertainty",
+        "total_uncertainty",
+    ):
         assert col in result.columns
     assert len(result) == len(X_group)
 
@@ -281,7 +288,9 @@ def test_data_uncertainty_is_none(fitted_ranker_data):
 
 
 @pytest.mark.slow
-def test_uncertainty_for_opt_returns_only_knowledge_uncertainty_on_fitted_model(fitted_ranker_data):
+def test_uncertainty_for_opt_returns_only_knowledge_uncertainty_on_fitted_model(
+    fitted_ranker_data,
+):
     model = fitted_ranker_data["model"]
     X_group = fitted_ranker_data["X_group"]
     result_opt = model.predict_uncertainty(X_group, uncertainty_for_opt=True)
@@ -363,7 +372,9 @@ def test_n_ensembles_one_has_finite_knowledge_uncertainty(fitted_ranker_data):
     assert np.isfinite(result["knowledge_uncertainty"].to_numpy()).all()
 
 
-def test_virtual_ensemble_helper_is_called_with_forwarded_parameters(mock_ranker_uncertainty_inputs):
+def test_virtual_ensemble_helper_is_called_with_forwarded_parameters(
+    mock_ranker_uncertainty_inputs,
+):
     model = CatboostRankerMother()
     mock_X = mock_ranker_uncertainty_inputs["mock_X"]
     mock_helper_output = mock_ranker_uncertainty_inputs["mock_helper_output"]
@@ -384,7 +395,9 @@ def test_virtual_ensemble_helper_is_called_with_forwarded_parameters(mock_ranker
     assert called_kwargs["thread_count"] == 3
 
 
-def test_virtual_ensemble_mean_scores_remain_scores_by_default(mock_ranker_uncertainty_inputs):
+def test_virtual_ensemble_mean_scores_remain_scores_by_default(
+    mock_ranker_uncertainty_inputs,
+):
     model = CatboostRankerMother()
     mock_X = mock_ranker_uncertainty_inputs["mock_X"]
     mock_helper_output = mock_ranker_uncertainty_inputs["mock_helper_output"]
@@ -404,7 +417,9 @@ def test_virtual_ensemble_mean_scores_remain_scores_by_default(mock_ranker_uncer
     assert result["data_uncertainty"].isna().all()
 
 
-def test_use_ranks_converts_mean_and_uncertainty_to_rank_scale(mock_ranker_uncertainty_inputs):
+def test_use_ranks_converts_mean_and_uncertainty_to_rank_scale(
+    mock_ranker_uncertainty_inputs,
+):
     model = CatboostRankerMother()
     mock_X = mock_ranker_uncertainty_inputs["mock_X"]
 
@@ -546,12 +561,20 @@ def test_predict_uncertainty_combined_new_parameters_ranker_calls_mother_cv(use_
     assert "pred_data_uncertainty" not in result.columns
     assert "pred_total_uncertainty" not in result.columns
     if use_ranks:
-        assert np.allclose(result["pred_target"].to_numpy(), result["pred_target"].to_numpy().astype(int))
+        assert np.allclose(
+            result["pred_target"].to_numpy(),
+            result["pred_target"].to_numpy().astype(int),
+        )
     else:
-        assert not np.allclose(result["pred_target"].to_numpy(), result["pred_target"].to_numpy().astype(int))
+        assert not np.allclose(
+            result["pred_target"].to_numpy(),
+            result["pred_target"].to_numpy().astype(int),
+        )
 
 
-def test_uncertainty_for_opt_returns_only_knowledge_uncertainty(mock_ranker_uncertainty_inputs):
+def test_uncertainty_for_opt_returns_only_knowledge_uncertainty(
+    mock_ranker_uncertainty_inputs,
+):
     model = CatboostRankerMother()
     mock_X = mock_ranker_uncertainty_inputs["mock_X"]
     mock_helper_output = mock_ranker_uncertainty_inputs["mock_helper_output"]
@@ -580,7 +603,9 @@ def test_predict_uncertainty_rejects_unknown_kwargs(mock_ranker_uncertainty_inpu
         model.predict_uncertainty(mock_ranker_uncertainty_inputs["mock_X"], foo="bar")
 
 
-def test_predict_uncertainty_use_ranks_groupwise_via_helper(mock_ranker_uncertainty_inputs):
+def test_predict_uncertainty_use_ranks_groupwise_via_helper(
+    mock_ranker_uncertainty_inputs,
+):
     """ranker_predict_uncertainty_for_groups calls predict_uncertainty per group."""
     model = CatboostRankerMother()
     mock_X = mock_ranker_uncertainty_inputs["mock_X"]
@@ -616,7 +641,9 @@ def test_predict_uncertainty_use_ranks_groupwise_via_helper(mock_ranker_uncertai
     np.testing.assert_allclose(result["knowledge_uncertainty"].to_numpy(), [0.1, 0.2, 0.3, 0.4])
 
 
-def test_ranker_predict_uncertainty_for_groups_matches_per_group_manual(mock_ranker_uncertainty_inputs):
+def test_ranker_predict_uncertainty_for_groups_matches_per_group_manual(
+    mock_ranker_uncertainty_inputs,
+):
     """ranker_predict_uncertainty_for_groups result equals manual per-group call."""
     model = CatboostRankerMother()
     mock_X = mock_ranker_uncertainty_inputs["mock_X"]
@@ -650,7 +677,9 @@ def test_ranker_predict_uncertainty_for_groups_matches_per_group_manual(mock_ran
     pd.testing.assert_frame_equal(from_helper, expected)
 
 
-def test_ranker_predict_uncertainty_for_groups_preserves_duplicate_index_order(mock_ranker_uncertainty_inputs):
+def test_ranker_predict_uncertainty_for_groups_preserves_duplicate_index_order(
+    mock_ranker_uncertainty_inputs,
+):
     model = CatboostRankerMother()
     mock_X = mock_ranker_uncertainty_inputs["mock_X"].copy()
     mock_X.index = ["duplicate", "duplicate", "other", "other"]
