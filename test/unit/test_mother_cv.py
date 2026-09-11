@@ -618,6 +618,24 @@ def test_mother_cv_raises_error_on_invalid_estimator_type(synthetic_data_regress
         )
 
 
+def test_mother_cv_rejects_tuple_uncertainty_output(synthetic_data_regression, cv):
+    class TupleUncertaintyEstimator(BaseEstimator, AbstractMotherPipeline):
+        def fit(self, X, y):
+            return self
+
+        def get_hyperparameter_space(self, X, y, trial, prefix=""):
+            return {}
+
+        def predict_uncertainty(self, X):
+            uncertainty = pd.DataFrame({"mean_predictions": np.zeros(len(X))}, index=X.index)
+            return uncertainty, np.zeros(len(X))
+
+    X, y, _ = synthetic_data_regression
+
+    with pytest.raises(TypeError, match="tuple-valued predict_uncertainty outputs"):
+        mother_cv(TupleUncertaintyEstimator(), cv=cv, X=X, y=y)
+
+
 def test_mother_cv_return_estimators_as_tuple(
     regression_pipeline,
     synthetic_data_regression,

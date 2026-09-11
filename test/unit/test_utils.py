@@ -27,6 +27,16 @@ from mother.optimization import MotherTuner
 repo_dir: pl.Path = pl.Path(__file__).parent.parent.parent
 
 
+@pytest.mark.parametrize("virtual_ensembles_count", [0, -1, 1.5, True])
+def test_get_virtual_prediction_rejects_invalid_ensemble_count(virtual_ensembles_count):
+    with pytest.raises(ValueError, match="virtual_ensembles_count must be a positive integer"):
+        mother.ml.utils.get_virtual_prediction(
+            pd.DataFrame(),
+            model=None,
+            virtual_ensembles_count=virtual_ensembles_count,
+        )
+
+
 @pytest.mark.parametrize(
     "model_type, target_type, expected_loss",
     [
@@ -174,6 +184,102 @@ def test_convert_input_single_column_dataframe():
     np.testing.assert_array_equal(result, np.array([7, 8, 9]))
 
 
+def test_topk_rank_disagreement_reports_ensemble_disagreement_frequency():
+    rank_ensembles = np.array([[1, 1, 2], [2, 3, 1], [3, 2, 3]])
+
+    result = mother.ml.utils.topk_rank_disagreement(rank_ensembles, k=2)
+
+    np.testing.assert_allclose(result, [0.0, 4 / 9, 4 / 9])
+
+
+def test_topk_rank_disagreement_is_zero_for_unanimous_membership():
+    rank_ensembles = np.array([[1, 1], [2, 2], [3, 3]])
+
+    result = mother.ml.utils.topk_rank_disagreement(rank_ensembles, k=1)
+
+    np.testing.assert_allclose(result, [0.0, 0.0, 0.0])
+
+
+@pytest.mark.parametrize("k", [0, 4])
+def test_topk_rank_disagreement_rejects_invalid_k(k):
+    with pytest.raises(ValueError, match="k must be"):
+        mother.ml.utils.topk_rank_disagreement(np.ones((3, 2)), k=k)
+
+
+def test_topk_rank_disagreement_rejects_out_of_range_ranks():
+    with pytest.raises(ValueError, match="rank_ensembles must be 1-based"):
+        mother.ml.utils.topk_rank_disagreement(np.array([[0, 1], [2, 3], [1, 2]]), k=1)
+
+
+def test_get_virtual_prediction_accepts_numpy_integer_ensemble_count(monkeypatch):
+    class FakeRanker:
+        def virtual_ensembles_predict(self, *args, **kwargs):
+            assert kwargs["virtual_ensembles_count"] == 2
+            return np.zeros((2, 2))
+
+    monkeypatch.setattr(mother.ml.utils, "CatBoostRanker", FakeRanker)
+    result, raw_scores = mother.ml.utils.get_virtual_prediction(
+        pd.DataFrame(index=[0, 1]),
+        model=FakeRanker(),
+        virtual_ensembles_count=np.int64(2),
+    )
+
+    assert result.shape[0] == 2
+    assert raw_scores.shape == (2, 2)
+
+
+@pytest.mark.parametrize("model", [None, object()])
+def test_get_virtual_prediction_rejects_invalid_model(model):
+    with pytest.raises(ValueError, match="model must be an instance of"):
+        mother.ml.utils.get_virtual_prediction(pd.DataFrame(index=[0]), model=model)
+
+
+def test_topk_score_variance_limits_values_to_reference_topk():
+    score_ensembles = np.array([[4.0, 6.0], [3.0, 3.0], [1.0, 5.0]])
+
+    topk_mask, variances = mother.ml.utils.topk_score_variance(
+        score_ensembles, k=2, reference_ranks=np.array([1, 2, 3])
+    )
+
+    np.testing.assert_array_equal(topk_mask, [True, True, False])
+    np.testing.assert_allclose(variances, [2.0, 0.0, 0.0])
+
+
+@pytest.mark.parametrize("reference_ranks", [np.array([0, 1, 2]), np.array([1, 2, 4])])
+def test_topk_score_variance_rejects_out_of_range_reference_ranks(reference_ranks):
+    with pytest.raises(ValueError, match="reference_ranks must be 1-based"):
+        mother.ml.utils.topk_score_variance(np.ones((3, 2)), k=1, reference_ranks=reference_ranks)
+
+
+def test_topk_score_variance_is_zero_for_a_single_ensemble():
+    _, variances = mother.ml.utils.topk_score_variance(np.array([[4.0], [2.0]]), k=1)
+
+    np.testing.assert_array_equal(variances, [0.0, 0.0])
+
+
+def test_groupwise_topk_analysis_respects_group_boundaries():
+    uncertainty_df = pd.DataFrame({"mean_predictions": [1.0, 2.0, 1.0, 2.0], "knowledge_uncertainty": [0.0] * 4})
+    score_ensembles = np.array([[4.0, 5.0], [3.0, 2.0], [1.0, 4.0], [2.0, 3.0]])
+
+    result = mother.ml.utils.groupwise_topk_analysis(
+        uncertainty_df, score_ensembles, group_ids=np.array(["a", "a", "b", "b"]), k=1
+    )
+
+    np.testing.assert_allclose(result["topk_disagreement_prob"], [0.0, 0.0, 0.5, 0.5])
+    np.testing.assert_array_equal(result["topk_member"], [True, False, True, False])
+    np.testing.assert_allclose(result["topk_score_var"], [0.5, 0.0, 4.5, 0.0])
+
+
+def test_groupwise_topk_analysis_rejects_missing_group_ids():
+    uncertainty_df = pd.DataFrame({"mean_predictions": [1.0, 2.0], "knowledge_uncertainty": [0.0, 0.0]})
+    score_ensembles = np.array([[2.0, 3.0], [1.0, 0.0]])
+
+    with pytest.raises(ValueError, match="group_ids must not contain missing values"):
+        mother.ml.utils.groupwise_topk_analysis(
+            uncertainty_df, score_ensembles, np.array(["a", np.nan], dtype=object), k=1
+        )
+
+
 def test_numeric_columns_all_numeric():
     df = pd.DataFrame({"a": [1, 2, 3], "b": [4.0, 5.0, 6.0]})
     result = utils.get_numeric_columns(df)
@@ -210,7 +316,13 @@ def test_numeric_columns_with_nan():
 
 
 def test_get_categorical_column_names_all_categorical():
-    df = pd.DataFrame({"a": ["x", "y", "z"], "b": [True, False, True], "c": pd.Categorical(["cat1", "cat2", "cat3"])})
+    df = pd.DataFrame(
+        {
+            "a": ["x", "y", "z"],
+            "b": [True, False, True],
+            "c": pd.Categorical(["cat1", "cat2", "cat3"]),
+        }
+    )
     result = utils.get_categorical_column_names(df)
     expected = ["a", "b", "c"]
     assert result == expected
@@ -265,11 +377,19 @@ def test_get_categorical_column_names_with_nan():
         (CatBoostRegressor, {}, 6),  # Default regressor
         (CatBoostRegressor, {"depth": 10}, 10),  # Custom depth regressor
         (CatBoostRegressor, {"max_depth": 7}, 7),  # Custom max_depth regressor
-        (CatBoostRegressor, {"depth": 4, "max_depth": 9}, 9),  # Both depth and max_depth regressor
+        (
+            CatBoostRegressor,
+            {"depth": 4, "max_depth": 9},
+            9,
+        ),  # Both depth and max_depth regressor
         (CatBoostClassifier, {}, 6),  # Default classifier
         (CatBoostClassifier, {"depth": 8}, 8),  # Custom depth classifier
         (CatBoostClassifier, {"max_depth": 11}, 11),  # Custom max_depth classifier
-        (CatBoostClassifier, {"depth": 3, "max_depth": 13}, 13),  # Both depth and max_depth classifier
+        (
+            CatBoostClassifier,
+            {"depth": 3, "max_depth": 13},
+            13,
+        ),  # Both depth and max_depth classifier
         (CatBoostRanker, {}, 6),  # Default ranker
         (CatBoostRanker, {"depth": 5}, 5),  # Custom depth ranker
         (CatBoostRanker, {"max_depth": 16}, 16),  # Custom max_depth ranker
@@ -551,7 +671,12 @@ class TestOrdinalLabelBinarizer:
 
         # Step 2: Train CatBoost with MultiLogloss
         model = CatBoostClassifier(
-            loss_function="MultiLogloss", iterations=100, depth=4, learning_rate=0.1, verbose=False, random_seed=42
+            loss_function="MultiLogloss",
+            iterations=100,
+            depth=4,
+            learning_rate=0.1,
+            verbose=False,
+            random_seed=42,
         )
 
         # Fit model on binary targets
@@ -869,7 +994,11 @@ class TestOrdinalLabelBinarizer:
             y_reconstructed = binarizer.inverse_transform(y_transformed)
 
             # Must be exactly equal for ordinal encoding
-            np.testing.assert_array_equal(y_reconstructed, y_sample, err_msg=f"Round-trip failed for test case {i}")
+            np.testing.assert_array_equal(
+                y_reconstructed,
+                y_sample,
+                err_msg=f"Round-trip failed for test case {i}",
+            )
 
             # Test 2: Individual class reconstruction
             for cls in binarizer.all_classes_:
@@ -905,7 +1034,9 @@ class TestOrdinalLabelBinarizer:
             reconstructed_counts = np.bincount(y_all_reconstructed, minlength=max(y_data) + 1)
 
             np.testing.assert_array_equal(
-                original_counts, reconstructed_counts, err_msg=f"Class distribution not preserved for case {i}"
+                original_counts,
+                reconstructed_counts,
+                err_msg=f"Class distribution not preserved for case {i}",
             )
 
         print("✅ Comprehensive strict inverse property test passed!")
@@ -990,3 +1121,78 @@ def test_add_prefix_to_dict_keys_prefix_special_chars():
     d = {"x": 10}
     result = add_prefix_to_dict_keys(d, "!@#")
     assert result == {"!@#x": 10}
+
+
+@pytest.fixture
+def fitted_ranker_with_stability_data():
+    """Fixture providing trained ranker with clear vs ambiguous ranking groups."""
+    from mother.ml.models.m_catboost import CatboostRankerMother
+
+    rng = np.random.default_rng(123)
+
+    # Group 0: Clearly separated (one clear winner)
+    X_group0 = rng.standard_normal((5, 8))
+    y_group0 = np.array([100, 50, 40, 30, 20])  # Clear hierarchy
+
+    # Group 1: Near-tie (all similar)
+    X_group1 = rng.standard_normal((5, 8))
+    y_group1 = rng.normal(50, 5, 5)  # High uncertainty
+
+    X = pd.DataFrame(np.vstack([X_group0, X_group1]), columns=[f"feat_{i}" for i in range(8)])
+    y = np.concatenate([y_group0, y_group1])
+    groups = np.array([0] * 5 + [1] * 5)
+
+    # Train ranker
+    model = CatboostRankerMother(
+        iterations=100,
+        max_depth=3,
+        learning_rate=0.05,
+        verbose=False,
+        random_seed=42,
+    )
+    model.fit(X=X, y=y, group_id=groups)
+
+    return {"model": model, "X": X, "groups": groups}
+
+
+@pytest.mark.slow
+class TestRankingUtilsIntegration:
+    """Integration tests combining ranking utility functions with CatBoost rankers."""
+
+    def test_return_raw_parameter_integration(self, fitted_ranker_with_stability_data):
+        """Test that return_raw=True provides scores for topk analysis."""
+        data = fitted_ranker_with_stability_data
+
+        # Get predictions with uncertainty using new API
+        unc_df, score_ensembles = data["model"].predict_uncertainty(data["X"], n_ensembles=10, return_raw=True)
+
+        # Validate return types
+        assert isinstance(unc_df, pd.DataFrame)
+        assert isinstance(score_ensembles, np.ndarray)
+        assert score_ensembles.shape == (len(data["X"]), 10)
+
+        # Analyze top-k stability
+        topk_analysis = mother.ml.utils.groupwise_topk_analysis(unc_df, score_ensembles, data["groups"], k=2)
+
+        # Validation checks
+        assert len(topk_analysis) == len(data["X"])
+        assert {"topk_disagreement_prob", "topk_score_var", "topk_member"}.issubset(topk_analysis.columns)
+
+        # Each group should have exactly k=2 members
+        for g in [0, 1]:
+            n_topk = topk_analysis[data["groups"] == g]["topk_member"].sum()
+            assert n_topk == 2, f"Group {g} should have exactly 2 top-k members"
+
+    def test_stability_differences_across_groups(self, fitted_ranker_with_stability_data):
+        """Test that clear vs ambiguous rankings are distinguished."""
+        data = fitted_ranker_with_stability_data
+
+        unc_df, score_ensembles = data["model"].predict_uncertainty(data["X"], n_ensembles=15, return_raw=True)
+
+        topk_analysis = mother.ml.utils.groupwise_topk_analysis(unc_df, score_ensembles, data["groups"], k=2)
+
+        # Group 0 (clear winner) should have lower disagreement
+        group0_topk = topk_analysis[data["groups"] == 0][topk_analysis["topk_member"]]
+        min_prob_g0 = group0_topk["topk_disagreement_prob"].min()
+
+        assert min_prob_g0 < 0.5, "Clear winner group should have low disagreement"

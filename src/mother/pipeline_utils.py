@@ -614,6 +614,7 @@ def mother_cv(
     groups: Optional[pd.DataFrame] = None,
     prediction_prefix: str = "pred_",
     return_estimators: Literal[False] = False,
+    **kwargs: Any,
 ) -> pd.DataFrame: ...
 
 
@@ -627,6 +628,7 @@ def mother_cv(
     groups: Optional[pd.DataFrame] = None,
     prediction_prefix: str = "pred_",
     return_estimators: Literal[True],
+    **kwargs: Any,
 ) -> tuple[pd.DataFrame, dict[str, Any]]: ...
 
 
@@ -644,6 +646,7 @@ def mother_cv(
     groups: Optional[pd.DataFrame] = None,
     prediction_prefix: str = "pred_",
     return_estimators: Literal[False] = False,
+    **kwargs: Any,
 ) -> pd.DataFrame: ...
 
 
@@ -661,6 +664,7 @@ def mother_cv(
     groups: Optional[pd.DataFrame] = None,
     prediction_prefix: str = "pred_",
     return_estimators: Literal[True],
+    **kwargs: Any,
 ) -> tuple[pd.DataFrame, dict[str, Any]]: ...
 
 
@@ -677,6 +681,7 @@ def mother_cv(
     default_parameters: Optional[dict] = None,
     prediction_prefix: str = "pred_",
     return_estimators: bool = False,
+    **kwargs: Any,
 ) -> Union[pd.DataFrame, tuple[pd.DataFrame, dict[str, Any]]]:
     """
     Runs nested cross validation if a tuner is provided, otherwise
@@ -713,6 +718,11 @@ def mother_cv(
     return_estimators:
         If True, return a tuple (performance_data, estimators_dict) containing
         fitted/optimized estimators for each fold. If False, return only the DataFrame.
+    **kwargs: Additional parameters to be passed to the estimator's predict_uncertainty method.
+        Parameters that make the estimator return a tuple are not supported,
+        because cross-validation requires a single uncertainty DataFrame per fold.
+        For example, CatBoost ranker ``return_raw=True`` returns auxiliary raw
+        scores alongside the uncertainty DataFrame and is not supported here.
     Returns
     -------
     If return_estimators=False: A dataframe containing the results of cross-validation.
@@ -772,7 +782,13 @@ def mother_cv(
 
         module_logger.debug("The target values are being predicted")
 
-        intermediate_performance_data: pd.DataFrame = val_estimator.predict_uncertainty(X.iloc[test_idx, :])
+        intermediate_performance_data: pd.DataFrame = val_estimator.predict_uncertainty(X.iloc[test_idx, :], **kwargs)
+
+        if isinstance(intermediate_performance_data, tuple):
+            raise TypeError(
+                "mother_cv cannot process tuple-valued predict_uncertainty outputs; "
+                "predict_uncertainty must return a pandas DataFrame or array-like."
+            )
 
         if not isinstance(intermediate_performance_data, pd.DataFrame):
             # model returns non-pd.Data Frame

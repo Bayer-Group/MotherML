@@ -463,7 +463,8 @@ class TabPFNEmbeddingTransformer(BaseEstimator, TransformerMixin):
     task : {'classification', 'regression'}, default='classification'
         The type of task to perform. This is ignored when 'model' is given.
     device : str, default='cpu'
-        Device to run the TabPFN model on ('cpu' or 'cuda').
+        Device to run the TabPFN model on ('cpu' or 'cuda'). Only applied when Mother fits
+        a new model; ignored when a pre-fitted `model` is supplied (see `model` below).
     n_folds : int, default=5
         Number of folds for cross-validation when generating training embeddings.
     use_kfold : bool, default=True
@@ -480,6 +481,9 @@ class TabPFNEmbeddingTransformer(BaseEstimator, TransformerMixin):
     model : TabPFNClassifierMother or TabPFNRegressorMother, default=None
         A pre-fitted TabPFN model instance. If provided, this model will be used instead
         of fitting a new one, and the k-fold scheme will be skipped for training data.
+        The model's existing device placement and inference precision are used as-is;
+        `device` is not applied to it, so make sure the model is already on the device
+        you want before passing it in.
     ignore_pretraining_limits : bool, default=True
         When True, bypasses TabPFN's restriction on the number of features (default 500).
         Set to False to enforce the pretraining limits.
