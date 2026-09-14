@@ -58,6 +58,10 @@ def _validate_ranking_group_id(group_id: np.ndarray, n_samples: int) -> np.ndarr
     group_arr = np.asarray(group_id).reshape(-1)
     if group_arr.shape[0] != n_samples:
         raise ValueError(f"group_id length must match number of rows in X ({n_samples}), got {group_arr.shape[0]}.")
+    # A missing group_id would match no rows in _iter_ranking_group_indices below
+    # (NaN != NaN), silently producing an empty "group" instead of a clear error.
+    if pd.isna(group_arr).any():
+        raise ValueError("group_id must not contain missing values.")
     return group_arr
 
 
@@ -307,10 +311,10 @@ class CatboostRegressorMother(CatBoostRegressor, _CatboostModelMotherBase, _Catb
         target_type: props.TargetType = "single_target",
         tune_tree_structure_type: bool = True,
         tune_boosting_type: bool = False,
-        tune_loss_function: bool = True,
         quantiles: list[float] | None = None,
         data_uncertainty: bool = False,
         model_type: props.ModelType = "regression",
+        tune_loss_function: bool = True,
         **kwargs,
     ):
         """
@@ -323,11 +327,6 @@ class CatboostRegressorMother(CatBoostRegressor, _CatboostModelMotherBase, _Catb
                 Whether to include the "grow_policy" parameter in hyperparameter tuning.
             tune_boosting_type : bool, optional
                 Whether to tune boosting_type.
-            tune_loss_function : bool, optional
-                Whether to include the loss function in the hyperparameter search space.
-                If ``False``, the loss function is fixed at construction time and
-                ``suggested_params_loss`` is not called during Optuna tuning.
-                Defaults to ``True``.
             quantiles : list[float] or None, optional
                 Quantiles for multi-quantile regression.
             data_uncertainty : bool, optional
@@ -335,6 +334,11 @@ class CatboostRegressorMother(CatBoostRegressor, _CatboostModelMotherBase, _Catb
                 data and model uncertainties.
             model_type : str, optional
                 Model type (should be "regression").
+            tune_loss_function : bool, optional
+                Whether to include the loss function in the hyperparameter search space.
+                If ``False``, the loss function is fixed at construction time and
+                ``suggested_params_loss`` is not called during Optuna tuning.
+                Defaults to ``True``.
             **kwargs
                 Additional CatBoostRegressor parameters.
         """
@@ -830,8 +834,33 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostModelMo
                 Target type (must be "single_target").
             **kwargs : dict
                 Additional parameters for CatBoost's `sample_gaussian_process` method.
+
+        Note:
+            ``tune_boosting_type``, ``tune_tree_structure_type``, and ``tune_loss_function``
+            are not accepted here: GP posterior sampling requires a fixed
+            ``boosting_type``/``grow_policy``/``loss_function``, so there is nothing for
+            them to toggle. They are always ``False`` (see ``get_hyperparameter_space``
+            for the GP-specific hyperparameters that *are* tunable: ``prior_iterations``,
+            ``samples``, ``sigma``, ``delta``, ``eps``, ``random_score_type``).
         """
-        # GP posterior sampling does not support hyperparameter tuning.
+        # GP posterior sampling requires a fixed boosting_type/grow_policy/loss_function,
+        # so these three tuning flags are always forced off (see get_hyperparameter_space
+        # for the GP-specific hyperparameters that *are* tunable: prior_iterations, samples,
+        # sigma, delta, eps, random_score_type).
+        # GP posterior sampling requires a fixed boosting_type/grow_policy/loss_function,
+        # so these three tuning flags are always forced off (see get_hyperparameter_space
+        # for the GP-specific hyperparameters that *are* tunable: prior_iterations, samples,
+        # sigma, delta, eps, random_score_type). Reject them here (same as set_params)
+        # instead of silently forwarding them into **kwargs -> CatBoostRegressor, where an
+        # unsupported name would only surface as a confusing failure during fit().
+        unsupported_tune_params = {"tune_boosting_type", "tune_tree_structure_type", "tune_loss_function"} & set(kwargs)
+        if unsupported_tune_params:
+            raise ValueError(
+                f"CatboostGaussianProcessRegressorMother does not support {sorted(unsupported_tune_params)}: "
+                "GP posterior sampling requires a fixed boosting_type/grow_policy/loss_function, "
+                "so these flags are always False and cannot be set."
+            )
+
         _CatboostHyperParams.__init__(
             self,
             tune_boosting_type=False,
@@ -945,15 +974,36 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostModelMo
             "eps",
         }
 
+        # tune_boosting_type/tune_tree_structure_type/tune_loss_function are not accepted
+        # by this estimator at all (GP posterior sampling requires a fixed boosting_type/
+        # grow_policy/loss_function; other hyperparameters like prior_iterations, samples,
+        # sigma, delta, eps, and random_score_type are still tunable via
+        # get_hyperparameter_space); reject attempts to set them instead of silently
+        # forwarding them to CatBoost's set_params, where an unsupported name would only
+        # surface as a confusing failure during fit().
+        unsupported_tune_params = {"tune_boosting_type", "tune_tree_structure_type", "tune_loss_function"} & set(params)
+        if unsupported_tune_params:
+            raise ValueError(
+                f"CatboostGaussianProcessRegressorMother does not support {sorted(unsupported_tune_params)}: "
+                "GP posterior sampling requires a fixed boosting_type/grow_policy/loss_function, "
+                "so these flags are always False and cannot be set."
+            )
+
         # Update custom parameters and remove them from params dict
         params_to_remove = []
         for key, value in params.items():
             if key in custom_param_names:
                 setattr(self, key, value)
-                # Also update gp_params if it exists there
-                if hasattr(self, "gp_params") and key in self.gp_params:
-                    self.gp_params[key] = value
                 params_to_remove.append(key)
+
+        # Keep gp_params in sync with every key fit() actually reads from it (learning_rate,
+        # max_depth, random_strength, random_score_type, verbose -- plus the custom GP
+        # params above), not just the ones tracked as instance attributes. Otherwise
+        # set_params()/Optuna updates would only patch CatBoost's own _init_params and
+        # fit() would keep using the stale constructor-time gp_params values.
+        for key, value in params.items():
+            if key in self.gp_params:
+                self.gp_params[key] = value
 
         # Remove handled parameters
         for key in params_to_remove:
@@ -1142,8 +1192,8 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostModelMo
         state = super().__getstate__()
 
         # Add our custom attributes. The tune_* flags are intentionally *not* included:
-        # GP posterior sampling never supports tuning, so they must stay False regardless
-        # of what was pickled (see __setstate__).
+        # GP posterior sampling always requires a fixed boosting_type/grow_policy/
+        # loss_function, so they're always False and not part of this estimator's state.
         state.update(
             {
                 "model_type": self.model_type,
@@ -1164,12 +1214,7 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostModelMo
         # Extract our custom attributes
         self.model_type = state.pop("model_type", "regression")
         self.target_type = state.pop("target_type", "single_target")
-        # GP posterior sampling never supports tuning. Discard any legacy tune_* values
-        # from older pickles instead of restoring them, so unpickling can't re-enable
-        # tuning behavior that __init__ always disables for this class.
-        state.pop("tune_boosting_type", None)
-        state.pop("tune_tree_structure_type", None)
-        state.pop("tune_loss_function", None)
+        # GP posterior sampling always requires a fixed boosting_type/grow_policy/loss_function.
         self.tune_boosting_type = False
         self.tune_tree_structure_type = False
         self.tune_loss_function = False
@@ -1499,6 +1544,119 @@ class CatboostClassifierMother(CatBoostClassifier, _CatboostModelMotherBase, _Ca
         return uncertainty_df
 
 
+def _is_meaningful_loss_param(value: Optional[int]) -> bool:
+    """A `top`/`max_pairs` value is only meaningful (should end up in loss_function) if
+    it's a positive, non-bool int."""
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _validate_ranking_int_param(name: str, value: Optional[int]) -> None:
+    """Validate that a `top`/`max_pairs` value is `None` or a non-negative int.
+
+    Without this, a float gets silently encoded into the loss string, a string makes
+    `_is_meaningful_loss_param`'s `value > 0` check raise deep inside loss-string building,
+    and `True`/`False` would be silently treated as `1`/`0`.
+    """
+    if value is None:
+        return
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an int or None, got {type(value).__name__}.")
+    if value < 0:
+        raise ValueError(f"{name} must be a non-negative int, got {value}.")
+
+
+def _normalize_pairlogit_separator(loss_function: str) -> str:
+    """CatBoost loss strings join the loss name to its first parameter with ":" and
+    every parameter after that with ";" (e.g. "PairLogit:max_pairs=75;foo=1"). Fix up
+    a caller-provided string that wrongly uses ";" right after the loss name."""
+    if "PairLogit" in loss_function and ":" not in loss_function and ";" in loss_function:
+        return loss_function.replace(";", ":", 1)
+    return loss_function
+
+
+def _set_loss_string_value(loss_function: str, key: str, value: Optional[int]) -> str:
+    """Drop any existing `key=...` component of `loss_function` and, if `value` is
+    meaningful, append a fresh `key=value` at the end. This is the single place that
+    edits the loss_function string, so it's the only place that has to know how to
+    keep the ":"/";" separators valid."""
+    match = re.search(rf"[;:]{key}=[^;:]+", loss_function)
+    if match:
+        loss_function = loss_function[: match.start()] + loss_function[match.end() :]
+        if ":" not in loss_function and ";" in loss_function:
+            loss_function = loss_function.replace(";", ":", 1)
+    if _is_meaningful_loss_param(value):
+        sep = ";" if ":" in loss_function else ":"
+        loss_function = f"{loss_function}{sep}{key}={value}"
+    return loss_function
+
+
+def _apply_top(loss_function: str, top: Optional[int]) -> str:
+    """Rewrite the `top=...` part of a YetiRank/YetiRankPairwise loss string. `top`
+    only makes sense outside Classic mode, so a positive `top` also switches
+    `mode=Classic` to `mode=NDCG` (adding `mode=NDCG` if no mode is set at all)."""
+    if _is_meaningful_loss_param(top):
+        loss_function = loss_function.replace("mode=Classic", "mode=NDCG")
+        if "mode=" not in loss_function:
+            sep = ";" if ":" in loss_function else ":"
+            loss_function = f"{loss_function}{sep}mode=NDCG"
+    return _set_loss_string_value(loss_function, "top", top)
+
+
+def _apply_max_pairs(loss_function: str, max_pairs: Optional[int]) -> str:
+    """Rewrite the `max_pairs=...` part of a PairLogit/PairLogitPairwise loss string."""
+    return _set_loss_string_value(loss_function, "max_pairs", max_pairs)
+
+
+def _reject_duplicate_loss_param(loss_function: str, key: str, value: Optional[int], param_name: str) -> None:
+    """Raise if `value` meaningfully sets `param_name` to something other than what's
+    already baked into `loss_function` -- callers must define it in exactly one place.
+    Re-supplying the *same* value that's already in the string is not a conflict (this
+    is what makes sklearn's get_params()/clone() round-trip work: it always passes the
+    already-resolved loss_function string back in together with the resolved `top`/
+    `max_pairs` attributes)."""
+    if not _is_meaningful_loss_param(value):
+        return
+    existing_match = re.search(rf"[;:]{key}=([^;:]+)", loss_function)
+    if existing_match is not None and existing_match.group(1) != str(value):
+        raise ValueError(
+            f"'{key}=' is already present in loss_function={loss_function!r} with a "
+            f"different value than {param_name}={value}; define it in only one place -- "
+            f"either bake it into the loss_function string, or pass {param_name}=..., but not both."
+        )
+
+
+def _sync_from_loss_function(loss_function: str, key: str, current: Optional[int]) -> Optional[int]:
+    """Read `key=...` back out of an explicitly-provided loss_function string, so the
+    dedicated `top`/`max_pairs` attribute always reflects the *effective* value in use --
+    not just the value passed to the constructor -- regardless of whether the caller set
+    it via the string or the dedicated parameter."""
+    match = re.search(rf"[;:]{key}=(\d+)", loss_function)
+    return int(match.group(1)) if match else current
+
+
+def _splice_or_reject_top(loss_function: str, top: Optional[int]) -> str:
+    """For an explicitly-provided loss_function: splice `top` in only if the string
+    doesn't already define it; raise if the string and `top` define conflicting values."""
+    if re.search(r"[;:]top=", loss_function):
+        _reject_duplicate_loss_param(loss_function, "top", top, "top")
+        return loss_function
+    if "YetiRank" in loss_function:
+        return _apply_top(loss_function, top)
+    return loss_function
+
+
+def _splice_or_reject_max_pairs(loss_function: str, max_pairs: Optional[int]) -> str:
+    """For an explicitly-provided loss_function: splice `max_pairs` in only if the
+    string doesn't already define it; raise if the string and `max_pairs` define
+    conflicting values."""
+    if re.search(r"[;:]max_pairs=", loss_function):
+        _reject_duplicate_loss_param(loss_function, "max_pairs", max_pairs, "max_pairs")
+        return loss_function
+    if "PairLogit" in loss_function:
+        return _apply_max_pairs(loss_function, max_pairs)
+    return loss_function
+
+
 class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHyperParams, BaseEstimator):
     """
     A custom implementation of CatBoostRanker with extended functionality for hyperparameter tuning.
@@ -1532,7 +1690,8 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
         ``tune_pairwise_type`` is automatically set to ``False``.
     top : Optional[int]
         Maximum number of top samples to consider for ranking metrics (e.g., NDCG@k).
-        Only works with YetiRank loss function. Default is 0 (disabled).
+        Works with ``YetiRank`` and ``YetiRankPairwise`` in any mode except ``Classic``.
+        Default is 0 (disabled).
     max_pairs : Optional[int]
         Maximum number of pairs to generate for PairLogit losses. This can significantly
         reduce computation time for large ranking tasks. Only applies to PairLogit and
@@ -1601,10 +1760,15 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
                 Whether to include the loss function in the hyperparameter
                 search space.  If ``False``, the loss function is fixed at
                 construction time and ``suggested_params_loss`` is not called
-                during Optuna tuning.  Defaults to ``True``.
+                during Optuna tuning.  Defaults to ``True``.  If ``True``, every
+                trial builds a fresh loss string (Optuna suggests its own
+                ``mode``/``dcg_denominator``/``dcg_type``/base loss each trial),
+                overwriting whatever was embedded in an explicit ``loss_function``
+                string; only ``top``/``max_pairs`` survive into tuning, since
+                ``suggested_params_loss`` re-splices those two directly.
             top : Optional[int], optional
                 Maximum number of top samples for NDCG calculation.
-                Only works with YetiRank loss function.
+                Works with ``YetiRank`` and ``YetiRankPairwise`` in any mode except ``Classic``.
             max_pairs : Optional[int], optional
                 Maximum number of pairs to generate for PairLogit losses.
             **kwargs
@@ -1625,6 +1789,8 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
         self.model_type: props.ModelType = model_type
         self.target_type: props.TargetType = target_type
         self.tune_pairwise_type: bool = tune_pairwise_type
+        _validate_ranking_int_param("top", top)
+        _validate_ranking_int_param("max_pairs", max_pairs)
         self.top: Optional[int] = top
         self.max_pairs: Optional[int] = max_pairs
 
@@ -1690,18 +1856,21 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
                 kwargs["loss_function"] = f"YetiRank:mode=NDCG;top={self.top}"
             else:
                 kwargs["loss_function"] = "YetiRank:mode=Classic"
-
-        elif (
-            "PairLogit" in kwargs["loss_function"]
-            and "max_pairs" not in kwargs["loss_function"]
-            and isinstance(self.max_pairs, int)
-            and not isinstance(self.max_pairs, bool)
-            and self.max_pairs > 0
-        ):
-            if ":" not in kwargs["loss_function"] and ";" in kwargs["loss_function"]:
-                kwargs["loss_function"] = kwargs["loss_function"].replace(";", ":", 1)
-            sep = ";" if ":" in kwargs["loss_function"] else ":"
-            kwargs["loss_function"] += f"{sep}max_pairs={self.max_pairs}"
+        elif isinstance(kwargs["loss_function"], str):
+            # `top`/`max_pairs` must be defined in exactly one place: either baked into
+            # loss_function, or passed as the dedicated parameter. If loss_function doesn't
+            # already define one, splice the dedicated parameter's value in; if it does,
+            # raise instead of guessing which one should win.
+            loss_function = _normalize_pairlogit_separator(kwargs["loss_function"])
+            loss_function = _splice_or_reject_top(loss_function, self.top)
+            loss_function = _splice_or_reject_max_pairs(loss_function, self.max_pairs)
+            kwargs["loss_function"] = loss_function
+            # `top`/`max_pairs` must reflect the *effective* value in use, even when the
+            # caller only wrote it into the loss_function string -- otherwise get_params()
+            # would report top=0/max_pairs=None while the model actually ranks with the
+            # value baked into the string.
+            self.top = _sync_from_loss_function(loss_function, "top", self.top)
+            self.max_pairs = _sync_from_loss_function(loss_function, "max_pairs", self.max_pairs)
 
         # Always enable posterior_sampling for uncertainty estimation
         if "posterior_sampling" not in kwargs:
@@ -1742,6 +1911,8 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
         explicit_loss_function = "loss_function" in params
         top_changed = "top" in params
         max_pairs_changed = "max_pairs" in params
+        _validate_ranking_int_param("top", params.get("top"))
+        _validate_ranking_int_param("max_pairs", params.get("max_pairs"))
         if "model_type" in params and params["model_type"] != "ranking":
             raise ValueError("model_type for CatboostRankerMother must be 'ranking'.")
         params.pop("model_type", None)
@@ -1766,51 +1937,38 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
             )
             self.tune_pairwise_type = False
 
-        if top_changed or max_pairs_changed:
-            current_loss = str(self.get_params(deep=False).get("loss_function", ""))
-            effective_loss = str(params.get("loss_function", current_loss))
-            updated_loss = effective_loss
-
-            if top_changed and not explicit_loss_function and "YetiRank" in updated_loss:
-                updated_loss = re.sub(r";top=[^;]+", "", updated_loss)
-                if self.top is not None and self.top > 0:
-                    updated_loss = re.sub(r"mode=Classic", "mode=NDCG", updated_loss)
-                    if "mode=" not in updated_loss:
-                        updated_loss += ":mode=NDCG"
-                    updated_loss += f";top={self.top}"
-                elif "mode=Classic" in updated_loss:
-                    updated_loss = re.sub(r"[;:]dcg_(?:denominator|type)=[^;:]*", "", updated_loss)
-
-            if "PairLogit" in updated_loss and max_pairs_changed and not explicit_loss_function:
-                updated_loss = re.sub(r";max_pairs=[^;]+|:max_pairs=[^;]+", "", updated_loss)
-
-            if "PairLogit" in updated_loss and max_pairs_changed:
-                has_max_pairs = re.search(r"[;:]max_pairs=[^;:]+", updated_loss) is not None
-                valid_max_pairs = (
-                    isinstance(self.max_pairs, int) and not isinstance(self.max_pairs, bool) and self.max_pairs > 0
-                )
-                if valid_max_pairs and not has_max_pairs:
-                    if ":" not in updated_loss and ";" in updated_loss:
-                        updated_loss = updated_loss.replace(";", ":", 1)
-                    separator = ";" if ":" in updated_loss else ":"
-                    updated_loss += f"{separator}max_pairs={self.max_pairs}"
-
-            if updated_loss != effective_loss:
-                params["loss_function"] = updated_loss
+        if explicit_loss_function or top_changed or max_pairs_changed:
+            # `top`/`max_pairs` must be defined in exactly one place. If loss_function is
+            # given in *this* call, only splice the dedicated parameter in when the string
+            # doesn't already define it (raise if it does); otherwise (loss_function wasn't
+            # given this call) the dedicated parameter is the sole source of truth, so just
+            # rewrite the stored string to match it.
+            loss_function = params.get("loss_function", self.get_params(deep=False).get("loss_function", ""))
+            if isinstance(loss_function, str):
+                loss_function = _normalize_pairlogit_separator(loss_function)
+                if explicit_loss_function:
+                    if top_changed:
+                        loss_function = _splice_or_reject_top(loss_function, self.top)
+                    if max_pairs_changed:
+                        loss_function = _splice_or_reject_max_pairs(loss_function, self.max_pairs)
+                    # `top`/`max_pairs` must reflect the *effective* value in use, even when
+                    # the caller only wrote it into the loss_function string this call --
+                    # otherwise get_params() would report a stale top/max_pairs that has
+                    # nothing to do with the loss actually in effect.
+                    self.top = _sync_from_loss_function(loss_function, "top", self.top)
+                    self.max_pairs = _sync_from_loss_function(loss_function, "max_pairs", self.max_pairs)
+                else:
+                    if top_changed and "YetiRank" in loss_function:
+                        loss_function = _apply_top(loss_function, self.top)
+                    if max_pairs_changed and "PairLogit" in loss_function:
+                        loss_function = _apply_max_pairs(loss_function, self.max_pairs)
+                params["loss_function"] = loss_function
 
         # Keep set_params invariant with __init__: explicit Pairwise losses
         # require SymmetricTree grow_policy and Plain boosting_type.
         current_params = self.get_params(deep=False)
         effective_loss = str(params.get("loss_function", current_params.get("loss_function", "")))
         if "Pairwise" in effective_loss:
-            if self.tune_tree_structure_type or self.tune_boosting_type:
-                module_logger.warning(
-                    "Pairwise loss requires fixed SymmetricTree grow_policy and Plain boosting_type; "
-                    "disabling pairwise-incompatible tuning flags."
-                )
-                self.tune_tree_structure_type = False
-                self.tune_boosting_type = False
-
             effective_grow = params.get("grow_policy", current_params.get("grow_policy", "SymmetricTree"))
             effective_boost = params.get("boosting_type", current_params.get("boosting_type", "Plain"))
             incompatible: list[str] = []
@@ -1819,10 +1977,20 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
             if effective_boost != "Plain":
                 incompatible.append(f"boosting_type='{effective_boost}' (must be 'Plain')")
             if incompatible:
+                # Validate before mutating tune_tree_structure_type/tune_boosting_type below,
+                # so a rejected call leaves those flags exactly as they were.
                 raise ValueError(
                     f"Pairwise loss '{effective_loss}' requires SymmetricTree grow_policy "
                     f"and Plain boosting_type, but got {', '.join(incompatible)}."
                 )
+
+            if self.tune_tree_structure_type or self.tune_boosting_type:
+                module_logger.warning(
+                    "Pairwise loss requires fixed SymmetricTree grow_policy and Plain boosting_type; "
+                    "disabling pairwise-incompatible tuning flags."
+                )
+                self.tune_tree_structure_type = False
+                self.tune_boosting_type = False
 
         return super().set_params(**params)
 
@@ -2152,9 +2320,11 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
         can_use_pairwise: bool = grow_policy == "SymmetricTree" and boosting_type == "Plain"
 
         # Build list of possible loss functions
-        has_top: bool = self.top is not None and self.top > 0
+        has_top: bool = _is_meaningful_loss_param(self.top)
 
-        # When top is specified, only use YetiRank (top parameter only works with YetiRank)
+        # `top` is documented (and empirically confirmed against CatBoost) to work
+        # with both YetiRank and YetiRankPairwise, in any mode except Classic, so
+        # YetiRankPairwise stays available here when pairwise tuning is enabled.
         suggested_base_loss: str
         if has_top:
             if self.tune_pairwise_type and can_use_pairwise:
@@ -2213,13 +2383,9 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
             # Non-YetiRank losses (QueryRMSE, QuerySoftMax, PairLogit, PairLogitPairwise)
             loss_function: str = suggested_base_loss
 
-            # Add max_pairs parameter for PairLogit losses if specified
-            if (
-                "PairLogit" in suggested_base_loss
-                and isinstance(self.max_pairs, int)
-                and not isinstance(self.max_pairs, bool)
-                and self.max_pairs > 0
-            ):
+            # max_pairs is only documented for the PairLogit family (PairLogit,
+            # PairLogitPairwise); CatBoost has no such parameter for QueryRMSE/QuerySoftMax.
+            if "PairLogit" in suggested_base_loss and _is_meaningful_loss_param(self.max_pairs):
                 loss_function += f":max_pairs={self.max_pairs}"
 
             suggested_params[prefix + "loss_function"] = loss_function
@@ -2305,6 +2471,16 @@ def ranker_predict_for_groups(
     """
     group_arr = _validate_ranking_group_id(group_id, len(X))
     result_dtype = int if use_ranks and not normalize_by_group_size else float
+
+    if not use_ranks:
+        # Raw scores are independent of group boundaries (only rank assignment needs
+        # to be scoped per group), so a single vectorized predict() call is both
+        # correct and far cheaper than one CatBoost call per group.
+        return np.asarray(
+            model.predict(X, use_ranks=False, normalize_by_group_size=normalize_by_group_size),
+            dtype=result_dtype,
+        )
+
     result = np.empty(len(X), dtype=result_dtype)
 
     for idx in _iter_ranking_group_indices(group_arr):
@@ -2332,7 +2508,9 @@ def ranker_predict_uncertainty_for_groups(
 
     Calls :meth:`CatboostRankerMother.predict_uncertainty` independently for
     each group so that rank conversion and normalisation are applied within
-    group boundaries.
+    group boundaries. When ``use_ranks`` and ``normalize_by_group_size`` are
+    both false (the defaults), the result is independent of group boundaries,
+    so a single call is made for the whole dataset instead.
 
     Parameters
     ----------
@@ -2358,6 +2536,18 @@ def ranker_predict_uncertainty_for_groups(
         )
 
     group_arr = _validate_ranking_group_id(group_id, len(X))
+
+    use_ranks = kwargs.get("use_ranks", False)
+    normalize_by_group_size = kwargs.get("normalize_by_group_size", False)
+    if not use_ranks and not normalize_by_group_size:
+        # Same reasoning as the score-mode fast path in ranker_predict_for_groups:
+        # virtual-ensemble scores and everything derived from them here (mean,
+        # std, quantiles) are computed per row, independent of group boundaries,
+        # as long as we're not converting to ranks or normalizing by group size.
+        # A single predict_uncertainty() call is equivalent and avoids one
+        # CatBoost call per group.
+        return model.predict_uncertainty(X, **kwargs)
+
     frames: list[pd.DataFrame] = []
 
     for idx in _iter_ranking_group_indices(group_arr):

@@ -665,7 +665,7 @@ def test_ranker_predict_uncertainty_for_groups_matches_per_group_manual(
         return out
 
     with patch.object(model, "predict_uncertainty", side_effect=_per_group_side_effect):
-        from_helper = m_catboost.ranker_predict_uncertainty_for_groups(model, mock_X, group_ids)
+        from_helper = m_catboost.ranker_predict_uncertainty_for_groups(model, mock_X, group_ids, use_ranks=True)
 
     expected = pd.concat(
         [
@@ -689,10 +689,100 @@ def test_ranker_predict_uncertainty_for_groups_preserves_duplicate_index_order(
         return pd.DataFrame({"value": X_group.iloc[:, 0].to_numpy()})
 
     with patch.object(model, "predict_uncertainty", side_effect=_per_group_side_effect):
-        result = m_catboost.ranker_predict_uncertainty_for_groups(model, mock_X, group_ids)
+        result = m_catboost.ranker_predict_uncertainty_for_groups(model, mock_X, group_ids, use_ranks=True)
 
     expected = pd.DataFrame({"value": mock_X.iloc[:, 0].to_numpy()}, index=mock_X.index)
     pd.testing.assert_frame_equal(result, expected)
+
+
+def test_ranker_predict_for_groups_rejects_missing_group_id(mock_ranker_uncertainty_inputs):
+    model = CatboostRankerMother()
+    mock_X = mock_ranker_uncertainty_inputs["mock_X"]
+    group_ids = np.array([0, np.nan, 1, 1])
+
+    with pytest.raises(ValueError, match="group_id must not contain missing values"):
+        m_catboost.ranker_predict_for_groups(model, mock_X, group_ids)
+
+
+def test_ranker_predict_for_groups_score_mode_calls_predict_once(mock_ranker_uncertainty_inputs):
+    """Raw scores don't depend on group boundaries, so use_ranks=False must call
+    predict() once for the whole dataset instead of once per group."""
+    model = CatboostRankerMother()
+    mock_X = mock_ranker_uncertainty_inputs["mock_X"]
+    group_ids = np.array([0, 0, 1, 1])
+    expected_scores = np.array([0.4, 0.9, 0.1, 0.6])
+
+    with patch.object(model, "predict", return_value=expected_scores) as mock_predict:
+        result = m_catboost.ranker_predict_for_groups(model, mock_X, group_ids, use_ranks=False)
+
+    mock_predict.assert_called_once()
+    call_args, call_kwargs = mock_predict.call_args
+    pd.testing.assert_frame_equal(call_args[0], mock_X)
+    assert call_kwargs["use_ranks"] is False
+    np.testing.assert_array_equal(result, expected_scores)
+
+
+def test_ranker_predict_uncertainty_for_groups_score_mode_calls_predict_uncertainty_once(
+    mock_ranker_uncertainty_inputs,
+):
+    """Score-mode uncertainty (use_ranks=False, normalize_by_group_size=False) doesn't
+    depend on group boundaries, so it must call predict_uncertainty() once for the
+    whole dataset instead of once per group."""
+    model = CatboostRankerMother()
+    mock_X = mock_ranker_uncertainty_inputs["mock_X"]
+    group_ids = np.array([0, 0, 1, 1])
+    expected = pd.DataFrame(
+        {
+            "pred": [1.0, 2.0, 3.0, 4.0],
+            "mean_predictions": [1.0, 2.0, 3.0, 4.0],
+            "knowledge_uncertainty": [0.1, 0.2, 0.3, 0.4],
+            "data_uncertainty": [None, None, None, None],
+            "total_uncertainty": [None, None, None, None],
+        },
+        index=mock_X.index,
+    )
+
+    with patch.object(model, "predict_uncertainty", return_value=expected) as mock_pu:
+        result = m_catboost.ranker_predict_uncertainty_for_groups(model, mock_X, group_ids)
+
+    mock_pu.assert_called_once()
+    call_args, _ = mock_pu.call_args
+    pd.testing.assert_frame_equal(call_args[0], mock_X)
+    pd.testing.assert_frame_equal(result, expected)
+
+
+def test_ranker_predict_uncertainty_for_groups_use_ranks_still_loops_per_group(mock_ranker_uncertainty_inputs):
+    """use_ranks=True must still call predict_uncertainty per group, since rank
+    conversion depends on group boundaries."""
+    model = CatboostRankerMother()
+    mock_X = mock_ranker_uncertainty_inputs["mock_X"]
+    group_ids = np.array([0, 0, 1, 1])
+
+    def _per_group_side_effect(X_group, **kw):
+        return pd.DataFrame({"value": X_group.iloc[:, 0].to_numpy()}, index=X_group.index)
+
+    with patch.object(model, "predict_uncertainty", side_effect=_per_group_side_effect) as mock_pu:
+        m_catboost.ranker_predict_uncertainty_for_groups(model, mock_X, group_ids, use_ranks=True)
+
+    assert mock_pu.call_count == 2
+
+
+def test_ranker_predict_uncertainty_for_groups_normalize_by_group_size_still_loops_per_group(
+    mock_ranker_uncertainty_inputs,
+):
+    """normalize_by_group_size=True must still call predict_uncertainty per group,
+    since the normalization divisor depends on group size."""
+    model = CatboostRankerMother()
+    mock_X = mock_ranker_uncertainty_inputs["mock_X"]
+    group_ids = np.array([0, 0, 1, 1])
+
+    def _per_group_side_effect(X_group, **kw):
+        return pd.DataFrame({"value": X_group.iloc[:, 0].to_numpy()}, index=X_group.index)
+
+    with patch.object(model, "predict_uncertainty", side_effect=_per_group_side_effect) as mock_pu:
+        m_catboost.ranker_predict_uncertainty_for_groups(model, mock_X, group_ids, normalize_by_group_size=True)
+
+    assert mock_pu.call_count == 2
 
 
 # ---------------------------------------------------------------------------
@@ -767,11 +857,84 @@ def test_init_normalizes_pairlogit_parameter_separator_for_max_pairs():
     assert model.get_params()["loss_function"] == "PairLogit:foo=1;max_pairs=125"
 
 
-@pytest.mark.parametrize("max_pairs", [0, -1, 2.5, True])
-def test_init_does_not_append_invalid_max_pairs(max_pairs):
-    model = CatboostRankerMother(loss_function="PairLogit", max_pairs=max_pairs)
+def test_init_normalizes_pairlogit_parameter_separator_without_max_pairs():
+    """Separator normalization must not be gated on appending a max_pairs suffix."""
+    model = CatboostRankerMother(loss_function="PairLogit;foo=1")
+
+    assert model.get_params()["loss_function"] == "PairLogit:foo=1"
+
+    model = CatboostRankerMother(loss_function="PairLogit;max_pairs=75")
+
+    assert model.get_params()["loss_function"] == "PairLogit:max_pairs=75"
+
+
+def test_init_accepts_none_loss_function():
+    """loss_function=None is a valid CatBoost value (use its own default) and must
+    not raise a TypeError from the PairLogit-separator normalization's membership test.
+    CatBoost itself omits params set to None from get_params(), so the key is absent
+    rather than present with value None -- this matches plain CatBoostRanker's behavior."""
+    model = CatboostRankerMother(loss_function=None)
+
+    assert "loss_function" not in model.get_params()
+
+
+def test_init_syncs_top_attribute_from_explicit_loss_function_string():
+    """If `top` is only defined inside an explicit loss_function string (not via the
+    dedicated `top` parameter), the `top` attribute must still reflect that effective
+    value -- get_params() must never report a stale/default top that disagrees with
+    the loss actually in effect."""
+    model = CatboostRankerMother(loss_function="YetiRank:mode=NDCG;top=7")
+
+    assert model.top == 7
+    assert model.get_params()["top"] == 7
+
+
+def test_init_syncs_max_pairs_attribute_from_explicit_loss_function_string():
+    model = CatboostRankerMother(loss_function="PairLogit:max_pairs=42")
+
+    assert model.max_pairs == 42
+    assert model.get_params()["max_pairs"] == 42
+
+
+def test_set_params_syncs_top_attribute_from_explicit_loss_function_string():
+    model = CatboostRankerMother()
+
+    model.set_params(loss_function="YetiRank:mode=NDCG;top=9")
+
+    assert model.top == 9
+
+
+def test_set_params_syncs_max_pairs_attribute_from_explicit_loss_function_string():
+    model = CatboostRankerMother()
+
+    model.set_params(loss_function="PairLogit:max_pairs=17")
+
+    assert model.max_pairs == 17
+
+
+def test_init_does_not_append_zero_max_pairs():
+    model = CatboostRankerMother(loss_function="PairLogit", max_pairs=0)
 
     assert model.get_params()["loss_function"] == "PairLogit"
+
+
+@pytest.mark.parametrize("max_pairs", [-1, 2.5, True])
+def test_init_rejects_invalid_max_pairs_type_or_value(max_pairs):
+    with pytest.raises((TypeError, ValueError)):
+        CatboostRankerMother(max_pairs=max_pairs)
+
+
+@pytest.mark.parametrize("top", [-1, 2.5, True, "5"])
+def test_init_rejects_invalid_top_type_or_value(top):
+    with pytest.raises((TypeError, ValueError)):
+        CatboostRankerMother(top=top)
+
+
+@pytest.mark.parametrize("top", [-1, 2.5, True, "5"])
+def test_set_params_rejects_invalid_top_type_or_value(top):
+    model = CatboostRankerMother()
+    with pytest.raises((TypeError, ValueError)):
+        model.set_params(top=top)
 
 
 def test_set_params_updates_attributes():
@@ -826,6 +989,90 @@ def test_set_params_updates_supported_loss_parameters_only():
     assert model.get_params()["loss_function"] == "PairLogit"
 
 
+def test_set_params_normalizes_separator_when_removing_max_pairs_with_trailing_param():
+    """When max_pairs=... is the first parameter followed by another one (e.g.
+    'PairLogit:max_pairs=75;foo=1'), setting max_pairs to an invalid value (None)
+    removes it but must not leave a stray ';' right after the loss name."""
+    model = CatboostRankerMother(loss_function="PairLogit:max_pairs=75;foo=1", max_pairs=75)
+
+    model.set_params(max_pairs=None)
+
+    assert model.get_params()["loss_function"] == "PairLogit:foo=1"
+
+
+def test_set_params_normalizes_explicit_pairlogit_loss_without_other_changes():
+    """An explicit loss_function must be normalized even when top/max_pairs are untouched."""
+    model = CatboostRankerMother()
+
+    model.set_params(loss_function="PairLogit;max_pairs=75")
+
+    assert model.get_params()["loss_function"] == "PairLogit:max_pairs=75"
+
+
+def test_set_params_removes_top_with_colon_separator():
+    """Top removal must handle 'YetiRank:top=5' (colon), not just the semicolon form."""
+    model = CatboostRankerMother(loss_function="YetiRank:top=5", top=5)
+
+    model.set_params(top=10)
+
+    loss_function = model.get_params()["loss_function"]
+    assert loss_function == "YetiRank:mode=NDCG;top=10"
+
+
+def test_set_params_removes_top_with_colon_separator_and_trailing_param():
+    """When top=... is the first parameter and another parameter follows it
+    (e.g. 'YetiRank:top=5;mode=NDCG'), removing it must not leave a stray ';'
+    right after the loss name -- that separator has to be normalized back to ':'.
+    """
+    model = CatboostRankerMother(loss_function="YetiRank:top=5;mode=NDCG", top=5)
+
+    model.set_params(top=10)
+
+    loss_function = model.get_params()["loss_function"]
+    assert loss_function == "YetiRank:mode=NDCG;top=10"
+
+
+@pytest.mark.slow
+def test_set_params_top_on_yetirank_pairwise_produces_fittable_loss():
+    """top is documented for, and works with, YetiRankPairwise (not just plain YetiRank):
+    https://catboost.ai/docs/en/concepts/loss-functions-ranking lists `top` under both
+    YetiRank and YetiRankPairwise (any mode except Classic). Confirm set_params(top=...)
+    on a YetiRankPairwise model produces a loss string CatBoost actually accepts.
+    """
+    skl_set_config(enable_metadata_routing=True)
+    X, y, groups = _make_ranker_data(n_samples=40, n_groups=8)
+    model = CatboostRankerMother(
+        loss_function="YetiRankPairwise:mode=Classic",
+        num_trees=5,
+    ).set_fit_request(group_id="group_id")
+
+    model.set_params(top=3)
+
+    assert model.get_params()["loss_function"] == "YetiRankPairwise:mode=NDCG;top=3"
+    model.fit(X, y, group_id=groups, verbose=False)  # raises if CatBoost rejects the loss string
+
+
+@pytest.mark.slow
+def test_max_pairs_on_pairlogit_produces_fittable_loss():
+    """max_pairs is documented for PairLogit and PairLogitPairwise:
+    https://catboost.ai/docs/en/concepts/loss-functions-ranking lists it under both.
+    Confirm max_pairs=... actually fits with CatBoost for both loss names."""
+    skl_set_config(enable_metadata_routing=True)
+    X, y, groups = _make_ranker_data(n_samples=40, n_groups=8)
+
+    model = CatboostRankerMother(loss_function="PairLogit", max_pairs=10, num_trees=5).set_fit_request(
+        group_id="group_id"
+    )
+    assert model.get_params()["loss_function"] == "PairLogit:max_pairs=10"
+    model.fit(X, y, group_id=groups, verbose=False)  # raises if CatBoost rejects the loss string
+
+    model = CatboostRankerMother(loss_function="PairLogitPairwise", max_pairs=10, num_trees=5).set_fit_request(
+        group_id="group_id"
+    )
+    assert model.get_params()["loss_function"] == "PairLogitPairwise:max_pairs=10"
+    model.fit(X, y, group_id=groups, verbose=False)  # raises if CatBoost rejects the loss string
+
+
 def test_set_params_top_zero_preserves_ndcg_mode_and_parameters():
     model = CatboostRankerMother(loss_function="YetiRank:mode=NDCG;dcg_denominator=Position;dcg_type=Base", top=5)
 
@@ -836,11 +1083,43 @@ def test_set_params_top_zero_preserves_ndcg_mode_and_parameters():
 
 
 def test_set_params_top_zero_preserves_classic_mode_without_ndcg_parameters():
+    """Clearing `top` never reverts `mode` back to Classic automatically -- `top` only
+    ever switches mode *to* NDCG (Classic has no concept of a cutoff), never back."""
     model = CatboostRankerMother(loss_function="YetiRank:mode=Classic", top=5)
 
     model.set_params(top=0)
 
-    assert model.get_params()["loss_function"] == "YetiRank:mode=Classic"
+    assert model.get_params()["loss_function"] == "YetiRank:mode=NDCG"
+
+
+def test_init_rejects_top_defined_in_both_places():
+    with pytest.raises(ValueError, match="'top=' is already present"):
+        CatboostRankerMother(loss_function="YetiRank:mode=NDCG;top=5", top=3)
+
+
+def test_init_rejects_max_pairs_defined_in_both_places():
+    with pytest.raises(ValueError, match="'max_pairs=' is already present"):
+        CatboostRankerMother(loss_function="PairLogit:max_pairs=50", max_pairs=25)
+
+
+def test_init_allows_matching_top_defined_in_both_places():
+    """Re-supplying the *same* value in both places (e.g. via a get_params() round-trip)
+    is not treated as a conflict."""
+    model = CatboostRankerMother(loss_function="YetiRank:mode=NDCG;top=5", top=5)
+
+    assert model.get_params()["loss_function"] == "YetiRank:mode=NDCG;top=5"
+
+
+def test_set_params_rejects_top_defined_in_both_places():
+    model = CatboostRankerMother()
+    with pytest.raises(ValueError, match="'top=' is already present"):
+        model.set_params(loss_function="YetiRank:mode=NDCG;top=5", top=3)
+
+
+def test_set_params_rejects_max_pairs_defined_in_both_places():
+    model = CatboostRankerMother()
+    with pytest.raises(ValueError, match="'max_pairs=' is already present"):
+        model.set_params(loss_function="PairLogit:max_pairs=50", max_pairs=25)
 
 
 def test_model_type_must_be_ranking():
@@ -912,6 +1191,90 @@ def test_suggested_params_loss_excludes_pairwise_for_fixed_ordered_boosting():
     )
 
     assert trial.choices["base_loss"] == ["YetiRank", "PairLogit", "QuerySoftMax"]
+
+
+def test_suggested_params_loss_with_top_allows_pairwise_when_enabled():
+    """top works with both YetiRank and YetiRankPairwise (verified against CatBoost directly:
+    YetiRankPairwise:mode=NDCG;top=N fits without error), so pairwise tuning must stay available."""
+
+    class RecordingTrial:
+        number = 0
+
+        def __init__(self):
+            self.choices = {}
+
+        def suggest_categorical(self, name, choices):
+            self.choices[name] = choices
+            return choices[0]
+
+    model = CatboostRankerMother(
+        top=5,
+        tune_pairwise_type=True,
+        tune_tree_structure_type=False,
+        tune_boosting_type=False,
+    )
+    trial = RecordingTrial()
+
+    model.suggested_params_loss(
+        trial,
+        {"grow_policy": "SymmetricTree", "boosting_type": "Plain"},
+        pd.Series([0.0, 1.0]),
+        prefix="",
+    )
+
+    assert trial.choices["base_loss"] == ["YetiRank", "YetiRankPairwise"]
+
+
+def test_suggested_params_loss_with_top_uses_only_yetirank_when_pairwise_disabled():
+    """Without pairwise tuning enabled (or incompatible tree/boosting settings), the
+    has_top branch falls back to plain YetiRank without offering a base_loss choice."""
+
+    class RecordingTrial:
+        number = 0
+
+        def __init__(self):
+            self.choices = {}
+
+        def suggest_categorical(self, name, choices):
+            self.choices[name] = choices
+            return choices[0]
+
+    model = CatboostRankerMother(top=5, tune_pairwise_type=False)
+    trial = RecordingTrial()
+
+    suggested = model.suggested_params_loss(
+        trial,
+        {"grow_policy": "SymmetricTree", "boosting_type": "Plain"},
+        pd.Series([0.0, 1.0]),
+        prefix="",
+    )
+
+    assert "base_loss" not in trial.choices
+    assert suggested["loss_function"].startswith("YetiRank:")
+
+
+def test_suggested_params_loss_does_not_apply_max_pairs_to_non_pairlogit_losses():
+    """max_pairs is only documented for the PairLogit family (PairLogit, PairLogitPairwise);
+    CatBoost has no such parameter for YetiRank/QueryRMSE/QuerySoftMax, so tuning must never
+    splice a `max_pairs=...` suffix onto those losses."""
+
+    class SelectingTrial:
+        number = 0
+
+        def __init__(self, selection):
+            self.selection = selection
+            self.choices = {}
+
+        def suggest_categorical(self, name, choices):
+            self.choices[name] = choices
+            return self.selection.get(name, choices[0])
+
+    model = CatboostRankerMother(max_pairs=50, tune_tree_structure_type=False, tune_boosting_type=False)
+    trial = SelectingTrial({"base_loss": "QueryRMSE"})
+
+    suggested = model.suggested_params_loss(trial, {}, pd.Series([1.0, 2.0, 3.0]), prefix="")
+
+    assert suggested["loss_function"] == "QueryRMSE"
 
 
 def test_sklearn_clone_preserves_params():

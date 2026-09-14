@@ -12,6 +12,7 @@ Here, you can find `.ipynb` files explaining how to effectively use Mother for c
 | Model Training    | 01_lasso_classification.ipynb           | Classify molecules using a Lasso-based model in Mother.                                                          | [View Tutorial](https://github.com/Bayer-Group/MotherML/blob/main/examples/notebooks/03_classification/01_lasso_classification.ipynb)               |
 | Optimisation      | 04_pipeline_with_settings.ipynb    | Use MotherSettings to create a pipeline with Mother, including data preprocessing, feature generation and selection, and model training. | [View Tutorial](https://github.com/Bayer-Group/MotherML/blob/main/examples/notebooks/01_basics/04_pipeline_with_settings.ipynb)     |
 | Optimisation      | 01_custom_hyperparameter_optimization.ipynb | Customize hyperparameter optimization with Mother, following a baseline design of Optuna.                        | [View Tutorial](https://github.com/Bayer-Group/MotherML/blob/main/examples/notebooks/05_advanced/01_custom_hyperparameter_optimization.ipynb) |
+| Model Training    | 04_ranking_model.ipynb                   | Fit a `CatboostRankerMother` learning-to-rank model with groupwise structure, and quantify ranking stability with virtual-ensemble uncertainty and `groupwise_topk_analysis`. | [View Tutorial](https://github.com/Bayer-Group/MotherML/blob/main/examples/notebooks/05_advanced/04_ranking_model.ipynb) |
 
 
 Use [MotherSettings](https://github.com/Bayer-Group/MotherML/blob/main/src/mother/settings.py) to create a pipeline with Mother.

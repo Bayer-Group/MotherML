@@ -67,6 +67,60 @@ all_catboost_models = ml.get_model_class_by_algorithm("catboost")
 print([m.__name__ for m in all_catboost_models])
 ```
 
+## Ranking with `CatboostRankerMother`
+
+`CatboostRankerMother` wraps CatBoost's learning-to-rank (`CatBoostRanker`) for tasks where the goal is to
+*order* items within a group (e.g. rank candidates within one experiment batch) rather than predict an
+isolated value per item. Every ranking row must carry a `group_id` identifying which group it belongs to;
+ranks are only ever compared within a group, never across groups.
+
+```python
+import numpy as np
+import pandas as pd
+
+from mother.ml.models.m_catboost import CatboostRankerMother
+
+rng = np.random.default_rng(0)
+X_features = pd.DataFrame(rng.random((12, 3)), columns=["f0", "f1", "f2"])
+y = pd.Series(rng.random(12))
+groups = pd.Series([0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2])
+
+ranker = CatboostRankerMother(logging_level="Silent", num_trees=200)
+ranker.fit(X=X_features, y=y, group_id=groups)
+```
+
+By default CatBoost uses the `YetiRank` loss. Other ranking losses (`YetiRankPairwise`, `PairLogit`,
+`PairLogitPairwise`, `QueryRMSE`, `QuerySoftMax`) can be set via `loss_function`, or left to Optuna to choose
+automatically during hyperparameter tuning. Two convenience parameters are folded into the `loss_function`
+string automatically:
+
+- `top`: restricts `NDCG`/`MAP`-style losses to the top-`k` items per group (any mode except `Classic`).
+- `max_pairs`: caps how many item pairs the `PairLogit` family samples per group, to keep training fast on
+  large groups.
+
+### Predicting and estimating uncertainty per group
+
+Because ranks and rank uncertainty only make sense within a group, use the module-level helpers instead of
+calling `predict`/`predict_uncertainty` directly on a mixed-group `X`:
+
+```python
+from mother.ml.models.m_catboost import (
+    ranker_predict_for_groups,
+    ranker_predict_uncertainty_for_groups,
+)
+
+ranks = ranker_predict_for_groups(ranker, X_features, group_id=groups, use_ranks=True)
+uncertainty = ranker_predict_uncertainty_for_groups(ranker, X_features, group_id=groups, use_ranks=True)
+```
+
+`predict_uncertainty` estimates ranking confidence using CatBoost's virtual ensembles: several slightly
+different versions of the trained model are compared, and how much they disagree on an item's score/rank
+indicates how stable that item's ranking is. `mother.ml.utils.groupwise_topk_analysis` builds on this to flag
+which top-`k` selections are unstable across groups.
+
+See the [ranking tutorial notebook](https://github.com/Bayer-Group/MotherML/blob/main/examples/notebooks/05_advanced/04_ranking_model.ipynb)
+for a full worked example, including tuning, groupwise uncertainty, and out-of-fold validation.
+
 !!! tip
 
     If you are unsure about exact class names or capabilities, use:
@@ -116,8 +170,6 @@ Depending on model capabilities, one or more uncertainty columns can be present.
         from mother import ml
         print(ml.describe_model("RandomForestClassifierMother"))
         ```
-
-
 
 ## Using Lasso with Hyperparameter Tuning
 

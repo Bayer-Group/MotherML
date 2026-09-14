@@ -590,6 +590,8 @@ def get_virtual_prediction(
 
 def scores_to_ranks(scores: np.ndarray) -> np.ndarray:
     """Convert scores to 1-based ranks, with rank 1 assigned to the highest score."""
+    # method="dense" means equal scores get the same rank, e.g. [1.0, 1.0, 1.0] -> [1, 1, 1]
+    # (not [1, 2, 3]): the model can't tell tied items apart, so their ranks shouldn't either.
     return pd.Series(
         pd.Series(scores).rank(ascending=False, na_option="bottom", method="dense"),
         dtype=int,
@@ -725,7 +727,11 @@ def topk_rank_disagreement(
     if (arr < 1).any() or (arr > arr.shape[0]).any():
         raise ValueError(f"rank_ensembles must be 1-based values in [1, {arr.shape[0]}].")
     in_topk = arr <= k
+    # p = fraction of ensembles that place this item in the top-k.
     membership_probability = in_topk.mean(axis=1)
+    # 2*p*(1-p) is the probability that two ensembles picked at random disagree
+    # (one says "in", one says "out"). It is 0 when p is 0 or 1 (everyone agrees)
+    # and largest (0.5) when p=0.5 (a coin flip between ensembles).
     return 2.0 * membership_probability * (1.0 - membership_probability)
 
 
@@ -781,6 +787,8 @@ def topk_score_variance(
     topk_mask = reference_ranks <= k
     variances = np.zeros(arr.shape[0])
     if topk_mask.any():
+        # Sample variance (ddof=1) needs at least 2 ensembles to be defined; with a
+        # single ensemble there is nothing to vary, so fall back to 0 (ddof=0).
         ddof = 1 if arr.shape[1] > 1 else 0
         variances[topk_mask] = arr[topk_mask].var(axis=1, ddof=ddof)
     return topk_mask, variances
@@ -797,7 +805,9 @@ def groupwise_topk_analysis(
     For each ranking group, computes:
     - ``topk_disagreement_prob``: pairwise probability that ensembles disagree about each item's top-k membership
     - ``topk_score_var``: score variance for items in the top-k (0 otherwise)
-    - ``topk_member``: whether the item is in the consensus top-k (based on mean rank)
+    - ``topk_member``: whether the item is in the consensus top-k (based on mean rank). Consensus ranks are
+      computed with ``scores_to_ranks``, so items whose mean rank ties for the k-th place share that rank and
+      may all be marked as ``topk_member``, i.e. more than k items per group can be flagged.
 
     Parameters
     ----------
@@ -837,16 +847,23 @@ def groupwise_topk_analysis(
         raise ValueError("score_ensembles must contain only finite values.")
 
     for g in pd.unique(group_arr):
+        # Work on one ranking group at a time: rows outside this group are irrelevant
+        # to whether an item is "top-k", so everything below only looks at `idx` rows.
         idx = np.flatnonzero(group_arr == g)
         if k > len(idx):
             raise ValueError(f"k must be <= the number of items in every group; group {g!r} has {len(idx)} items.")
         group_scores = score_arr[idx]
+        # One rank column per virtual ensemble member, computed only within this group.
         group_ranks = scores_matrix_to_ranks(group_scores)
 
+        # How often ensembles disagree on whether each item belongs in the top-k.
         result.iloc[idx, result.columns.get_loc("topk_disagreement_prob")] = topk_rank_disagreement(group_ranks, k)
 
-        # Consensus ordering is the mean of the per-ensemble ranks; negated because
-        # rank 1 is best while scores_to_ranks expects higher-is-better.
+        # "Consensus" ranking: average each item's rank across all ensemble members,
+        # then rank those averages again (negated because a *lower* mean rank is
+        # better, while scores_to_ranks expects higher-is-better). This single
+        # consensus ranking is then reused both to decide topk_member and as the
+        # reference ranking for topk_score_var below.
         mean_ranks = group_ranks.mean(axis=1)
         ref_ranks = scores_to_ranks(-mean_ranks)
         _, var = topk_score_variance(group_scores, k, reference_ranks=ref_ranks)
