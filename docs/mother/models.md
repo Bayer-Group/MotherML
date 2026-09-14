@@ -77,15 +77,18 @@ ranks are only ever compared within a group, never across groups.
 ```python
 import numpy as np
 import pandas as pd
+import sklearn
 
 from mother.ml.models.m_catboost import CatboostRankerMother
+
+sklearn.set_config(enable_metadata_routing=True)
 
 rng = np.random.default_rng(0)
 X_features = pd.DataFrame(rng.random((12, 3)), columns=["f0", "f1", "f2"])
 y = pd.Series(rng.random(12))
 groups = pd.Series([0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2])
 
-ranker = CatboostRankerMother(logging_level="Silent", num_trees=200)
+ranker = CatboostRankerMother(logging_level="Silent", num_trees=200).set_fit_request(group_id="group_id")
 ranker.fit(X=X_features, y=y, group_id=groups)
 ```
 

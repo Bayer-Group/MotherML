@@ -1864,7 +1864,13 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
                 self.tune_tree_structure_type = False
                 self.tune_boosting_type = False
 
-        if "loss_function" not in list(kwargs):
+        # An explicit `loss_function=None` is treated the same as omitting it entirely:
+        # `None` has no string to bake `top`/`max_pairs` into, so silently passing it
+        # straight through to CatBoost would drop any requested cutoff/pair cap without
+        # any warning (CatBoost's own default loss is not guaranteed to be one that
+        # supports them anyway). Build the wrapper's own default loss instead, exactly
+        # as if `loss_function` had not been passed at all.
+        if "loss_function" not in list(kwargs) or kwargs["loss_function"] is None:
             if self.top is not None and self.top > 0:
                 kwargs["loss_function"] = f"YetiRank:mode=NDCG;top={self.top}"
             else:
@@ -1922,6 +1928,13 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
         """
         Override set_params to handle custom parameters like target_type.
         """
+        # An explicit `loss_function=None` is treated the same as not passing
+        # `loss_function` at all: `None` has no string to bake `top`/`max_pairs` into,
+        # so silently passing it through to CatBoost would drop any requested
+        # cutoff/pair cap without warning. Fall back to whatever loss_function is
+        # currently in effect instead (matching __init__'s handling of `None`).
+        if "loss_function" in params and params["loss_function"] is None:
+            params.pop("loss_function")
         explicit_loss_function = "loss_function" in params
         top_changed = "top" in params
         max_pairs_changed = "max_pairs" in params
@@ -1932,14 +1945,18 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
         params.pop("model_type", None)
         self.model_type = "ranking"
 
+        # `top`/`max_pairs` are only staged here, not committed to `self` yet: if the
+        # loss-string validation below raises, self.top/self.max_pairs must be left
+        # exactly as they were before this call, not partially updated.
+        staged_top = params.pop("top") if top_changed else self.top
+        staged_max_pairs = params.pop("max_pairs") if max_pairs_changed else self.max_pairs
+
         for param in [
             "target_type",
             "tune_pairwise_type",
             "tune_boosting_type",
             "tune_tree_structure_type",
             "tune_loss_function",
-            "top",
-            "max_pairs",
         ]:
             if param in params:
                 setattr(self, param, params.pop(param))
@@ -1963,9 +1980,16 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
                 if explicit_loss_function:
                     _reject_top_with_classic_mode(loss_function)
                     if top_changed:
-                        loss_function = _splice_or_reject_top(loss_function, self.top)
+                        loss_function = _splice_or_reject_top(loss_function, staged_top)
+                    elif _is_meaningful_loss_param(staged_top):
+                        # `top` wasn't touched this call, but a previously-configured value
+                        # must not silently conflict with a different value baked into a
+                        # newly-supplied loss_function string.
+                        _reject_duplicate_loss_param(loss_function, "top", staged_top, "top")
                     if max_pairs_changed:
-                        loss_function = _splice_or_reject_max_pairs(loss_function, self.max_pairs)
+                        loss_function = _splice_or_reject_max_pairs(loss_function, staged_max_pairs)
+                    elif _is_meaningful_loss_param(staged_max_pairs):
+                        _reject_duplicate_loss_param(loss_function, "max_pairs", staged_max_pairs, "max_pairs")
                     # `top`/`max_pairs` must reflect the *effective* value in use, even when
                     # the caller only wrote it into the loss_function string this call --
                     # otherwise get_params() would report a stale top/max_pairs that has
@@ -1975,15 +1999,15 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
                     # otherwise a previously-set top/max_pairs would keep reappearing on later
                     # get_params()/clone() calls even after switching to a loss_function that
                     # no longer defines it at all.
-                    self.top = _sync_from_loss_function(loss_function, "top", self.top if top_changed else 0)
-                    self.max_pairs = _sync_from_loss_function(
-                        loss_function, "max_pairs", self.max_pairs if max_pairs_changed else None
+                    staged_top = _sync_from_loss_function(loss_function, "top", staged_top if top_changed else 0)
+                    staged_max_pairs = _sync_from_loss_function(
+                        loss_function, "max_pairs", staged_max_pairs if max_pairs_changed else None
                     )
                 else:
                     if top_changed and "YetiRank" in loss_function:
-                        loss_function = _apply_top(loss_function, self.top)
+                        loss_function = _apply_top(loss_function, staged_top)
                     if max_pairs_changed and "PairLogit" in loss_function:
-                        loss_function = _apply_max_pairs(loss_function, self.max_pairs)
+                        loss_function = _apply_max_pairs(loss_function, staged_max_pairs)
                 params["loss_function"] = loss_function
 
         # Keep set_params invariant with __init__: explicit Pairwise losses
@@ -2013,6 +2037,10 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
                 )
                 self.tune_tree_structure_type = False
                 self.tune_boosting_type = False
+
+        # All validation above has succeeded -- only now commit the staged values.
+        self.top = staged_top
+        self.max_pairs = staged_max_pairs
 
         return super().set_params(**params)
 

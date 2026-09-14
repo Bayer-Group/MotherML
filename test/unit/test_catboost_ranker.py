@@ -868,14 +868,19 @@ def test_init_normalizes_pairlogit_parameter_separator_without_max_pairs():
     assert model.get_params()["loss_function"] == "PairLogit:max_pairs=75"
 
 
-def test_init_accepts_none_loss_function():
-    """loss_function=None is a valid CatBoost value (use its own default) and must
-    not raise a TypeError from the PairLogit-separator normalization's membership test.
-    CatBoost itself omits params set to None from get_params(), so the key is absent
-    rather than present with value None -- this matches plain CatBoostRanker's behavior."""
+def test_init_resolves_none_loss_function_to_wrapper_default():
+    """An explicit loss_function=None must be treated the same as omitting it: `None`
+    has no string to bake `top`/`max_pairs` into, so passing it straight through to
+    CatBoost would silently drop any requested cutoff/pair cap. It must resolve to the
+    wrapper's own default loss instead, exactly as if loss_function had not been given."""
     model = CatboostRankerMother(loss_function=None)
 
-    assert "loss_function" not in model.get_params()
+    assert model.get_params()["loss_function"] == "YetiRank:mode=Classic"
+
+    model_with_top = CatboostRankerMother(loss_function=None, top=5)
+
+    assert model_with_top.get_params()["loss_function"] == "YetiRank:mode=NDCG;top=5"
+    assert model_with_top.top == 5
 
 
 def test_init_syncs_top_attribute_from_explicit_loss_function_string():
@@ -934,6 +939,55 @@ def test_set_params_resets_max_pairs_when_new_loss_function_omits_it():
 
     assert model.max_pairs is None
     assert model.get_params()["loss_function"] == "PairLogit"
+
+
+def test_set_params_resolves_none_loss_function_to_current_loss():
+    """An explicit set_params(loss_function=None) must be treated the same as not
+    passing loss_function at all: `None` has no string to bake `top`/`max_pairs` into,
+    so passing it straight through to CatBoost would silently drop the requested top."""
+    model = CatboostRankerMother()
+
+    model.set_params(loss_function=None, top=5)
+
+    assert model.top == 5
+    assert model.get_params()["loss_function"] == "YetiRank:mode=NDCG;top=5"
+
+
+def test_set_params_rejects_conflicting_max_pairs_baked_into_new_loss_function():
+    """Even when `max_pairs` isn't part of *this* set_params call, a previously
+    configured meaningful `self.max_pairs` must not silently be overridden by a
+    different value baked into a newly-supplied loss_function string -- `top`/
+    `max_pairs` must still be defined in exactly one place."""
+    model = CatboostRankerMother()
+    model.set_params(max_pairs=50)
+
+    with pytest.raises(ValueError, match="max_pairs"):
+        model.set_params(loss_function="PairLogit:max_pairs=999")
+
+    # The rejected call must not have left the object partially updated.
+    assert model.max_pairs == 50
+
+
+def test_set_params_rejects_conflicting_top_baked_into_new_loss_function():
+    model = CatboostRankerMother(top=5)
+
+    with pytest.raises(ValueError, match="top"):
+        model.set_params(loss_function="YetiRank:mode=NDCG;top=9")
+
+    assert model.top == 5
+
+
+def test_set_params_conflict_leaves_top_and_max_pairs_unchanged():
+    """A rejected set_params(loss_function=..., top=...) call must not leave `self.top`
+    partially updated to the rejected candidate value -- validation must run before any
+    attribute is committed, not after."""
+    model = CatboostRankerMother(loss_function="YetiRank:mode=NDCG;top=5")
+
+    with pytest.raises(ValueError, match="top"):
+        model.set_params(loss_function="YetiRank:mode=NDCG;top=5", top=3)
+
+    assert model.top == 5
+    assert model.get_params()["loss_function"] == "YetiRank:mode=NDCG;top=5"
 
 
 def test_init_does_not_append_zero_max_pairs():
