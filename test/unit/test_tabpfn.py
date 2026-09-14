@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import pytest
+import torch
 from sklearn.datasets import load_diabetes, load_wine
 from sklearn.model_selection import train_test_split
 
@@ -9,6 +10,39 @@ from mother.ml.models.m_tabpfn import (
     TabPFNEmbeddingTransformer,
     TabPFNRegressorMother,
 )
+
+
+class _PrecisionTrackingModel:
+    """Records the inference_precision in effect during get_embeddings(), to check
+    that it's forced to float32 for the call and restored afterward."""
+
+    def __init__(self, initial_precision):
+        self.inference_precision = initial_precision
+        self.precision_during_call = None
+
+    def get_embeddings(self, X):
+        self.precision_during_call = self.inference_precision
+        return np.zeros((len(X), 2))
+
+
+def test_transform_forces_float32_precision_for_prefitted_model_and_restores_it():
+    model = _PrecisionTrackingModel(initial_precision="auto")
+    transformer = TabPFNEmbeddingTransformer(model=model, use_kfold=False)
+
+    transformer.transform(pd.DataFrame({"f0": [1.0, 2.0]}))
+
+    assert model.precision_during_call is torch.float32
+    assert model.inference_precision == "auto"
+
+
+def test_fit_forces_float32_precision_for_prefitted_model_and_restores_it():
+    model = _PrecisionTrackingModel(initial_precision="auto")
+    transformer = TabPFNEmbeddingTransformer(model=model, use_kfold=False)
+
+    transformer.fit(np.array([[1.0], [2.0]]), np.array([0.0, 1.0]))
+
+    assert model.precision_during_call is torch.float32
+    assert model.inference_precision == "auto"
 
 
 def get_data_containers(X, y):
