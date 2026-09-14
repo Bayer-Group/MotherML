@@ -912,6 +912,30 @@ def test_set_params_syncs_max_pairs_attribute_from_explicit_loss_function_string
     assert model.max_pairs == 17
 
 
+def test_set_params_resets_top_when_new_loss_function_omits_it():
+    """set_params(loss_function=...) without touching `top` must reset the `top`
+    attribute to the disabled default when the new string doesn't define `top` either --
+    otherwise get_params()/clone() would keep reporting a stale top that has nothing to
+    do with the loss actually in effect (and would conflict when spliced back in)."""
+    model = CatboostRankerMother(loss_function="YetiRank:mode=NDCG;top=5")
+    assert model.top == 5
+
+    model.set_params(loss_function="YetiRank:mode=Classic")
+
+    assert model.top == 0
+    assert model.get_params()["loss_function"] == "YetiRank:mode=Classic"
+
+
+def test_set_params_resets_max_pairs_when_new_loss_function_omits_it():
+    model = CatboostRankerMother(loss_function="PairLogit:max_pairs=17")
+    assert model.max_pairs == 17
+
+    model.set_params(loss_function="PairLogit")
+
+    assert model.max_pairs is None
+    assert model.get_params()["loss_function"] == "PairLogit"
+
+
 def test_init_does_not_append_zero_max_pairs():
     model = CatboostRankerMother(loss_function="PairLogit", max_pairs=0)
 
@@ -1095,6 +1119,19 @@ def test_set_params_top_zero_preserves_classic_mode_without_ndcg_parameters():
 def test_init_rejects_top_defined_in_both_places():
     with pytest.raises(ValueError, match="'top=' is already present"):
         CatboostRankerMother(loss_function="YetiRank:mode=NDCG;top=5", top=3)
+
+
+def test_init_rejects_top_with_classic_mode():
+    """'top' has no effect in Classic mode; an explicit loss_function combining
+    both must raise instead of being silently accepted."""
+    with pytest.raises(ValueError, match="mode=Classic"):
+        CatboostRankerMother(loss_function="YetiRank:mode=Classic;top=5")
+
+
+def test_set_params_rejects_top_with_classic_mode():
+    model = CatboostRankerMother()
+    with pytest.raises(ValueError, match="mode=Classic"):
+        model.set_params(loss_function="YetiRank:mode=Classic;top=5")
 
 
 def test_init_rejects_max_pairs_defined_in_both_places():

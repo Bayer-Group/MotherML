@@ -681,10 +681,14 @@ def avg_ndcg_score(
     if verbose:
         print(f"dictionary of groups: {group_dict}")
     for true_list, preds_list in group_dict.values():
-        true_ranks, pred_ranks = single_group_rank_pred(preds_list, true_list)
         if verbose:
+            true_ranks, pred_ranks = single_group_rank_pred(preds_list, true_list)
             print(true_ranks)
-        ndcg_list.append(ndcg_score([true_ranks], [pred_ranks], k=k))  # type: ignore
+        # ndcg_score expects higher-is-better relevance/score values, not the zero-based
+        # ranks from single_group_rank_pred (where 0 = best) -- passing those ranks directly
+        # would make ndcg_score treat the worst item as most relevant and score the bottom-k
+        # instead of the top-k. Use the original target/prediction values instead.
+        ndcg_list.append(ndcg_score([true_list], [preds_list], k=k))  # type: ignore
     if verbose:
         print(f"List of every group ndcg score: {ndcg_list}")
     return np.average(ndcg_list)

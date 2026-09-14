@@ -17,6 +17,7 @@ from mother.ml.models.m_catboost import CatboostClassifierMother
 from mother.ml.utils import (
     MotherTransformedTargetRegressor,
     OrdinalLabelBinarizer,
+    avg_ndcg_score,
     default_loss_function,
     get_tree_depth,
     mean_absolute_error_multi_na,
@@ -35,6 +36,21 @@ def test_get_virtual_prediction_rejects_invalid_ensemble_count(virtual_ensembles
             model=None,
             virtual_ensembles_count=virtual_ensembles_count,
         )
+
+
+def test_avg_ndcg_score_rewards_correct_top_k_prediction():
+    """avg_ndcg_score must score a prediction that correctly identifies the top-k items
+    higher than one that gets them backwards -- it must not silently score the bottom-k
+    instead of the top-k (single_group_rank_pred's ranks are 0-based with 0 = best, which
+    is the opposite of what ndcg_score expects for a relevance/score array)."""
+    y = [4.0, 3.0, 2.0, 1.0, 0.0]
+    groups = [0, 0, 0, 0, 0]
+
+    correct_order_score = avg_ndcg_score(y, y_pred=y, groups=groups, k=2)
+    reversed_order_score = avg_ndcg_score(y, y_pred=list(reversed(y)), groups=groups, k=2)
+
+    assert correct_order_score == pytest.approx(1.0)
+    assert correct_order_score > reversed_order_score
 
 
 @pytest.mark.parametrize(

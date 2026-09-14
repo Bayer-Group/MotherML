@@ -1634,6 +1634,19 @@ def _sync_from_loss_function(loss_function: str, key: str, current: Optional[int
     return int(match.group(1)) if match else current
 
 
+def _reject_top_with_classic_mode(loss_function: str) -> None:
+    """'top' has no effect in Classic mode (CatBoost docs: used in all modes except
+    Classic). Reject a loss_function string combining both -- regardless of whether the
+    dedicated `top` parameter is also being touched this call -- instead of silently
+    accepting a string CatBoost may reject later or interpret differently."""
+    if re.search(r"[;:]top=", loss_function) and "mode=Classic" in loss_function:
+        raise ValueError(
+            f"loss_function={loss_function!r} combines 'top=' with 'mode=Classic', but "
+            "'top' has no effect in Classic mode (CatBoost docs: 'top' is used in all "
+            "modes except Classic). Use a different mode (e.g. 'mode=NDCG') or remove 'top='."
+        )
+
+
 def _splice_or_reject_top(loss_function: str, top: Optional[int]) -> str:
     """For an explicitly-provided loss_function: splice `top` in only if the string
     doesn't already define it; raise if the string and `top` define conflicting values."""
@@ -1862,6 +1875,7 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
             # already define one, splice the dedicated parameter's value in; if it does,
             # raise instead of guessing which one should win.
             loss_function = _normalize_pairlogit_separator(kwargs["loss_function"])
+            _reject_top_with_classic_mode(loss_function)
             loss_function = _splice_or_reject_top(loss_function, self.top)
             loss_function = _splice_or_reject_max_pairs(loss_function, self.max_pairs)
             kwargs["loss_function"] = loss_function
@@ -1947,6 +1961,7 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
             if isinstance(loss_function, str):
                 loss_function = _normalize_pairlogit_separator(loss_function)
                 if explicit_loss_function:
+                    _reject_top_with_classic_mode(loss_function)
                     if top_changed:
                         loss_function = _splice_or_reject_top(loss_function, self.top)
                     if max_pairs_changed:
@@ -1954,9 +1969,16 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
                     # `top`/`max_pairs` must reflect the *effective* value in use, even when
                     # the caller only wrote it into the loss_function string this call --
                     # otherwise get_params() would report a stale top/max_pairs that has
-                    # nothing to do with the loss actually in effect.
-                    self.top = _sync_from_loss_function(loss_function, "top", self.top)
-                    self.max_pairs = _sync_from_loss_function(loss_function, "max_pairs", self.max_pairs)
+                    # nothing to do with the loss actually in effect. When the dedicated
+                    # parameter wasn't touched *this call*, fall back to the disabled default
+                    # (not the old attribute value) if the new string doesn't define it either --
+                    # otherwise a previously-set top/max_pairs would keep reappearing on later
+                    # get_params()/clone() calls even after switching to a loss_function that
+                    # no longer defines it at all.
+                    self.top = _sync_from_loss_function(loss_function, "top", self.top if top_changed else 0)
+                    self.max_pairs = _sync_from_loss_function(
+                        loss_function, "max_pairs", self.max_pairs if max_pairs_changed else None
+                    )
                 else:
                     if top_changed and "YetiRank" in loss_function:
                         loss_function = _apply_top(loss_function, self.top)
