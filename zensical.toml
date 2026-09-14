@@ -7,7 +7,7 @@ repo_name = "MotherML"
 
 nav = [
   { "Home" = "index.md" },
-  { "Development" = [ { "General Development" = "development/dev.md" }, { "PR Approval Process" = "development/pr_approval_guidelines.md" } ] },
+  { "Development" = [ { "General Development" = "development/dev.md" }, { "CI/CD & Release Overview" = "development/ci_cd_overview.md" }, { "PR Approval Process" = "development/pr_approval_guidelines.md" } ] },
   { "Usage" = [ { "Overview" = "mother/overview.md" }, { "Configurator" = "mother/configurator.md" }, { "Specifics" = [ { "Models" = "mother/models.md" } ] } ] },
   { "Tutorials" = "examples.md" },
   { "Basic Cheminformatics" = [ { "Introduction" = "chemistry.md" }, { "Molecule Standardisation" = "standardization.md" }, { "Feature Generation" = "feature_generation.md" } ] },
