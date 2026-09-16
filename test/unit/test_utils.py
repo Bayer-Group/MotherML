@@ -273,29 +273,64 @@ def test_topk_score_variance_is_zero_for_a_single_ensemble():
     np.testing.assert_array_equal(variances, [0.0, 0.0])
 
 
-def test_groupwise_topk_analysis_respects_group_boundaries():
-    uncertainty_df = pd.DataFrame({"mean_predictions": [1.0, 2.0, 1.0, 2.0], "knowledge_uncertainty": [0.0] * 4})
+@pytest.fixture
+def topk_analysis_two_groups():
+    """Two ranking groups: "a" has a clear winner (no tie), "b" has a tied top rank."""
     score_ensembles = np.array([[4.0, 5.0], [3.0, 2.0], [1.0, 4.0], [2.0, 3.0]])
-
-    result = mother.ml.utils.groupwise_topk_analysis(
-        uncertainty_df, score_ensembles, group_ids=np.array(["a", "a", "b", "b"]), k=1
+    uncertainty_df = pd.DataFrame(
+        {
+            "mean_predictions": score_ensembles.mean(axis=1),
+            "knowledge_uncertainty": score_ensembles.std(axis=1, ddof=1),
+        }
     )
+    group_ids = np.array(["a", "a", "b", "b"])
+    return uncertainty_df, score_ensembles, group_ids
 
-    np.testing.assert_allclose(result["topk_disagreement_prob"], [0.0, 0.0, 0.5, 0.5])
-    # Group "b" has a tied consensus mean rank (1.5 each); scores_to_ranks uses dense
-    # ties, so both tied items share rank 1 and are flagged as topk_member.
-    np.testing.assert_array_equal(result["topk_member"], [True, False, True, True])
+
+def test_groupwise_topk_analysis_respects_group_boundaries(topk_analysis_two_groups):
+    uncertainty_df, score_ensembles, group_ids = topk_analysis_two_groups
+
+    result = mother.ml.utils.groupwise_topk_analysis(uncertainty_df, score_ensembles, group_ids, k=1)
+
+    # Group "a": ensembles agree on the winner -> no disagreement, no tie.
+    np.testing.assert_allclose(result["topk_disagreement_prob"][:2], [0.0, 0.0])
+    np.testing.assert_array_equal(result["topk_member"][:2], [True, False])
+    # Group "b": ensembles disagree on the winner -> tied consensus rank 1 for both,
+    # so both are flagged topk_member even though k=1 (see function docstring).
+    np.testing.assert_allclose(result["topk_disagreement_prob"][2:], [0.5, 0.5])
+    np.testing.assert_array_equal(result["topk_member"][2:], [True, True])
     np.testing.assert_allclose(result["topk_score_var"], [0.5, 0.0, 4.5, 0.5])
 
 
-def test_groupwise_topk_analysis_rejects_missing_group_ids():
-    uncertainty_df = pd.DataFrame({"mean_predictions": [1.0, 2.0], "knowledge_uncertainty": [0.0, 0.0]})
-    score_ensembles = np.array([[2.0, 3.0], [1.0, 0.0]])
+def test_groupwise_topk_analysis_rejects_missing_group_ids(topk_analysis_two_groups):
+    uncertainty_df, score_ensembles, _ = topk_analysis_two_groups
 
     with pytest.raises(ValueError, match="group_ids must not contain missing values"):
         mother.ml.utils.groupwise_topk_analysis(
-            uncertainty_df, score_ensembles, np.array(["a", np.nan], dtype=object), k=1
+            uncertainty_df, score_ensembles, np.array(["a", np.nan, "b", "b"], dtype=object), k=1
         )
+
+
+@pytest.mark.parametrize("k", [0, -1, 1.5, True])
+def test_groupwise_topk_analysis_rejects_invalid_k(topk_analysis_two_groups, k):
+    uncertainty_df, score_ensembles, group_ids = topk_analysis_two_groups
+
+    with pytest.raises(ValueError, match="k must be a positive integer"):
+        mother.ml.utils.groupwise_topk_analysis(uncertainty_df, score_ensembles, group_ids, k=k)
+
+
+def test_groupwise_topk_analysis_rejects_k_larger_than_a_group(topk_analysis_two_groups):
+    uncertainty_df, score_ensembles, group_ids = topk_analysis_two_groups
+
+    with pytest.raises(ValueError, match="k must be <= the number of items in every group"):
+        mother.ml.utils.groupwise_topk_analysis(uncertainty_df, score_ensembles, group_ids, k=3)
+
+
+def test_groupwise_topk_analysis_rejects_mismatched_row_counts(topk_analysis_two_groups):
+    uncertainty_df, score_ensembles, group_ids = topk_analysis_two_groups
+
+    with pytest.raises(ValueError, match="must have the same number of rows"):
+        mother.ml.utils.groupwise_topk_analysis(uncertainty_df, score_ensembles, group_ids[:-1], k=1)
 
 
 def test_numeric_columns_all_numeric():

@@ -804,26 +804,56 @@ def groupwise_topk_analysis(
     group_ids: np.ndarray,
     k: int,
 ) -> pd.DataFrame:
-    """Perform groupwise top-k uncertainty analysis across ranking groups.
+    """Flag stable top-k items per ranking group and quantify ensemble disagreement.
 
-    For each ranking group, computes:
-    - ``topk_disagreement_prob``: pairwise probability that ensembles disagree about each item's top-k membership
-    - ``topk_score_var``: score variance for items in the top-k (0 otherwise)
-    - ``topk_member``: whether the item is in the consensus top-k (based on mean rank). Consensus ranks are
-      computed with ``scores_to_ranks``, so items whose mean rank ties for the k-th place share that rank and
-      may all be marked as ``topk_member``, i.e. more than k items per group can be flagged.
+    When to use this
+    -----------------
+    Use this for ranking problems where items are organised into groups (e.g. query
+    groups scored by a ``CatBoostRanker``, or candidate sets for one prediction target)
+    and you have per-item score ensembles from ``get_virtual_prediction`` or
+    ``predict_uncertainty(..., return_raw=True)``. It tells you, per group, which items
+    reliably land in the top-k and how much the virtual ensembles disagree about that.
+
+    How the consensus ranking is built
+    -----------------------------------
+    1. Within each group, convert every ensemble member's raw scores to ranks
+       (``scores_to_ranks``) -- one rank column per ensemble member.
+    2. Average each item's ranks across ensemble members (Borda-count style).
+    3. Rank those averages again to get the group's final consensus order.
+
+    This consensus is based on averaging *ranks*, not on averaging raw scores. It does
+    **not** use ``uncertainty_df["mean_predictions"]``: averaging ranks and averaging
+    raw scores can disagree, e.g. when one ensemble member produces an outlier score.
+    ``uncertainty_df`` is only copied through so its other columns (e.g.
+    ``knowledge_uncertainty``) remain attached to the output.
+
+    Ties: consensus ranks use dense ranking (``scores_to_ranks``), which assigns
+    consecutive integers starting at 1 and only repeats a rank when two items' averaged
+    values are exactly equal -- when every item disagrees in value, dense ranking is
+    indistinguishable from ordinary ranking. So items tied for k-th place all share
+    that rank and may all be flagged ``topk_member`` -- more than k items per group can
+    end up ``True``.
+
+    Output columns (added to a copy of ``uncertainty_df``)
+    --------------------------------------------------------
+    - ``topk_disagreement_prob``: pairwise probability that two ensemble members
+      disagree about whether an item is in the top-k.
+    - ``topk_score_var``: variance of an item's raw scores across ensemble members
+      (0 for items outside the consensus top-k).
+    - ``topk_member``: whether the item is in the group's consensus top-k.
 
     Parameters
     ----------
     uncertainty_df : pd.DataFrame
-        Output from ``predict_uncertainty`` containing ``mean_predictions`` and
-        ``knowledge_uncertainty`` columns.
+        Output from ``predict_uncertainty``. Carried through to the result unchanged;
+        not used to compute ``topk_member``.
     score_ensembles : np.ndarray, shape (n_samples, n_ensembles)
         Raw score matrix from virtual ensembles (obtained from ``get_virtual_prediction``).
     group_ids : np.ndarray
-        Group IDs aligned with rows.
+        Group IDs aligned with rows. Every group must contain at least ``k`` items.
     k : int
-        Number of top positions to analyse.
+        Number of top positions to analyse. Must be a plain positive integer (not a
+        float or bool) and no larger than the smallest group's item count.
 
     Returns
     -------
@@ -845,8 +875,10 @@ def groupwise_topk_analysis(
         raise ValueError("uncertainty_df, score_ensembles, and group_ids must have the same number of rows.")
     if pd.isna(group_arr).any():
         raise ValueError("group_ids must not contain missing values.")
-    if k < 1:
-        raise ValueError(f"k must be >= 1, got {k}.")
+    # Reject bools (bool is a subclass of int) and floats (e.g. 1.5) up front, so a
+    # non-integer k fails clearly here instead of silently truncating during slicing.
+    if not isinstance(k, (int, np.integer)) or isinstance(k, bool) or k < 1:
+        raise ValueError(f"k must be a positive integer, got {k!r}.")
     if not np.isfinite(score_arr).all():
         raise ValueError("score_ensembles must contain only finite values.")
 
