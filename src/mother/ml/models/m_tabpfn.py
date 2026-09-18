@@ -483,10 +483,10 @@ class TabPFNEmbeddingTransformer(BaseEstimator, TransformerMixin):
         of fitting a new one, and the k-fold scheme will be skipped for training data.
         The model's existing device placement is used as-is; `device` is not applied to
         it, so make sure the model is already on the device you want before passing it
-        in. Its ``inference_precision`` is temporarily forced to ``torch.float32`` for
-        the duration of each ``get_embeddings()`` call (some torch/tabpfn builds can't
-        convert bfloat16-autocast output to numpy on CPU) and restored to its original
-        value immediately afterward, so the model itself is left unchanged.
+        in. Its ``use_autocast_`` flag is temporarily forced to ``False`` for the duration
+        of each ``get_embeddings()`` call (some torch/tabpfn builds can't convert
+        bfloat16-autocast output to numpy on CPU) and restored to its original value
+        immediately afterward, so the model itself is left unchanged.
     ignore_pretraining_limits : bool, default=True
         When True, bypasses TabPFN's restriction on the number of features (default 500).
         Set to False to enforce the pretraining limits.
@@ -547,15 +547,17 @@ class TabPFNEmbeddingTransformer(BaseEstimator, TransformerMixin):
     def _get_embeddings_with_safe_precision(
         model: Union[TabPFNClassifierMother, TabPFNRegressorMother], X_array: np.ndarray
     ) -> np.ndarray:
-        # Some torch/tabpfn builds can't convert bfloat16 autocast output to numpy on CPU
-        # (TypeError: Got unsupported ScalarType BFloat16); force float32 for the call only,
-        # so a caller-owned pre-fitted model isn't left permanently mutated.
-        original_precision = model.inference_precision
-        model.inference_precision = torch.float32
+        # `get_embeddings` reads `model.use_autocast_`, which `determine_precision` fixes
+        # once at fit time -- mutating `model.inference_precision` afterward (the previous
+        # approach here) has no effect on an already-fitted model. Some torch/tabpfn builds
+        # can't convert bfloat16-autocast output to numpy on CPU (TypeError: Got unsupported
+        # ScalarType BFloat16), so force autocast off for the call only, then restore it.
+        original_autocast = model.use_autocast_
+        model.use_autocast_ = False
         try:
             return model.get_embeddings(X_array)
         finally:
-            model.inference_precision = original_precision
+            model.use_autocast_ = original_autocast
 
     def _get_best_embeddings(
         self,

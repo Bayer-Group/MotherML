@@ -1366,6 +1366,56 @@ def test_suggested_params_loss_does_not_apply_max_pairs_to_non_pairlogit_losses(
     suggested = model.suggested_params_loss(trial, {}, pd.Series([1.0, 2.0, 3.0]), prefix="")
 
     assert suggested["loss_function"] == "QueryRMSE"
+    # max_pairs must still be explicitly re-asserted (not silently dropped) so that
+    # set_params() sees it as "touched" and doesn't clear the configured cap.
+    assert suggested["max_pairs"] == 50
+
+
+def test_suggested_params_loss_preserves_max_pairs_across_non_pairlogit_trial():
+    """Regression test: a trial that picks a non-PairLogit loss must not permanently wipe
+    a previously-configured max_pairs, or every later PairLogit trial would be tuned
+    without it. set_params() clears max_pairs when it's omitted from a call that also
+    supplies an explicit loss_function not defining it -- suggested_params_loss must
+    therefore keep re-asserting max_pairs every trial regardless of the loss chosen."""
+
+    class SelectingTrial:
+        number = 0
+
+        def __init__(self, selection):
+            self.selection = selection
+            self.choices = {}
+
+        def suggest_categorical(self, name, choices):
+            self.choices[name] = choices
+            return self.selection.get(name, choices[0])
+
+    model = CatboostRankerMother(max_pairs=50, tune_tree_structure_type=False, tune_boosting_type=False)
+    y = pd.Series([1.0, 2.0, 3.0])
+
+    # Trial 1: a non-PairLogit loss is picked -- must not clear self.max_pairs.
+    trial_1 = SelectingTrial({"base_loss": "QueryRMSE"})
+    suggested_1 = model.suggested_params_loss(trial_1, {}, y, prefix="")
+    model.set_params(**suggested_1)
+    assert model.max_pairs == 50
+
+    # Trial 2: back to PairLogit -- the configured cap must still be applied.
+    trial_2 = SelectingTrial({"base_loss": "PairLogit"})
+    suggested_2 = model.suggested_params_loss(trial_2, {}, y, prefix="")
+    assert suggested_2["loss_function"] == "PairLogit:max_pairs=50"
+
+
+def test_set_params_leaves_state_unchanged_when_parent_set_params_raises():
+    """If super().set_params() (CatBoost/sklearn) rejects the update, self.top/self.max_pairs
+    and the tuning flags must be left exactly as they were before the call -- the staged
+    values must only be committed once the parent update has actually succeeded."""
+    model = CatboostRankerMother(top=5, tune_tree_structure_type=False, tune_boosting_type=False)
+
+    with patch.object(m_catboost.CatBoostRanker, "set_params", side_effect=ValueError("boom")):
+        with pytest.raises(ValueError, match="boom"):
+            model.set_params(top=9, tune_tree_structure_type=True)
+
+    assert model.top == 5
+    assert model.tune_tree_structure_type is False
 
 
 def test_sklearn_clone_preserves_params():

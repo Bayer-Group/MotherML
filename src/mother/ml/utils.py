@@ -682,13 +682,21 @@ def avg_ndcg_score(
         print(f"dictionary of groups: {group_dict}")
     for true_list, preds_list in group_dict.values():
         if verbose:
-            true_ranks, pred_ranks = single_group_rank_pred(preds_list, true_list)
+            true_ranks, _ = single_group_rank_pred(preds_list, true_list)
             print(true_ranks)
         # ndcg_score expects higher-is-better relevance/score values, not the zero-based
         # ranks from single_group_rank_pred (where 0 = best) -- passing those ranks directly
         # would make ndcg_score treat the worst item as most relevant and score the bottom-k
         # instead of the top-k. Use the original target/prediction values instead.
-        ndcg_list.append(ndcg_score([true_list], [preds_list], k=k))  # type: ignore
+        # ndcg_score requires non-negative relevance and raises otherwise, but ranking
+        # targets here aren't constrained to be non-negative. Shift each group's values by
+        # its own minimum (a no-op when already non-negative) so relative order -- the only
+        # thing that matters for the ranking metric -- is preserved.
+        true_array = np.asarray(true_list, dtype=float)
+        min_true = true_array.min()
+        if min_true < 0:
+            true_array = true_array - min_true
+        ndcg_list.append(ndcg_score([true_array], [preds_list], k=k))  # type: ignore
     if verbose:
         print(f"List of every group ndcg score: {ndcg_list}")
     return np.average(ndcg_list)
@@ -722,8 +730,10 @@ def topk_rank_disagreement(
     arr = np.asarray(rank_ensembles)
     if arr.ndim != 2:
         raise ValueError(f"Expected 2D rank_ensembles, got {arr.ndim}D.")
-    if k < 1:
-        raise ValueError(f"k must be >= 1, got {k}.")
+    # Reject bools (bool is a subclass of int) and floats (e.g. 1.5) up front, so a
+    # non-integer k fails clearly here instead of silently truncating during slicing.
+    if not isinstance(k, (int, np.integer)) or isinstance(k, bool) or k < 1:
+        raise ValueError(f"k must be a positive integer, got {k!r}.")
     if k > arr.shape[0]:
         raise ValueError(f"k must be <= the number of items ({arr.shape[0]}), got {k}.")
     if not np.isfinite(arr).all():
@@ -770,8 +780,10 @@ def topk_score_variance(
     arr = np.asarray(score_ensembles, dtype=float)
     if arr.ndim != 2:
         raise ValueError(f"Expected 2D score_ensembles, got {arr.ndim}D.")
-    if k < 1:
-        raise ValueError(f"k must be >= 1, got {k}.")
+    # Reject bools (bool is a subclass of int) and floats (e.g. 1.5) up front, so a
+    # non-integer k fails clearly here instead of silently truncating during slicing.
+    if not isinstance(k, (int, np.integer)) or isinstance(k, bool) or k < 1:
+        raise ValueError(f"k must be a positive integer, got {k!r}.")
     if k > arr.shape[0]:
         raise ValueError(f"k must be <= the number of items ({arr.shape[0]}), got {k}.")
     if not np.isfinite(arr).all():
@@ -867,14 +879,17 @@ def groupwise_topk_analysis(
     result["topk_score_var"] = 0.0
     result["topk_member"] = False
 
+    # Check missingness before coercion: np.asarray on a mixed string/NaN input can
+    # coerce NaN to the literal string "nan" (e.g. ['a', np.nan] -> ['a', 'nan']),
+    # which pd.isna would then fail to detect.
+    if pd.isna(group_ids).any():
+        raise ValueError("group_ids must not contain missing values.")
     group_arr = np.asarray(group_ids).reshape(-1)
     score_arr = np.asarray(score_ensembles, dtype=float)
     if score_arr.ndim != 2:
         raise ValueError(f"Expected 2D score_ensembles, got {score_arr.ndim}D.")
     if len(uncertainty_df) != len(group_arr) or score_arr.shape[0] != len(group_arr):
         raise ValueError("uncertainty_df, score_ensembles, and group_ids must have the same number of rows.")
-    if pd.isna(group_arr).any():
-        raise ValueError("group_ids must not contain missing values.")
     # Reject bools (bool is a subclass of int) and floats (e.g. 1.5) up front, so a
     # non-integer k fails clearly here instead of silently truncating during slicing.
     if not isinstance(k, (int, np.integer)) or isinstance(k, bool) or k < 1:

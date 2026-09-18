@@ -3,6 +3,7 @@ import pathlib as pl
 import numpy as np
 import pandas as pd
 import pytest
+import sklearn
 from catboost import CatBoostClassifier, CatBoostRanker, CatBoostRegressor
 from optuna import create_study
 from sklearn.compose import TransformedTargetRegressor
@@ -1196,14 +1197,15 @@ def fitted_ranker_with_stability_data():
     groups = np.array([0] * 5 + [1] * 5)
 
     # Train ranker
-    model = CatboostRankerMother(
-        iterations=100,
-        max_depth=3,
-        learning_rate=0.05,
-        verbose=False,
-        random_seed=42,
-    )
-    model.fit(X=X, y=y, group_id=groups)
+    with sklearn.config_context(enable_metadata_routing=True):
+        model = CatboostRankerMother(
+            iterations=100,
+            max_depth=3,
+            learning_rate=0.05,
+            verbose=False,
+            random_seed=42,
+        ).set_fit_request(group_id="group_id")
+        model.fit(X=X, y=y, group_id=groups)
 
     return {"model": model, "X": X, "groups": groups}
 

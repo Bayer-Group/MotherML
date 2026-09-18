@@ -122,7 +122,7 @@ indicates how stable that item's ranking is. `mother.ml.utils.groupwise_topk_ana
 which top-`k` selections are unstable across groups.
 
 See the [ranking tutorial notebook](https://github.com/Bayer-Group/MotherML/blob/main/examples/notebooks/05_advanced/04_ranking_model.ipynb)
-for a full worked example, including tuning, groupwise uncertainty, and out-of-fold validation.
+for a full worked example, including groupwise uncertainty and out-of-fold validation.
 
 !!! tip
 

@@ -55,13 +55,14 @@ DEFAULT_QUANTILES: list[float] = [0.25, 0.5, 0.75]
 
 def _validate_ranking_group_id(group_id: np.ndarray, n_samples: int) -> np.ndarray:
     """Validate and normalise a group ID array to 1-D, aligned with X rows."""
+    # Check missingness before coercion: np.asarray on a mixed string/NaN input can
+    # coerce NaN to the literal string "nan" (e.g. ['a', np.nan] -> ['a', 'nan']),
+    # which pd.isna would then fail to detect.
+    if pd.isna(group_id).any():
+        raise ValueError("group_id must not contain missing values.")
     group_arr = np.asarray(group_id).reshape(-1)
     if group_arr.shape[0] != n_samples:
         raise ValueError(f"group_id length must match number of rows in X ({n_samples}), got {group_arr.shape[0]}.")
-    # A missing group_id would match no rows in _iter_ranking_group_indices below
-    # (NaN != NaN), silently producing an empty "group" instead of a clear error.
-    if pd.isna(group_arr).any():
-        raise ValueError("group_id must not contain missing values.")
     return group_arr
 
 
@@ -1546,30 +1547,33 @@ class CatboostClassifierMother(CatBoostClassifier, _CatboostModelMotherBase, _Ca
 
 def _is_meaningful_loss_param(value: Optional[int]) -> bool:
     """A `top`/`max_pairs` value is only meaningful (should end up in loss_function) if
-    it's a positive, non-bool int."""
-    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+    it's a positive, non-bool int (including NumPy integer scalars)."""
+    return isinstance(value, (int, np.integer)) and not isinstance(value, bool) and value > 0
 
 
-def _validate_ranking_int_param(name: str, value: Optional[int]) -> None:
-    """Validate that a `top`/`max_pairs` value is `None` or a non-negative int.
+def _validate_ranking_int_param(name: str, value: Optional[int]) -> Optional[int]:
+    """Validate that a `top`/`max_pairs` value is `None` or a non-negative int, and
+    normalize NumPy integer scalars (e.g. `np.int64`) to a plain `int`.
 
     Without this, a float gets silently encoded into the loss string, a string makes
     `_is_meaningful_loss_param`'s `value > 0` check raise deep inside loss-string building,
     and `True`/`False` would be silently treated as `1`/`0`.
     """
     if value is None:
-        return
-    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
         raise TypeError(f"{name} must be an int or None, got {type(value).__name__}.")
     if value < 0:
         raise ValueError(f"{name} must be a non-negative int, got {value}.")
+    return int(value)
 
 
-def _normalize_pairlogit_separator(loss_function: str) -> str:
+def _normalize_loss_separator(loss_function: str) -> str:
     """CatBoost loss strings join the loss name to its first parameter with ":" and
     every parameter after that with ";" (e.g. "PairLogit:max_pairs=75;foo=1"). Fix up
-    a caller-provided string that wrongly uses ";" right after the loss name."""
-    if "PairLogit" in loss_function and ":" not in loss_function and ";" in loss_function:
+    a caller-provided string of any loss function that wrongly uses ";" right after
+    the loss name."""
+    if ":" not in loss_function and ";" in loss_function:
         return loss_function.replace(";", ":", 1)
     return loss_function
 
@@ -1647,10 +1651,34 @@ def _reject_top_with_classic_mode(loss_function: str) -> None:
         )
 
 
+def _reject_top_wrong_family(loss_function: str) -> None:
+    """'top' is only supported for YetiRank/YetiRankPairwise (CatBoost docs). Reject a
+    loss_function string that already bakes in 'top=' for any other loss family,
+    instead of silently accepting a cutoff CatBoost will ignore."""
+    if "YetiRank" not in loss_function:
+        raise ValueError(
+            f"loss_function={loss_function!r} sets 'top=', but 'top' is only supported "
+            "for YetiRank/YetiRankPairwise losses."
+        )
+
+
+def _reject_max_pairs_wrong_family(loss_function: str) -> None:
+    """'max_pairs' is only supported for PairLogit/PairLogitPairwise (CatBoost docs).
+    Reject a loss_function string that already bakes in 'max_pairs=' for any other
+    loss family, instead of silently accepting a cap CatBoost will ignore."""
+    if "PairLogit" not in loss_function:
+        raise ValueError(
+            f"loss_function={loss_function!r} sets 'max_pairs=', but 'max_pairs' is only "
+            "supported for PairLogit/PairLogitPairwise losses."
+        )
+
+
 def _splice_or_reject_top(loss_function: str, top: Optional[int]) -> str:
     """For an explicitly-provided loss_function: splice `top` in only if the string
-    doesn't already define it; raise if the string and `top` define conflicting values."""
+    doesn't already define it; raise if the string and `top` define conflicting values,
+    or if the string's `top=` isn't paired with a YetiRank/YetiRankPairwise loss."""
     if re.search(r"[;:]top=", loss_function):
+        _reject_top_wrong_family(loss_function)
         _reject_duplicate_loss_param(loss_function, "top", top, "top")
         return loss_function
     if "YetiRank" in loss_function:
@@ -1661,8 +1689,10 @@ def _splice_or_reject_top(loss_function: str, top: Optional[int]) -> str:
 def _splice_or_reject_max_pairs(loss_function: str, max_pairs: Optional[int]) -> str:
     """For an explicitly-provided loss_function: splice `max_pairs` in only if the
     string doesn't already define it; raise if the string and `max_pairs` define
-    conflicting values."""
+    conflicting values, or if the string's `max_pairs=` isn't paired with a
+    PairLogit/PairLogitPairwise loss."""
     if re.search(r"[;:]max_pairs=", loss_function):
+        _reject_max_pairs_wrong_family(loss_function)
         _reject_duplicate_loss_param(loss_function, "max_pairs", max_pairs, "max_pairs")
         return loss_function
     if "PairLogit" in loss_function:
@@ -1802,10 +1832,8 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
         self.model_type: props.ModelType = model_type
         self.target_type: props.TargetType = target_type
         self.tune_pairwise_type: bool = tune_pairwise_type
-        _validate_ranking_int_param("top", top)
-        _validate_ranking_int_param("max_pairs", max_pairs)
-        self.top: Optional[int] = top
-        self.max_pairs: Optional[int] = max_pairs
+        self.top: Optional[int] = _validate_ranking_int_param("top", top)
+        self.max_pairs: Optional[int] = _validate_ranking_int_param("max_pairs", max_pairs)
 
         # --- Validate pairwise tuning compatibility ---
         # Pairwise losses (YetiRankPairwise, PairLogitPairwise) require SymmetricTree + Plain
@@ -1880,7 +1908,7 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
             # loss_function, or passed as the dedicated parameter. If loss_function doesn't
             # already define one, splice the dedicated parameter's value in; if it does,
             # raise instead of guessing which one should win.
-            loss_function = _normalize_pairlogit_separator(kwargs["loss_function"])
+            loss_function = _normalize_loss_separator(kwargs["loss_function"])
             _reject_top_with_classic_mode(loss_function)
             loss_function = _splice_or_reject_top(loss_function, self.top)
             loss_function = _splice_or_reject_max_pairs(loss_function, self.max_pairs)
@@ -1938,35 +1966,40 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
         explicit_loss_function = "loss_function" in params
         top_changed = "top" in params
         max_pairs_changed = "max_pairs" in params
-        _validate_ranking_int_param("top", params.get("top"))
-        _validate_ranking_int_param("max_pairs", params.get("max_pairs"))
+        if top_changed:
+            params["top"] = _validate_ranking_int_param("top", params["top"])
+        if max_pairs_changed:
+            params["max_pairs"] = _validate_ranking_int_param("max_pairs", params["max_pairs"])
         if "model_type" in params and params["model_type"] != "ranking":
             raise ValueError("model_type for CatboostRankerMother must be 'ranking'.")
         params.pop("model_type", None)
         self.model_type = "ranking"
 
-        # `top`/`max_pairs` are only staged here, not committed to `self` yet: if the
-        # loss-string validation below raises, self.top/self.max_pairs must be left
-        # exactly as they were before this call, not partially updated.
+        # `top`/`max_pairs` and the custom attributes below are only staged here, not
+        # committed to `self` yet: if the loss-string validation below raises, self must
+        # be left exactly as it was before this call, not partially updated.
         staged_top = params.pop("top") if top_changed else self.top
         staged_max_pairs = params.pop("max_pairs") if max_pairs_changed else self.max_pairs
 
-        for param in [
-            "target_type",
-            "tune_pairwise_type",
-            "tune_boosting_type",
-            "tune_tree_structure_type",
-            "tune_loss_function",
-        ]:
-            if param in params:
-                setattr(self, param, params.pop(param))
+        staged_custom_attrs = {
+            param: params.pop(param) if param in params else getattr(self, param)
+            for param in (
+                "target_type",
+                "tune_pairwise_type",
+                "tune_boosting_type",
+                "tune_tree_structure_type",
+                "tune_loss_function",
+            )
+        }
 
-        if self.tune_pairwise_type and (self.tune_tree_structure_type or self.tune_boosting_type):
+        if staged_custom_attrs["tune_pairwise_type"] and (
+            staged_custom_attrs["tune_tree_structure_type"] or staged_custom_attrs["tune_boosting_type"]
+        ):
             module_logger.warning(
                 "tune_pairwise_type=True is incompatible with tune_tree_structure_type=True or "
                 "tune_boosting_type=True; disabling tune_pairwise_type."
             )
-            self.tune_pairwise_type = False
+            staged_custom_attrs["tune_pairwise_type"] = False
 
         if explicit_loss_function or top_changed or max_pairs_changed:
             # `top`/`max_pairs` must be defined in exactly one place. If loss_function is
@@ -1976,7 +2009,7 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
             # rewrite the stored string to match it.
             loss_function = params.get("loss_function", self.get_params(deep=False).get("loss_function", ""))
             if isinstance(loss_function, str):
-                loss_function = _normalize_pairlogit_separator(loss_function)
+                loss_function = _normalize_loss_separator(loss_function)
                 if explicit_loss_function:
                     _reject_top_with_classic_mode(loss_function)
                     if top_changed:
@@ -2030,19 +2063,27 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
                     f"and Plain boosting_type, but got {', '.join(incompatible)}."
                 )
 
-            if self.tune_tree_structure_type or self.tune_boosting_type:
+            if staged_custom_attrs["tune_tree_structure_type"] or staged_custom_attrs["tune_boosting_type"]:
                 module_logger.warning(
                     "Pairwise loss requires fixed SymmetricTree grow_policy and Plain boosting_type; "
                     "disabling pairwise-incompatible tuning flags."
                 )
-                self.tune_tree_structure_type = False
-                self.tune_boosting_type = False
+                staged_custom_attrs["tune_tree_structure_type"] = False
+                staged_custom_attrs["tune_boosting_type"] = False
 
-        # All validation above has succeeded -- only now commit the staged values.
+        # Apply the parent (CatBoost/sklearn) update before committing our own staged
+        # state, so a rejection there (e.g. an incompatible value CatBoost itself
+        # validates) leaves self.top/self.max_pairs/the tuning flags untouched too --
+        # matching the "all validation succeeds before anything is committed" contract
+        # the rest of this method already follows.
+        result = super().set_params(**params)
+
         self.top = staged_top
         self.max_pairs = staged_max_pairs
+        for param, value in staged_custom_attrs.items():
+            setattr(self, param, value)
 
-        return super().set_params(**params)
+        return result
 
     def __getstate__(self) -> dict:
         """
@@ -2440,6 +2481,15 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
 
             suggested_params[prefix + "loss_function"] = loss_function
 
+        # Re-assert max_pairs explicitly every trial, even when this trial's loss doesn't
+        # use it: set_params() treats an omitted max_pairs as "clear it" (so a stale value
+        # doesn't linger after switching to a loss_function that no longer defines it), but
+        # here self.max_pairs is a fixed, user-configured cap meant to persist across the
+        # whole tuning run. Without this, the first non-PairLogit trial would wipe it,
+        # leaving every later PairLogit trial untuned.
+        if _is_meaningful_loss_param(self.max_pairs):
+            suggested_params[prefix + "max_pairs"] = self.max_pairs
+
         # Remove building block parameters — only loss_function should be passed to CatBoost
         # (similar to how Focal loss removes alpha/gamma after building the loss string)
         for param in ["base_loss", "mode", "dcg_denominator", "dcg_type"]:
@@ -2579,7 +2629,7 @@ def ranker_predict_uncertainty_for_groups(
         Concatenated uncertainty DataFrame in the original row order of ``X``,
         with the same columns as :meth:`~CatboostRankerMother.predict_uncertainty`.
     """
-    if kwargs.get("return_raw", False):
+    if kwargs.get("return_raw", False) and not kwargs.get("uncertainty_for_opt", False):
         raise ValueError(
             "ranker_predict_uncertainty_for_groups does not support return_raw=True; "
             "call predict_uncertainty separately for each group to access raw scores."
