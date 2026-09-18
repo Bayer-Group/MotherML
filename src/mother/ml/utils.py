@@ -669,11 +669,23 @@ def avg_ndcg_score(
     Returns:
         float: single val average ndcg score across all groups
     """
+    # Iterating a DataFrame directly yields column labels, not rows -- a single-column
+    # y/y_pred DataFrame (the common Mother target shape) would otherwise zip column
+    # names against `groups` instead of per-row values. Flatten to 1-D first; reject a
+    # multi-column DataFrame outright rather than silently interleaving columns.
+    for name, value in (("y", y), ("y_pred", y_pred)):
+        if isinstance(value, pd.DataFrame) and value.shape[1] != 1:
+            raise ValueError(f"{name} must be single-column when passed as a DataFrame, got shape {value.shape}.")
+    y_values = y.to_numpy().reshape(-1) if isinstance(y, pd.DataFrame) else np.asarray(y).reshape(-1)
+    y_pred_values = (
+        y_pred.to_numpy().reshape(-1) if isinstance(y_pred, pd.DataFrame) else np.asarray(y_pred).reshape(-1)
+    )
+
     group_dict = {}
     ndcg_list = []
     if verbose:
         print(f"Group codes: {groups}")
-    for true_val, pred_val, group_index in zip(y, y_pred, groups):
+    for true_val, pred_val, group_index in zip(y_values, y_pred_values, groups):
         if group_index not in group_dict:
             group_dict[group_index] = ([], [])
         group_dict[group_index][0].append(true_val)

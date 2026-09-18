@@ -719,6 +719,14 @@ def mother_cv(
         If True, return a tuple (performance_data, estimators_dict) containing
         fitted/optimized estimators for each fold. If False, return only the DataFrame.
     **kwargs: Additional parameters to be passed to the estimator's predict_uncertainty method.
+        Forwarded verbatim to ``val_estimator.predict_uncertainty(X, **kwargs)``, so the
+        required naming depends on the type of ``estimator`` passed in:
+            - AbstractMotherPipeline (e.g. a bare ``CatboostRankerMother``): pass
+              parameter names unprefixed, e.g. ``n_ensembles=100``.
+            - PipelineWithHyperparameterRooting: parameters must use the
+              ``step_name__param_name`` convention (see its ``predict_uncertainty``
+              docstring), e.g. ``ml_model__n_ensembles=100``; an unprefixed name such
+              as ``n_ensembles=100`` raises ``ValueError``.
         Parameters that make the estimator return a tuple are not supported,
         because cross-validation requires a single uncertainty DataFrame per fold.
         For example, CatBoost ranker ``return_raw=True`` returns auxiliary raw

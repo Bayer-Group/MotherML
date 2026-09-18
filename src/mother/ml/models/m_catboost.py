@@ -1624,9 +1624,32 @@ def _sync_from_loss_function(loss_function: str, key: str, current: Optional[int
     """Read `key=...` back out of an explicitly-provided loss_function string, so the
     dedicated `top`/`max_pairs` attribute always reflects the *effective* value in use --
     not just the value passed to the constructor -- regardless of whether the caller set
-    it via the string or the dedicated parameter."""
+    it via the string or the dedicated parameter. Callers must validate the token via
+    `_match_embedded_loss_param` first; by the time this runs, a non-digit token would
+    otherwise silently fall back to `current` instead of raising."""
     match = re.search(rf"[;:]{key}=(\d+)", loss_function)
     return int(match.group(1)) if match else current
+
+
+def _match_embedded_loss_param(loss_function: str, key: str) -> Optional[str]:
+    """Return the `key=...` token embedded in loss_function, or None if absent.
+
+    Validates the token is a non-negative integer first -- the same rule
+    `_validate_ranking_int_param` applies to the dedicated `top`/`max_pairs` parameter.
+    Without this, a malformed token like `top=-1` or `top=abc` doesn't match
+    `_sync_from_loss_function`'s `\\d+` pattern, so it would silently fall back to
+    whatever `top`/`max_pairs` already was, while leaving the invalid text in the loss
+    string for CatBoost to reject later with a confusing, unrelated error.
+    """
+    match = re.search(rf"[;:]{key}=([^;:]*)", loss_function)
+    if match is None:
+        return None
+    token = match.group(1)
+    if not token.isdigit():
+        raise ValueError(
+            f"loss_function={loss_function!r} sets '{key}={token}', but '{key}' must be a non-negative integer."
+        )
+    return token
 
 
 def _reject_top_with_classic_mode(loss_function: str) -> None:
@@ -1671,7 +1694,7 @@ def _splice_or_reject_top(loss_function: str, top: Optional[int]) -> str:
     doesn't already define it; raise if the string and `top` define conflicting values,
     or if 'top' -- via the string or the dedicated parameter -- isn't paired with a
     YetiRank/YetiRankPairwise loss."""
-    if re.search(r"[;:]top=", loss_function):
+    if _match_embedded_loss_param(loss_function, "top") is not None:
         _reject_top_wrong_family(loss_function)
         _reject_duplicate_loss_param(loss_function, "top", top, "top")
         return loss_function
@@ -1687,7 +1710,7 @@ def _splice_or_reject_max_pairs(loss_function: str, max_pairs: Optional[int]) ->
     string doesn't already define it; raise if the string and `max_pairs` define
     conflicting values, or if 'max_pairs' -- via the string or the dedicated
     parameter -- isn't paired with a PairLogit/PairLogitPairwise loss."""
-    if re.search(r"[;:]max_pairs=", loss_function):
+    if _match_embedded_loss_param(loss_function, "max_pairs") is not None:
         _reject_max_pairs_wrong_family(loss_function)
         _reject_duplicate_loss_param(loss_function, "max_pairs", max_pairs, "max_pairs")
         return loss_function
@@ -2016,9 +2039,9 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
                     # 'top='/'max_pairs=', even when the dedicated parameter isn't
                     # touched this call -- otherwise e.g. loss_function="PairLogit:top=5"
                     # would slip through unvalidated below.
-                    if re.search(r"[;:]top=", loss_function):
+                    if _match_embedded_loss_param(loss_function, "top") is not None:
                         _reject_top_wrong_family(loss_function)
-                    if re.search(r"[;:]max_pairs=", loss_function):
+                    if _match_embedded_loss_param(loss_function, "max_pairs") is not None:
                         _reject_max_pairs_wrong_family(loss_function)
                     if top_changed:
                         loss_function = _splice_or_reject_top(loss_function, staged_top)
