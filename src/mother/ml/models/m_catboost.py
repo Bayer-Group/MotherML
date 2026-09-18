@@ -1611,7 +1611,10 @@ def _reject_duplicate_loss_param(loss_function: str, key: str, value: Optional[i
     if not _is_meaningful_loss_param(value):
         return
     existing_match = re.search(rf"[;:]{key}=([^;:]+)", loss_function)
-    if existing_match is not None and existing_match.group(1) != str(value):
+    # Compare as ints, not raw text: callers must have already validated the token via
+    # `_match_embedded_loss_param`, so e.g. "top=05" and top=5 are the same value and
+    # must not be treated as conflicting (this is what lets sklearn.clone() round-trip).
+    if existing_match is not None and int(existing_match.group(1)) != value:
         raise ValueError(
             f"'{key}=' is already present in loss_function={loss_function!r} with a "
             f"different value than {param_name}={value}; define it in only one place -- "
