@@ -1165,7 +1165,7 @@ def test_set_params_top_zero_preserves_ndcg_mode_and_parameters():
     assert loss_function == "YetiRank:mode=NDCG;dcg_denominator=Position;dcg_type=Base"
 
 
-def test_set_params_top_zero_preserves_classic_mode_without_ndcg_parameters():
+def test_set_params_top_zero_does_not_revert_to_classic_mode():
     """Clearing `top` never reverts `mode` back to Classic automatically -- `top` only
     ever switches mode *to* NDCG (Classic has no concept of a cutoff), never back."""
     model = CatboostRankerMother(loss_function="YetiRank:mode=Classic", top=5)
@@ -1173,6 +1173,17 @@ def test_set_params_top_zero_preserves_classic_mode_without_ndcg_parameters():
     model.set_params(top=0)
 
     assert model.get_params()["loss_function"] == "YetiRank:mode=NDCG"
+
+
+def test_init_adds_ndcg_mode_when_top_embedded_without_mode():
+    """'YetiRank:top=5' with no 'mode=' defaults to CatBoost's Classic mode, where
+    'top' has no effect. Constructing with such a string must make the effective
+    mode explicit instead of silently leaving an ambiguous/ineffective cutoff."""
+    model = CatboostRankerMother(loss_function="YetiRank:top=5", top=5)
+    assert model.get_params()["loss_function"] == "YetiRank:top=5;mode=NDCG"
+
+    model = CatboostRankerMother(loss_function="YetiRankPairwise:top=5", top=5)
+    assert model.get_params()["loss_function"] == "YetiRankPairwise:top=5;mode=NDCG"
 
 
 def test_init_rejects_top_defined_in_both_places():

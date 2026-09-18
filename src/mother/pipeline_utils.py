@@ -731,6 +731,14 @@ def mother_cv(
         because cross-validation requires a single uncertainty DataFrame per fold.
         For example, CatBoost ranker ``return_raw=True`` returns auxiliary raw
         scores alongside the uncertainty DataFrame and is not supported here.
+        Do not pass ranking query/group metadata (e.g. ``group_id``) here: this
+        loop only slices ``X``/``y`` and the ``groups`` parameter per fold, so a
+        full-dataset group array forwarded via ``**kwargs`` would either be
+        rejected by ``CatboostRankerMother.predict_uncertainty`` (which operates
+        on a single ranking group and has no such parameter) or be mismatched in
+        length for a custom estimator. Group-aware ranking uncertainty must be
+        computed separately via ``ranker_predict_uncertainty_for_groups``, not
+        through ``mother_cv``.
     Returns
     -------
     If return_estimators=False: A dataframe containing the results of cross-validation.

@@ -1699,6 +1699,13 @@ def _splice_or_reject_top(loss_function: str, top: Optional[int]) -> str:
     if _match_embedded_loss_param(loss_function, "top") is not None:
         _reject_top_wrong_family(loss_function)
         _reject_duplicate_loss_param(loss_function, "top", top, "top")
+        # `_reject_top_with_classic_mode` (called by every caller before this) already
+        # rules out an explicit 'mode=Classic'; a missing 'mode=' still defaults to
+        # CatBoost's Classic, which silently makes 'top=' a no-op. Make the effective
+        # mode explicit instead of returning an ambiguous string.
+        if "mode=" not in loss_function:
+            sep = ";" if ":" in loss_function else ":"
+            loss_function = f"{loss_function}{sep}mode=NDCG"
         return loss_function
     if "YetiRank" in loss_function:
         return _apply_top(loss_function, top)

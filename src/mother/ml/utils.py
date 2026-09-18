@@ -724,14 +724,7 @@ def avg_ndcg_score(
         # ranks from single_group_rank_pred (where 0 = best) -- passing those ranks directly
         # would make ndcg_score treat the worst item as most relevant and score the bottom-k
         # instead of the top-k. Use the original target/prediction values instead.
-        # ndcg_score requires non-negative relevance and raises otherwise, but ranking
-        # targets here aren't constrained to be non-negative. Shift each group's values by
-        # its own minimum (a no-op when already non-negative) so relative order -- the only
-        # thing that matters for the ranking metric -- is preserved.
         true_array = np.asarray(true_list, dtype=float)
-        min_true = true_array.min()
-        if min_true < 0:
-            true_array = true_array - min_true
         ndcg_list.append(ndcg_score([true_array], [preds_list], k=k))  # type: ignore
     if verbose:
         print(f"List of every group ndcg score: {ndcg_list}")

@@ -1184,13 +1184,17 @@ def fitted_ranker_with_stability_data():
 
     rng = np.random.default_rng(123)
 
-    # Group 0: Clearly separated (one clear winner)
+    # Group 0: Clearly separated (one clear winner), distinct features throughout.
     X_group0 = rng.standard_normal((5, 8))
     y_group0 = np.array([100, 50, 40, 30, 20])  # Clear hierarchy
 
-    # Group 1: Near-tie (all similar)
+    # Group 1: The two items competing for the k=2 cutoff (indices 1 and 2) share
+    # near-identical features but different targets, so the model can't resolve
+    # their relative order cleanly -- this is what makes their top-k membership
+    # genuinely unstable across virtual ensembles, unlike group 0's clean splits.
     X_group1 = rng.standard_normal((5, 8))
-    y_group1 = rng.normal(50, 5, 5)  # High uncertainty
+    X_group1[2] = X_group1[1] + rng.normal(0, 0.01, 8)
+    y_group1 = np.array([80, 55, 53, 40, 20])
 
     X = pd.DataFrame(np.vstack([X_group0, X_group1]), columns=[f"feat_{i}" for i in range(8)])
     y = np.concatenate([y_group0, y_group1])
@@ -1248,8 +1252,14 @@ class TestRankingUtilsIntegration:
 
         topk_analysis = mother.ml.utils.groupwise_topk_analysis(unc_df, score_ensembles, data["groups"], k=2)
 
-        # Group 0 (clear winner) should have lower disagreement
+        # Group 0 (clear winner) should have lower disagreement than group 1, which
+        # has two near-duplicate items competing for the k=2 cutoff. With
+        # n_ensembles=15, per-item probabilities are multiples of 1/15, so a fixed
+        # threshold like 0.5 is trivially satisfiable regardless of actual stability
+        # (max achievable is 112/225 ~= 0.498); compare the two groups directly instead.
         group0_topk = topk_analysis[data["groups"] == 0][topk_analysis["topk_member"]]
-        min_prob_g0 = group0_topk["topk_disagreement_prob"].min()
+        group1_topk = topk_analysis[data["groups"] == 1][topk_analysis["topk_member"]]
+        mean_prob_g0 = group0_topk["topk_disagreement_prob"].mean()
+        mean_prob_g1 = group1_topk["topk_disagreement_prob"].mean()
 
-        assert min_prob_g0 < 0.5, "Clear winner group should have low disagreement"
+        assert mean_prob_g0 < mean_prob_g1, "Clear winner group should have lower disagreement than near-tie group"
