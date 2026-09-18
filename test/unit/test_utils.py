@@ -228,6 +228,13 @@ def test_topk_rank_disagreement_rejects_out_of_range_ranks():
         mother.ml.utils.topk_rank_disagreement(np.array([[0, 1], [2, 3], [1, 2]]), k=1)
 
 
+def test_topk_rank_disagreement_rejects_zero_ensemble_columns():
+    """A zero-column ensemble matrix would make mean(axis=1) NaN, violating the
+    documented [0, 0.5] output range."""
+    with pytest.raises(ValueError, match="at least one ensemble column"):
+        mother.ml.utils.topk_rank_disagreement(np.empty((3, 0)), k=1)
+
+
 def test_get_virtual_prediction_accepts_numpy_integer_ensemble_count(monkeypatch):
     class FakeRanker:
         def virtual_ensembles_predict(self, *args, **kwargs):
@@ -272,6 +279,13 @@ def test_topk_score_variance_is_zero_for_a_single_ensemble():
     _, variances = mother.ml.utils.topk_score_variance(np.array([[4.0], [2.0]]), k=1)
 
     np.testing.assert_array_equal(variances, [0.0, 0.0])
+
+
+def test_topk_score_variance_rejects_zero_ensemble_columns():
+    """A zero-column ensemble matrix would make mean(axis=1)/var(axis=1) NaN, violating
+    the documented finite (0.0 for no variation) output."""
+    with pytest.raises(ValueError, match="at least one ensemble column"):
+        mother.ml.utils.topk_score_variance(np.empty((3, 0)), k=1)
 
 
 @pytest.fixture

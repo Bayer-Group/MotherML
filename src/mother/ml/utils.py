@@ -759,6 +759,10 @@ def topk_rank_disagreement(
     arr = np.asarray(rank_ensembles)
     if arr.ndim != 2:
         raise ValueError(f"Expected 2D rank_ensembles, got {arr.ndim}D.")
+    # With zero ensemble columns, mean(axis=1) below is a mean of nothing -- NaN, not a
+    # valid probability -- silently violating the documented [0, 0.5] output range.
+    if arr.shape[1] < 1:
+        raise ValueError(f"rank_ensembles must have at least one ensemble column, got {arr.shape[1]}.")
     # Reject bools (bool is a subclass of int) and floats (e.g. 1.5) up front, so a
     # non-integer k fails clearly here instead of silently truncating during slicing.
     if not isinstance(k, (int, np.integer)) or isinstance(k, bool) or k < 1:
@@ -809,6 +813,10 @@ def topk_score_variance(
     arr = np.asarray(score_ensembles, dtype=float)
     if arr.ndim != 2:
         raise ValueError(f"Expected 2D score_ensembles, got {arr.ndim}D.")
+    # With zero ensemble columns, mean(axis=1)/var(axis=1) below operate on nothing --
+    # NaN, not the documented finite (0.0 for no variation) behavior.
+    if arr.shape[1] < 1:
+        raise ValueError(f"score_ensembles must have at least one ensemble column, got {arr.shape[1]}.")
     # Reject bools (bool is a subclass of int) and floats (e.g. 1.5) up front, so a
     # non-integer k fails clearly here instead of silently truncating during slicing.
     if not isinstance(k, (int, np.integer)) or isinstance(k, bool) or k < 1:

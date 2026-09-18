@@ -1741,6 +1741,13 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
     metadata routing (``sklearn.set_config(enable_metadata_routing=True)``) before calling
     ``fit()`` or ``tuner.optimize()``, as it is required for passing ``group_id`` during training.
 
+    Ranking convention: this class always treats a larger value as more relevant/better --
+    for the ``y`` labels passed to ``fit()`` (CatBoost's own convention for every ranking
+    loss it supports), and for the scores/ranks returned by ``predict()`` and
+    ``predict_uncertainty()`` (rank 1 = highest score). There is currently no option to
+    invert this. If your target is a lower-is-better metric (e.g. an error), negate it
+    yourself (e.g. ``y = -y``) before passing it to ``fit()``.
+
     Attributes
     ----------
     model_type : str
