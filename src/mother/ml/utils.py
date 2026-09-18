@@ -690,6 +690,12 @@ def avg_ndcg_score(
 
     y_values = _flatten_ranking_values(y, "y")
     y_pred_values = _flatten_ranking_values(y_pred, "y_pred")
+    # Check missingness before coercion: np.asarray on a mixed string/NaN input can
+    # coerce NaN to the literal string "nan", which pd.isna would then fail to detect.
+    # Unvalidated, NaN != NaN would make the grouping below silently treat each missing
+    # row as its own singleton group instead of raising.
+    if pd.isna(groups).any():
+        raise ValueError("groups must not contain missing values.")
     groups_arr = np.asarray(groups)
     if groups_arr.ndim != 1:
         raise ValueError(f"groups must be 1-D, got shape {groups_arr.shape}.")
