@@ -2054,6 +2054,14 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
                         _reject_max_pairs_wrong_family(loss_function)
                     if top_changed:
                         loss_function = _splice_or_reject_top(loss_function, staged_top)
+                    elif _match_embedded_loss_param(loss_function, "top") is not None:
+                        # `top` wasn't touched this call, but the new loss_function string
+                        # already embeds 'top=' -- route it through the same helper as the
+                        # `top_changed` branch above so an embedded 'top=' without an
+                        # explicit mode still gets `mode=NDCG` (CatBoost otherwise defaults
+                        # to Classic, where 'top' has no effect), and any conflicting value
+                        # against a previously-configured `top` still raises.
+                        loss_function = _splice_or_reject_top(loss_function, staged_top)
                     elif _is_meaningful_loss_param(staged_top):
                         # `top` wasn't touched this call, but a previously-configured value
                         # must not silently conflict with a different value baked into a

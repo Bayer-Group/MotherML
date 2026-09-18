@@ -1186,6 +1186,18 @@ def test_init_adds_ndcg_mode_when_top_embedded_without_mode():
     assert model.get_params()["loss_function"] == "YetiRankPairwise:top=5;mode=NDCG"
 
 
+def test_set_params_adds_ndcg_mode_when_top_embedded_without_mode():
+    """Same as test_init_adds_ndcg_mode_when_top_embedded_without_mode, but the
+    ambiguous string arrives via set_params without also touching `top` -- that
+    path must not skip the mode fix-up."""
+    model = CatboostRankerMother()
+
+    model.set_params(loss_function="YetiRank:top=5")
+
+    assert model.get_params()["loss_function"] == "YetiRank:top=5;mode=NDCG"
+    assert model.top == 5
+
+
 def test_init_rejects_top_defined_in_both_places():
     with pytest.raises(ValueError, match="'top=' is already present"):
         CatboostRankerMother(loss_function="YetiRank:mode=NDCG;top=5", top=3)
