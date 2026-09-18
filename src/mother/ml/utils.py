@@ -669,23 +669,41 @@ def avg_ndcg_score(
     Returns:
         float: single val average ndcg score across all groups
     """
+
     # Iterating a DataFrame directly yields column labels, not rows -- a single-column
     # y/y_pred DataFrame (the common Mother target shape) would otherwise zip column
-    # names against `groups` instead of per-row values. Flatten to 1-D first; reject a
-    # multi-column DataFrame outright rather than silently interleaving columns.
-    for name, value in (("y", y), ("y_pred", y_pred)):
-        if isinstance(value, pd.DataFrame) and value.shape[1] != 1:
-            raise ValueError(f"{name} must be single-column when passed as a DataFrame, got shape {value.shape}.")
-    y_values = y.to_numpy().reshape(-1) if isinstance(y, pd.DataFrame) else np.asarray(y).reshape(-1)
-    y_pred_values = (
-        y_pred.to_numpy().reshape(-1) if isinstance(y_pred, pd.DataFrame) else np.asarray(y_pred).reshape(-1)
-    )
+    # names against `groups` instead of per-row values. A DataFrame's rows must
+    # therefore be a single column (multi-column would silently interleave when
+    # flattened); anything else (list/ndarray/Series) must already be 1-D -- an
+    # (n, m) ndarray must not be silently reshaped to n*m scalars, which `zip` would
+    # then silently truncate against `groups`, producing a plausible-looking but
+    # wrong score instead of an error.
+    def _flatten_ranking_values(value: object, name: str) -> np.ndarray:
+        if isinstance(value, pd.DataFrame):
+            if value.shape[1] != 1:
+                raise ValueError(f"{name} must be single-column when passed as a DataFrame, got shape {value.shape}.")
+            return value.to_numpy().reshape(-1)
+        arr = np.asarray(value)
+        if arr.ndim != 1:
+            raise ValueError(f"{name} must be 1-D, got shape {arr.shape}.")
+        return arr
+
+    y_values = _flatten_ranking_values(y, "y")
+    y_pred_values = _flatten_ranking_values(y_pred, "y_pred")
+    groups_arr = np.asarray(groups)
+    if groups_arr.ndim != 1:
+        raise ValueError(f"groups must be 1-D, got shape {groups_arr.shape}.")
+    if not (len(y_values) == len(y_pred_values) == len(groups_arr)):
+        raise ValueError(
+            "y, y_pred, and groups must have the same length, got "
+            f"{len(y_values)}, {len(y_pred_values)}, and {len(groups_arr)}."
+        )
 
     group_dict = {}
     ndcg_list = []
     if verbose:
         print(f"Group codes: {groups}")
-    for true_val, pred_val, group_index in zip(y_values, y_pred_values, groups):
+    for true_val, pred_val, group_index in zip(y_values, y_pred_values, groups_arr):
         if group_index not in group_dict:
             group_dict[group_index] = ([], [])
         group_dict[group_index][0].append(true_val)

@@ -981,29 +981,28 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostModelMo
                 "so these flags are always False and cannot be set."
             )
 
-        # Update custom parameters and remove them from params dict
-        params_to_remove = []
-        for key, value in params.items():
-            if key in custom_param_names:
-                setattr(self, key, value)
-                params_to_remove.append(key)
+        # Stage custom-attribute and gp_params updates; only commit them once
+        # super().set_params() actually succeeds. Otherwise a call that also includes an
+        # unsupported CatBoost key (e.g. set_params(learning_rate=0.5, invalid_param=...))
+        # could raise from the parent while leaving self/gp_params partially updated and
+        # CatBoost's own parameters untouched -- a later fit() would then silently run
+        # with a half-applied update.
+        staged_custom_attrs = {key: params[key] for key in custom_param_names if key in params}
+        staged_gp_params = {key: value for key, value in params.items() if key in self.gp_params}
+        remaining_params = {key: value for key, value in params.items() if key not in custom_param_names}
+
+        # Let parent handle remaining parameters
+        if remaining_params:
+            super().set_params(**remaining_params)
 
         # Keep gp_params in sync with every key fit() actually reads from it (learning_rate,
         # max_depth, random_strength, random_score_type, verbose -- plus the custom GP
         # params above), not just the ones tracked as instance attributes. Otherwise
         # set_params()/Optuna updates would only patch CatBoost's own _init_params and
         # fit() would keep using the stale constructor-time gp_params values.
-        for key, value in params.items():
-            if key in self.gp_params:
-                self.gp_params[key] = value
-
-        # Remove handled parameters
-        for key in params_to_remove:
-            params.pop(key, None)
-
-        # Let parent handle remaining parameters
-        if params:
-            super().set_params(**params)
+        self.gp_params.update(staged_gp_params)
+        for key, value in staged_custom_attrs.items():
+            setattr(self, key, value)
 
         return self
 
