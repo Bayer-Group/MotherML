@@ -169,7 +169,12 @@ def test_predict_ranks_returns_1_based_integers(fitted_ranker_data):
     assert isinstance(ranks, np.ndarray)
     assert len(ranks) == len(X_group)
     n = len(X_group)
-    assert set(ranks) == set(range(1, n + 1))
+    # scores_to_ranks uses dense ranking, so tied scores (which tree models can
+    # produce) share a rank instead of consuming every integer up to n -- only
+    # the 1..n range is guaranteed, not the full set.
+    assert set(ranks) <= set(range(1, n + 1))
+    assert ranks.min() >= 1
+    assert ranks.max() <= n
 
 
 @pytest.mark.slow

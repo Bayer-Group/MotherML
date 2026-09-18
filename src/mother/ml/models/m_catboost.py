@@ -66,11 +66,6 @@ def _validate_ranking_group_id(group_id: np.ndarray, n_samples: int) -> np.ndarr
     return group_arr
 
 
-def _iter_ranking_group_indices(group_id: np.ndarray) -> list[np.ndarray]:
-    """Return stable, input-order index arrays (positional) for each unique group."""
-    return [np.flatnonzero(group_id == g) for g in pd.unique(group_id)]
-
-
 def ensure_metadata_routing(func: Callable) -> Callable:
     """
     Decorator to ensure metadata routing is enabled before executing a function.
@@ -844,10 +839,6 @@ class CatboostGaussianProcessRegressorMother(CatBoostRegressor, _CatboostModelMo
             for the GP-specific hyperparameters that *are* tunable: ``prior_iterations``,
             ``samples``, ``sigma``, ``delta``, ``eps``, ``random_score_type``).
         """
-        # GP posterior sampling requires a fixed boosting_type/grow_policy/loss_function,
-        # so these three tuning flags are always forced off (see get_hyperparameter_space
-        # for the GP-specific hyperparameters that *are* tunable: prior_iterations, samples,
-        # sigma, delta, eps, random_score_type).
         # GP posterior sampling requires a fixed boosting_type/grow_policy/loss_function,
         # so these three tuning flags are always forced off (see get_hyperparameter_space
         # for the GP-specific hyperparameters that *are* tunable: prior_iterations, samples,
@@ -1652,51 +1643,60 @@ def _reject_top_with_classic_mode(loss_function: str) -> None:
 
 
 def _reject_top_wrong_family(loss_function: str) -> None:
-    """'top' is only supported for YetiRank/YetiRankPairwise (CatBoost docs). Reject a
-    loss_function string that already bakes in 'top=' for any other loss family,
-    instead of silently accepting a cutoff CatBoost will ignore."""
+    """'top' is only supported for YetiRank/YetiRankPairwise (CatBoost docs). Reject
+    applying 'top' -- whether baked into loss_function or passed as the dedicated
+    parameter -- to any other loss family, instead of silently leaving `top`
+    configured on `self` with no effect on the loss actually in use."""
     if "YetiRank" not in loss_function:
         raise ValueError(
-            f"loss_function={loss_function!r} sets 'top=', but 'top' is only supported "
-            "for YetiRank/YetiRankPairwise losses."
+            f"'top' is only supported for YetiRank/YetiRankPairwise losses, but "
+            f"loss_function={loss_function!r} does not use one."
         )
 
 
 def _reject_max_pairs_wrong_family(loss_function: str) -> None:
     """'max_pairs' is only supported for PairLogit/PairLogitPairwise (CatBoost docs).
-    Reject a loss_function string that already bakes in 'max_pairs=' for any other
-    loss family, instead of silently accepting a cap CatBoost will ignore."""
+    Reject applying 'max_pairs' -- whether baked into loss_function or passed as the
+    dedicated parameter -- to any other loss family, instead of silently leaving
+    `max_pairs` configured on `self` with no effect on the loss actually in use."""
     if "PairLogit" not in loss_function:
         raise ValueError(
-            f"loss_function={loss_function!r} sets 'max_pairs=', but 'max_pairs' is only "
-            "supported for PairLogit/PairLogitPairwise losses."
+            f"'max_pairs' is only supported for PairLogit/PairLogitPairwise losses, but "
+            f"loss_function={loss_function!r} does not use one."
         )
 
 
 def _splice_or_reject_top(loss_function: str, top: Optional[int]) -> str:
     """For an explicitly-provided loss_function: splice `top` in only if the string
     doesn't already define it; raise if the string and `top` define conflicting values,
-    or if the string's `top=` isn't paired with a YetiRank/YetiRankPairwise loss."""
+    or if 'top' -- via the string or the dedicated parameter -- isn't paired with a
+    YetiRank/YetiRankPairwise loss."""
     if re.search(r"[;:]top=", loss_function):
         _reject_top_wrong_family(loss_function)
         _reject_duplicate_loss_param(loss_function, "top", top, "top")
         return loss_function
     if "YetiRank" in loss_function:
         return _apply_top(loss_function, top)
+    if _is_meaningful_loss_param(top):
+        _reject_top_wrong_family(loss_function)
     return loss_function
 
 
 def _splice_or_reject_max_pairs(loss_function: str, max_pairs: Optional[int]) -> str:
     """For an explicitly-provided loss_function: splice `max_pairs` in only if the
     string doesn't already define it; raise if the string and `max_pairs` define
-    conflicting values, or if the string's `max_pairs=` isn't paired with a
-    PairLogit/PairLogitPairwise loss."""
+    conflicting values, or if 'max_pairs' -- via the string or the dedicated
+    parameter -- isn't paired with a PairLogit/PairLogitPairwise loss."""
     if re.search(r"[;:]max_pairs=", loss_function):
         _reject_max_pairs_wrong_family(loss_function)
         _reject_duplicate_loss_param(loss_function, "max_pairs", max_pairs, "max_pairs")
         return loss_function
     if "PairLogit" in loss_function:
         return _apply_max_pairs(loss_function, max_pairs)
+    # Unlike `top` (which always forces the loss family to YetiRank for the whole
+    # tuning run), `max_pairs` is intentionally preserved on `self` across trials that
+    # pick a non-PairLogit loss (see suggested_params_loss), so a meaningful dedicated
+    # `max_pairs` with no family match here is not an error -- it just stays inert.
     return loss_function
 
 
@@ -2012,6 +2012,14 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
                 loss_function = _normalize_loss_separator(loss_function)
                 if explicit_loss_function:
                     _reject_top_with_classic_mode(loss_function)
+                    # Validate the loss family whenever the string already bakes in
+                    # 'top='/'max_pairs=', even when the dedicated parameter isn't
+                    # touched this call -- otherwise e.g. loss_function="PairLogit:top=5"
+                    # would slip through unvalidated below.
+                    if re.search(r"[;:]top=", loss_function):
+                        _reject_top_wrong_family(loss_function)
+                    if re.search(r"[;:]max_pairs=", loss_function):
+                        _reject_max_pairs_wrong_family(loss_function)
                     if top_changed:
                         loss_function = _splice_or_reject_top(loss_function, staged_top)
                     elif _is_meaningful_loss_param(staged_top):
@@ -2037,8 +2045,11 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
                         loss_function, "max_pairs", staged_max_pairs if max_pairs_changed else None
                     )
                 else:
-                    if top_changed and "YetiRank" in loss_function:
-                        loss_function = _apply_top(loss_function, staged_top)
+                    if top_changed:
+                        if "YetiRank" in loss_function:
+                            loss_function = _apply_top(loss_function, staged_top)
+                        elif _is_meaningful_loss_param(staged_top):
+                            _reject_top_wrong_family(loss_function)
                     if max_pairs_changed and "PairLogit" in loss_function:
                         loss_function = _apply_max_pairs(loss_function, staged_max_pairs)
                 params["loss_function"] = loss_function
@@ -2583,7 +2594,7 @@ def ranker_predict_for_groups(
 
     result = np.empty(len(X), dtype=result_dtype)
 
-    for idx in _iter_ranking_group_indices(group_arr):
+    for _, idx in utils.iter_group_indices(group_arr):
         X_group = X.iloc[idx] if isinstance(X, pd.DataFrame) else X[idx]
         group_pred = model.predict(
             X_group,
@@ -2650,7 +2661,7 @@ def ranker_predict_uncertainty_for_groups(
 
     frames: list[pd.DataFrame] = []
 
-    for idx in _iter_ranking_group_indices(group_arr):
+    for _, idx in utils.iter_group_indices(group_arr):
         X_group = X.iloc[idx] if isinstance(X, pd.DataFrame) else X[idx]
         group_frame = model.predict_uncertainty(X_group, **kwargs)
         group_frame.index = idx

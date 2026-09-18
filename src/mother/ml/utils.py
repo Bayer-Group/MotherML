@@ -810,6 +810,22 @@ def topk_score_variance(
     return topk_mask, variances
 
 
+def iter_group_indices(group_arr: np.ndarray) -> list[tuple[Any, np.ndarray]]:
+    """Return (group_value, positional_index_array) pairs for each unique group, in
+    order of first appearance, with indices in original row order within each group.
+
+    Uses a single factorize + stable-sort pass (O(n log n)) instead of one
+    full-array `==` scan per group (O(n_groups * n)), which matters for datasets
+    with many small groups. Shared by ranking helpers in both this module and
+    m_catboost.py -- kept here (not there) since m_catboost.py already imports
+    this module and not vice versa.
+    """
+    codes, uniques = pd.factorize(group_arr, sort=False)
+    boundaries = np.concatenate(([0], np.cumsum(np.bincount(codes))))
+    order = np.argsort(codes, kind="stable")
+    return [(uniques[i], order[boundaries[i] : boundaries[i + 1]]) for i in range(len(uniques))]
+
+
 def groupwise_topk_analysis(
     uncertainty_df: pd.DataFrame,
     score_ensembles: np.ndarray,
@@ -897,10 +913,9 @@ def groupwise_topk_analysis(
     if not np.isfinite(score_arr).all():
         raise ValueError("score_ensembles must contain only finite values.")
 
-    for g in pd.unique(group_arr):
+    for g, idx in iter_group_indices(group_arr):
         # Work on one ranking group at a time: rows outside this group are irrelevant
         # to whether an item is "top-k", so everything below only looks at `idx` rows.
-        idx = np.flatnonzero(group_arr == g)
         if k > len(idx):
             raise ValueError(f"k must be <= the number of items in every group; group {g!r} has {len(idx)} items.")
         group_scores = score_arr[idx]
