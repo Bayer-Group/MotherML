@@ -60,7 +60,11 @@ def _validate_ranking_group_id(group_id: np.ndarray, n_samples: int) -> np.ndarr
     # which pd.isna would then fail to detect.
     if pd.isna(group_id).any():
         raise ValueError("group_id must not contain missing values.")
-    group_arr = np.asarray(group_id).reshape(-1)
+    group_arr = np.asarray(group_id)
+    # A 2-D array with n_samples total elements would otherwise be silently flattened
+    # into a different row-to-group mapping instead of being rejected.
+    if group_arr.ndim != 1:
+        raise ValueError(f"group_id must be 1-D, got shape {group_arr.shape}.")
     if group_arr.shape[0] != n_samples:
         raise ValueError(f"group_id length must match number of rows in X ({n_samples}), got {group_arr.shape[0]}.")
     return group_arr

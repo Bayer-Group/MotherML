@@ -326,6 +326,17 @@ def test_groupwise_topk_analysis_rejects_missing_group_ids(topk_analysis_two_gro
         )
 
 
+def test_groupwise_topk_analysis_rejects_2d_group_ids(topk_analysis_two_groups):
+    """A 2-D group_ids with the right total size must be rejected, not silently
+    flattened into a different (wrong) row-to-group mapping."""
+    uncertainty_df, score_ensembles, _ = topk_analysis_two_groups
+
+    with pytest.raises(ValueError, match="group_ids must be 1-D"):
+        mother.ml.utils.groupwise_topk_analysis(
+            uncertainty_df, score_ensembles, np.array([["a", "a"], ["b", "b"]]), k=1
+        )
+
+
 @pytest.mark.parametrize("k", [0, -1, 1.5, True])
 def test_groupwise_topk_analysis_rejects_invalid_k(topk_analysis_two_groups, k):
     uncertainty_df, score_ensembles, group_ids = topk_analysis_two_groups

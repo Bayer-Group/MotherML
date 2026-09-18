@@ -937,7 +937,11 @@ def groupwise_topk_analysis(
     # which pd.isna would then fail to detect.
     if pd.isna(group_ids).any():
         raise ValueError("group_ids must not contain missing values.")
-    group_arr = np.asarray(group_ids).reshape(-1)
+    group_arr = np.asarray(group_ids)
+    # A 2-D array with the right total size would otherwise be silently flattened into
+    # a different row-to-group mapping instead of being rejected.
+    if group_arr.ndim != 1:
+        raise ValueError(f"group_ids must be 1-D, got shape {group_arr.shape}.")
     score_arr = np.asarray(score_ensembles, dtype=float)
     if score_arr.ndim != 2:
         raise ValueError(f"Expected 2D score_ensembles, got {score_arr.ndim}D.")

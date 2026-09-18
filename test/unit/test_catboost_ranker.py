@@ -709,6 +709,17 @@ def test_ranker_predict_for_groups_rejects_missing_group_id(mock_ranker_uncertai
         m_catboost.ranker_predict_for_groups(model, mock_X, group_ids)
 
 
+def test_ranker_predict_for_groups_rejects_2d_group_id(mock_ranker_uncertainty_inputs):
+    """A 2-D group_id with the right total size must be rejected, not silently
+    flattened into a different (wrong) row-to-group mapping."""
+    model = CatboostRankerMother()
+    mock_X = mock_ranker_uncertainty_inputs["mock_X"]
+    group_ids = np.array([[0, 0], [1, 1]])
+
+    with pytest.raises(ValueError, match="group_id must be 1-D"):
+        m_catboost.ranker_predict_for_groups(model, mock_X, group_ids)
+
+
 def test_ranker_predict_for_groups_score_mode_calls_predict_once(mock_ranker_uncertainty_inputs):
     """Raw scores don't depend on group boundaries, so use_ranks=False must call
     predict() once for the whole dataset instead of once per group."""
