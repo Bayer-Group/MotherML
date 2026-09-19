@@ -19,6 +19,21 @@ from mother.ml.models.m_catboost import (
 )
 
 
+def test_catboost_regressor_mother_preserves_positional_argument_order():
+    """tune_loss_function must be appended after the pre-existing positional
+    parameters (quantiles, data_uncertainty, model_type), not inserted before them,
+    so existing positional construction keeps binding to the same options."""
+    model = CatboostRegressorMother("single_target", True, False, None, True, "regression", False)
+
+    assert model.target_type == "single_target"
+    assert model.tune_tree_structure_type is True
+    assert model.tune_boosting_type is False
+    assert model.quantiles is None
+    assert model.data_uncertainty is True
+    assert model.model_type == "regression"
+    assert model.tune_loss_function is False
+
+
 @pytest.mark.slow
 class TestCatboostModels(unittest.TestCase):
     def setUp(self) -> None:
@@ -296,21 +311,28 @@ class TestCatboostModels(unittest.TestCase):
         self.assertEqual(params["samples"], 10)
         self.assertEqual(params["prior_iterations"], 100)
         self.assertEqual(params["model_type"], "regression")
-        self.assertFalse(params["tune_boosting_type"])
-        self.assertTrue(params["tune_tree_structure_type"])
+        self.assertNotIn("tune_boosting_type", params)
+        self.assertNotIn("tune_tree_structure_type", params)
+        self.assertNotIn("tune_loss_function", params)
 
     def test_CatboostGaussianProcessRegressorMother_get_set_params(self) -> None:
         """Test parameter getting and setting."""
         model: CatboostGaussianProcessRegressorMother = CatboostGaussianProcessRegressorMother(
-            samples=15, learning_rate=0.2, prior_iterations=500, tune_boosting_type=True, tune_tree_structure_type=False
+            samples=15,
+            learning_rate=0.2,
+            prior_iterations=500,
         )
         # Test get_params
         params = model.get_params()
         self.assertEqual(params["samples"], 15)
         self.assertAlmostEqual(params["learning_rate"], 0.2)
         self.assertEqual(params["prior_iterations"], 500)
-        self.assertTrue(params["tune_boosting_type"])
-        self.assertFalse(params["tune_tree_structure_type"])
+        self.assertNotIn("tune_boosting_type", params)
+        self.assertNotIn("tune_tree_structure_type", params)
+        self.assertNotIn("tune_loss_function", params)
+        self.assertFalse(model.tune_boosting_type)
+        self.assertFalse(model.tune_tree_structure_type)
+        self.assertFalse(model.tune_loss_function)
 
         # Test set_params
         model.set_params(samples=20, learning_rate=0.3, prior_iterations=600)
@@ -323,6 +345,28 @@ class TestCatboostModels(unittest.TestCase):
         model2 = model.set_params(samples=25)
         self.assertIs(model2, model)
         self.assertEqual(model.get_params()["samples"], 25)
+
+    def test_CatboostGaussianProcessRegressorMother_set_params_syncs_gp_params(self) -> None:
+        """fit() reads learning_rate/max_depth/random_strength/random_score_type/verbose
+        from self.gp_params, not from CatBoost's own _init_params -- set_params must keep
+        gp_params in sync with these or Optuna trials silently have no effect."""
+        model = CatboostGaussianProcessRegressorMother(learning_rate=0.1, max_depth=6, verbose=False)
+
+        model.set_params(
+            learning_rate=0.5, max_depth=3, random_strength=2.0, random_score_type="NormalWithModelSizeDecrease"
+        )
+
+        self.assertAlmostEqual(model.gp_params["learning_rate"], 0.5)
+        self.assertEqual(model.gp_params["max_depth"], 3)
+        self.assertAlmostEqual(model.gp_params["random_strength"], 2.0)
+        self.assertEqual(model.gp_params["random_score_type"], "NormalWithModelSizeDecrease")
+
+    def test_CatboostGaussianProcessRegressorMother_rejects_tune_kwargs_at_construction(self) -> None:
+        """tune_boosting_type/tune_tree_structure_type/tune_loss_function are unsupported
+        for GP posterior sampling; they must be rejected at construction, not silently
+        forwarded to CatBoostRegressor via **kwargs."""
+        with self.assertRaises(ValueError):
+            CatboostGaussianProcessRegressorMother(tune_loss_function=True)
 
     def test_CatboostGaussianProcessRegressorMother_invalid_model_type(self) -> None:
         """Test that invalid model_type raises ValueError."""
@@ -479,9 +523,7 @@ class TestCatboostModels(unittest.TestCase):
 
     def test_CatboostGaussianProcessRegressorMother_cloning(self) -> None:
         """Test model cloning functionality."""
-        model = CatboostGaussianProcessRegressorMother(
-            samples=15, prior_iterations=100, learning_rate=0.2, tune_boosting_type=True
-        )
+        model = CatboostGaussianProcessRegressorMother(samples=15, prior_iterations=100, learning_rate=0.2)
         model.fit(self.X, self.y_regression)
 
         # Test cloning preserves parameters
@@ -502,9 +544,7 @@ class TestCatboostModels(unittest.TestCase):
 
     def test_CatboostGaussianProcessRegressorMother_state_persistence(self) -> None:
         """Test __getstate__ and __setstate__ methods."""
-        model = CatboostGaussianProcessRegressorMother(
-            samples=10, prior_iterations=50, tune_boosting_type=True, tune_tree_structure_type=False
-        )
+        model = CatboostGaussianProcessRegressorMother(samples=10, prior_iterations=50)
         model.fit(self.X, self.y_regression)
 
         # Test state saving and loading
