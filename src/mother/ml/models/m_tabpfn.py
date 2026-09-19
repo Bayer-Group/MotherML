@@ -547,6 +547,13 @@ class TabPFNEmbeddingTransformer(BaseEstimator, TransformerMixin):
     def _get_embeddings_with_safe_precision(
         model: Union[TabPFNClassifierMother, TabPFNRegressorMother], X_array: np.ndarray
     ) -> np.ndarray:
+        # `use_autocast_` only exists once `determine_precision` has run at fit time, so
+        # an unfitted model would otherwise fail with a confusing AttributeError deep
+        # inside `get_embeddings`.
+        assert hasattr(model, "use_autocast_"), (
+            "Model must be fitted (missing `use_autocast_`) before extracting embeddings."
+        )
+
         # `get_embeddings` reads `model.use_autocast_`, which `determine_precision` fixes
         # once at fit time -- mutating `model.inference_precision` afterward (the previous
         # approach here) has no effect on an already-fitted model. Some torch/tabpfn builds

@@ -2292,7 +2292,11 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
                 If True, return only ``knowledge_uncertainty`` for optimisation.
             normalize_by_group_size : bool, optional
                 If True, divide ``knowledge_uncertainty`` and ``mean_predictions``
-                by ``len(X)``.  Default is ``False``.
+                by ``len(X)``.  This is also forwarded to :meth:`predict` for the
+                ``pred`` column, so when combined with ``use_ranks=True`` it divides
+                ``pred``'s 1-based ranks by ``len(X)`` too -- ``pred`` is then no
+                longer an integer rank but a normalised rank fraction. Has no effect
+                on ``pred`` when ``use_ranks=False``.  Default is ``False``.
             return_quantiles : bool, optional
                 If True, append score-quantile columns derived from
                 ``DEFAULT_QUANTILES`` (defaults: ``score_q25``, ``score_q50``,
@@ -2313,7 +2317,10 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
         Returns:
             pd.DataFrame | tuple[pd.DataFrame, np.ndarray]:
                 If ``return_raw=False`` (default): returns pd.DataFrame with columns:
-                    - ``pred``: full-model prediction (raw score or 1-based rank).
+                    - ``pred``: full-model prediction (raw score, or 1-based rank when
+                      ``use_ranks=True``). Also normalised by group size when both
+                      ``use_ranks=True`` and ``normalize_by_group_size=True`` are set
+                      (see ``normalize_by_group_size`` above).
                     - ``mean_predictions``: mean of per-ensemble scores (``use_ranks=False``)
                       or mean of per-ensemble ranks (``use_ranks=True``).
                     - ``knowledge_uncertainty``: std of per-ensemble scores or ranks;
@@ -2390,6 +2397,8 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
         if uncertainty_for_opt:
             result_df["knowledge_uncertainty"] = knowledge_uncertainty
         else:
+            # `normalize_by_group_size` is forwarded as-is: when combined with `use_ranks=True`
+            # this also divides `pred`'s ranks by len(X) (see docstring for normalize_by_group_size).
             result_df["pred"] = self.predict(
                 X,
                 use_ranks=use_ranks,
