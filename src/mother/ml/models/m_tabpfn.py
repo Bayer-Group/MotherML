@@ -656,6 +656,7 @@ class TabPFNEmbeddingTransformer(BaseEstimator, TransformerMixin):
             module_logger.info(
                 "A pre-fitted model has been given. The new data will not be used for fitting the model."
             )
+            assert self.model is not None
             self.train_embeddings_ = self._get_embeddings_with_safe_precision(self.model, X_array)
             self._embedding_dim = self.train_embeddings_.shape[1]
         else:
