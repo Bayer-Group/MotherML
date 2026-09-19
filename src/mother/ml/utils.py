@@ -658,9 +658,17 @@ def avg_ndcg_score(
 ) -> float:
     """calculates the average ndcg score of a model's prediction across all groups
        in a dataframe
+
+    Ranking convention: both `y` and `y_pred` use sklearn's ``ndcg_score`` convention --
+    larger values mean higher relevance/more relevant, for both the true target and the
+    predicted score alike. This matches ``CatboostRankerMother``'s own convention (larger
+    ``y`` = more relevant at fit time, higher predicted score = more relevant, rank 1 =
+    highest score). If your values use the opposite (lower-is-better) convention, negate
+    them (e.g. ``y = -y``) before calling this function.
+
     Args:
-        y (list | pd.DataFrame | np.ndarray): true target values
-        y_pred (list | pd.DataFrame | np.ndarray): predicted values
+        y (list | pd.DataFrame | np.ndarray): true relevance/target values, larger = more relevant.
+        y_pred (list | pd.DataFrame | np.ndarray): predicted scores, larger = more relevant.
         groups (list): group indices for each entry
         k (int): number of elements to consider for ndcg calculation. Consistent across all groups
         verbose (bool, optional): If True prints the true ranks of each group as well as the ndcg
