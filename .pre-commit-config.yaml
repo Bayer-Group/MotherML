@@ -1,5 +1,5 @@
 fail_fast: false
-exclude: ^(examples/|test/)
+exclude: ^(test/)
 repos:
   - repo: https://github.com/astral-sh/uv-pre-commit
     rev: "0.12.5"
@@ -79,5 +79,3 @@ repos:
       - id: nbqa-ruff-format
       - id: nbqa-pyupgrade
         args: ["--py37-plus"]
-      - id: nbqa-isort
-        args: ["--float-to-top"]
