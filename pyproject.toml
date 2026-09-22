@@ -99,7 +99,6 @@ dev = [
   "git-changelog>=2.9.4",
 ]
 examples = [
-  "polaris-lib>=0.13.0,<0.14",
   "shap>=0.47.2,<0.48",
 ]
 docs = [
