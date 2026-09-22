@@ -267,10 +267,9 @@ jobs:
         run: echo "PYTHON_VERSION=3.11" >> $GITHUB_ENV
 
       - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
+        uses: ./.github/actions/setup-uv-env
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          install-args: "--extra report --extra rna --extra tabpfn --extra tabicl"
 
       - name: Python Semantic Release
         uses: python-semantic-release/python-semantic-release@2896129e02bb7809d2cf0c1b8e9e795ee27acbcf # v10.2.0
@@ -296,36 +295,36 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-  test-pypi-publish:
-    name: Publish dev package to test.pypi.org
-    runs-on: ubuntu-latest
-    needs: release
-    if: ${{ (github.repository == 'bayer-group/motherml' && github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+  # test-pypi-publish:
+  #   name: Publish dev package to test.pypi.org
+  #   runs-on: ubuntu-latest
+  #   needs: release
+  #   if: ${{ (github.repository == 'bayer-group/motherml' && github.event_name == 'push' && github.ref == 'refs/heads/main') }}
 
-    environment:
-      name: test-pypi
-      url: https://test.pypi.org/p/mother-ml
+  #   environment:
+  #     name: test-pypi
+  #     url: https://test.pypi.org/p/mother-ml
 
-    permissions:
-      id-token: write
+  #   permissions:
+  #     id-token: write
 
-    steps:
-      - uses: actions/download-artifact@v8
-        with:
-          name: Packages
-          path: dist
+  #   steps:
+  #     - uses: actions/download-artifact@v8
+  #       with:
+  #         name: Packages
+  #         path: dist
 
-      - name: Upload package to Test PyPI
-        uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc # v1.12.4
-        with:
-          repository-url: https://test.pypi.org/legacy/
-          skip-existing: true
-          packages-dir: dist/
+  #     - name: Upload package to Test PyPI
+  #       uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc # v1.12.4
+  #       with:
+  #         repository-url: https://test.pypi.org/legacy/
+  #         skip-existing: true
+  #         packages-dir: dist/
 
   publish-pypi:
     name: Publish to PyPI
-    needs: [release, test-pypi-publish]
-    if: needs.release.outputs.released == 'true' && needs.test-pypi-publish.result == 'success'
+    needs: release
+    if: ${{ (github.repository == 'bayer-group/motherml' && github.event_name == 'push' && github.ref == 'refs/heads/main') && needs.release.outputs.released == 'true' }}
     environment:
       name: pypi
       url: https://pypi.org/project/mother-ml/
