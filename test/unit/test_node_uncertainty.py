@@ -633,8 +633,13 @@ def test_mc_dropout_rejects_misaligned_inference_rows(tiny_regression_data, mode
     model = model_class(num_trees=4, depth=2, max_epochs=1, batch_size=8, device="cpu", verbose=0).fit(
         features, targets
     )
-    option = torch.utils.data.RandomSampler(range(len(features))) if invalid_iterator == "sampler" else True
-    model.set_params(**{f"iterator_valid__{invalid_iterator}": option})
+    generator = torch.Generator().manual_seed(0)
+    option = (
+        torch.utils.data.RandomSampler(range(len(features)), generator=generator)
+        if invalid_iterator == "sampler"
+        else True
+    )
+    model.set_params(**{f"iterator_valid__{invalid_iterator}": option, "iterator_valid__generator": generator})
 
     with pytest.raises(ValueError, match="NODE inference requires"):
         model.predict_uncertainty(features[:5], num_samples=3)
@@ -651,11 +656,12 @@ def test_flow_mc_dropout_rejects_shuffled_rows(tiny_regression_data, return_quan
         depth=2,
         max_epochs=1,
         iterator_valid__shuffle=True,
+        iterator_valid__generator=torch.Generator().manual_seed(0),
         device="cpu",
         verbose=0,
     ).fit(features, targets)
 
-    with pytest.raises(ValueError, match="sequential sampler"):
+    with pytest.raises(ValueError, match="input order"):
         model.predict_uncertainty(
             features[:5],
             num_samples=3,
@@ -675,6 +681,249 @@ def test_sequential_prediction_batches_preserve_rows(tiny_regression_data):
         rows = torch.cat(list(model.get_iterator(features[:19], training=False))).numpy()
         np.testing.assert_array_equal(rows, features[:19])
     assert isinstance(model.get_iterator(features, training=True).sampler, torch.utils.data.RandomSampler)
+
+
+@pytest.mark.parametrize("sampling", ["sampler", "batch_sampler_subclass", "variable_batches"])
+def test_inference_accepts_ordered_custom_sampling(tiny_regression_data, sampling):
+    features, targets = tiny_regression_data
+    inputs = features[:19]
+
+    class OrderedBatches(torch.utils.data.BatchSampler):
+        pass
+
+    if sampling == "sampler":
+        iterator_params = {"iterator_valid__sampler": list(range(len(inputs)))}
+    else:
+        batches = (
+            OrderedBatches(range(len(inputs)), batch_size=8, drop_last=False)
+            if sampling == "batch_sampler_subclass"
+            else [[0], list(range(1, 7)), list(range(7, len(inputs)))]
+        )
+        iterator_params = {"iterator_valid__batch_size": 1, "iterator_valid__batch_sampler": batches}
+
+    model = NODERegressor(
+        num_trees=4, depth=2, max_epochs=1, batch_size=8, device="cpu", verbose=0, **iterator_params
+    ).fit(features, targets)
+    model.module_.eval()
+    with torch.no_grad():
+        expected = model.module_(torch.from_numpy(inputs)).numpy()
+
+    np.testing.assert_allclose(model.predict(inputs), expected, rtol=1e-5, atol=1e-6)
+
+
+def test_inference_rejects_reordered_batch_sampler(tiny_regression_data):
+    features, targets = tiny_regression_data
+    inputs = features[:19]
+    batches = torch.utils.data.BatchSampler(list(reversed(range(len(inputs)))), batch_size=8, drop_last=False)
+    model = NODERegressor(
+        num_trees=4,
+        depth=2,
+        max_epochs=1,
+        batch_size=8,
+        device="cpu",
+        verbose=0,
+        iterator_valid__batch_size=1,
+        iterator_valid__batch_sampler=batches,
+    ).fit(features, targets)
+
+    with pytest.raises(ValueError, match="input order"):
+        model.predict(inputs)
+
+
+@pytest.mark.parametrize("model_class", [NODERegressor, NODEClassifier])
+@pytest.mark.parametrize("option", ["shuffle", "drop_last"])
+def test_fit_validation_allows_shuffled_rows(tiny_regression_data, model_class, option):
+    from skorch.dataset import ValidSplit
+
+    features, targets = tiny_regression_data
+    if model_class is NODEClassifier:
+        targets = (targets > 0).astype(np.int64)
+    model = model_class(
+        num_trees=4,
+        depth=2,
+        max_epochs=1,
+        batch_size=7,
+        device="cpu",
+        verbose=0,
+        train_split=ValidSplit(cv=2),
+        **{f"iterator_valid__{option}": True},
+    ).fit(features, targets)
+
+    assert np.isfinite(model.history[-1, "valid_loss"])
+
+
+@pytest.mark.parametrize(
+    "batches",
+    [
+        [[0, 1], [3, 2]],
+        [[0, 1], [1, 3]],
+        [[0, 1], [3]],
+        [[0, 1]],
+        [[0, 1, 2, 3], [0]],
+        [[-1, 0, 1, 2]],
+        [[0, 1, 2, 4]],
+        [[0.0, 1.0, 2.0, 3.0]],
+        [[]],
+        [],
+    ],
+    ids=[
+        "reordered",
+        "duplicate",
+        "skipped",
+        "truncated",
+        "extra",
+        "negative",
+        "out-of-range",
+        "float",
+        "empty-batch",
+        "empty",
+    ],
+)
+def test_inference_checks_actual_row_ids(batches):
+    features = np.ones((4, 2), dtype=np.float32)
+    model = NODERegressor(device="cpu", iterator_valid__batch_size=1, iterator_valid__batch_sampler=batches)
+    with pytest.raises(ValueError, match="every input row exactly once in input order"):
+        list(model._get_inference_iterator(features))
+
+
+@pytest.mark.parametrize(
+    "iterator_params",
+    [
+        {"iterator_valid__batch_size": None},
+        {"iterator_valid__batch_size": -1},
+        {"iterator_valid__batch_size": 2, "iterator_valid__drop_last": True},
+        {"iterator_valid__num_workers": 2, "iterator_valid__multiprocessing_context": "spawn"},
+    ],
+    ids=["unbatched", "full-batch", "drop-last-without-omission", "worker-processes"],
+)
+def test_inference_keeps_safe_loader_options(iterator_params):
+    features = np.arange(8, dtype=np.float32).reshape(4, 2)
+    model = NODERegressor(batch_size=2, device="cpu", **iterator_params)
+    rows = torch.cat(list(model._get_inference_iterator(features))).numpy()
+    np.testing.assert_array_equal(rows, features)
+
+
+@pytest.mark.parametrize("reverse_batches", [False, True])
+def test_inference_checks_custom_iterator_delivery(reverse_batches):
+    class CustomIterator:
+        def __init__(self, dataset, batch_size, collate_fn):
+            self.batches = [
+                collate_fn([dataset[row] for row in range(start, min(start + batch_size, len(dataset)))])
+                for start in range(0, len(dataset), batch_size)
+            ]
+
+        def __iter__(self):
+            return iter(self.batches[::-1] if reverse_batches else self.batches)
+
+    features = np.arange(8, dtype=np.float32).reshape(4, 2)
+    model = NODERegressor(batch_size=2, iterator_valid=CustomIterator, device="cpu")
+    if reverse_batches:
+        with pytest.raises(ValueError, match="input order"):
+            list(model._get_inference_iterator(features))
+    else:
+        rows = torch.cat(list(model._get_inference_iterator(features))).numpy()
+        np.testing.assert_array_equal(rows, features)
+
+
+def test_inference_does_not_preconsume_sampler():
+    features = np.arange(8, dtype=np.float32).reshape(4, 2)
+    model = NODERegressor(batch_size=2, iterator_valid__sampler=iter(range(4)), device="cpu")
+    rows = torch.cat(list(model._get_inference_iterator(features))).numpy()
+    np.testing.assert_array_equal(rows, features)
+    with pytest.raises(ValueError, match="input order"):
+        list(model._get_inference_iterator(features))
+
+
+@pytest.mark.parametrize("model_class", [NODERegressor, NODEClassifier])
+def test_inference_iterator_can_be_reset_without_refitting(tiny_regression_data, model_class):
+    features, targets = tiny_regression_data
+    if model_class is NODEClassifier:
+        targets = (targets > 0).astype(np.int64)
+    model = model_class(
+        num_trees=4,
+        depth=2,
+        max_epochs=1,
+        batch_size=8,
+        device="cpu",
+        verbose=0,
+        iterator_valid__drop_last=True,
+    ).fit(features, targets)
+    fitted_module = model.module_
+    fitted_optimizer = model.optimizer_
+    fitted_state = {name: value.clone() for name, value in model.module_.state_dict().items()}
+    with pytest.raises(ValueError, match="iterator_valid__drop_last=False"):
+        model.predict(features[:5])
+
+    returned = model.set_params(
+        iterator_valid__shuffle=False,
+        iterator_valid__drop_last=False,
+        iterator_valid__sampler=None,
+        iterator_valid__batch_sampler=None,
+    )
+    assert returned is model
+    assert model.module_ is fitted_module
+    assert model.optimizer_ is fitted_optimizer
+    assert len(model.predict(features[:5])) == 5
+    for name, value in model.module_.state_dict().items():
+        torch.testing.assert_close(value, fitted_state[name], atol=0, rtol=0)
+
+
+@pytest.mark.parametrize("task", ["regression", "classification", "flow"])
+def test_mc_passes_keep_rows_aligned_with_changing_batch_sizes(tiny_regression_data, monkeypatch, task):
+    if task == "flow":
+        pytest.importorskip("zuko")
+    features, targets = tiny_regression_data
+    inputs = features[:19]
+
+    class ChangingBatches:
+        iterations = 0
+
+        def __iter__(self):
+            self.iterations += 1
+            batch_size = 3 if self.iterations % 2 else 7
+            for start in range(0, len(inputs), batch_size):
+                yield list(range(start, min(start + batch_size, len(inputs))))
+
+    batches = ChangingBatches()
+    model_class = NODEClassifier if task == "classification" else NODERegressor
+    if task == "classification":
+        targets = (targets > 0).astype(np.int64)
+    model = model_class(
+        head_type="flow" if task == "flow" else "subset",
+        num_trees=4,
+        depth=2,
+        max_epochs=1,
+        batch_size=8,
+        device="cpu",
+        verbose=0,
+        input_dropout=0.2,
+        iterator_valid__batch_size=1,
+        iterator_valid__batch_sampler=batches,
+    ).fit(features, targets)
+
+    def deterministic_forward(batch):
+        location = batch[:, :1]
+        if task == "classification":
+            return torch.cat([location, -location], dim=1)
+        if task == "flow":
+            return torch.distributions.Independent(torch.distributions.Normal(location, 1e-5), 1)
+        return location
+
+    monkeypatch.setattr(model.module_, "forward", deterministic_forward)
+    result = model.predict_uncertainty(
+        inputs, num_samples=3, num_mc_samples=3, num_flow_samples=8, return_quantiles=task == "flow"
+    )
+    if task == "flow":
+        result, quantiles = result
+        np.testing.assert_allclose(quantiles[:, 1], inputs[:, 0], atol=1e-4)
+    expected = (
+        torch.softmax(deterministic_forward(torch.from_numpy(inputs)), dim=1).numpy()[:, 1]
+        if task == "classification"
+        else inputs[:, 0]
+    )
+    np.testing.assert_allclose(result["mean_predictions"], expected, atol=1e-4)
+    assert batches.iterations == (1 if task == "classification" else 2)
+    assert all(not module.training for module in model.module_.modules())
 
 
 @pytest.mark.parametrize("count", [0, -1])

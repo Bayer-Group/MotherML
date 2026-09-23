@@ -94,7 +94,9 @@ import copy
 import logging
 import warnings
 from contextlib import contextmanager
+from functools import partial
 from inspect import signature
+from operator import index as integer_index
 from typing import Any, Callable, Dict, Iterator, List, Literal, Optional, Tuple, Union
 
 import numpy as np
@@ -108,7 +110,9 @@ from sklearn.preprocessing import LabelEncoder
 from skorch import NeuralNetClassifier
 from skorch.callbacks import EarlyStopping
 from skorch.net import NeuralNet
+from skorch.utils import to_device
 from torch import Tensor
+from torch.utils.data import default_collate, default_convert
 
 from mother.ml.core import AbstractMotherPipeline
 from mother.ml.models.node_head_utils import (
@@ -141,6 +145,47 @@ DEFAULT_QUANTILES: list[float] = [0.25, 0.5, 0.75]
 # Defined at module level rather than as an ``__init__`` parameter because it is
 # a project-wide convention, not a per-instance tunable.
 _EARLY_STOPPING_PATIENCE: int = 20
+
+_INFERENCE_ROW_ERROR = (
+    "NODE inference requires every input row exactly once in input order. "
+    "Use iterator_valid__shuffle=False and iterator_valid__drop_last=False; "
+    "reset custom sampling with iterator_valid__sampler=None and iterator_valid__batch_sampler=None. "
+    "Custom iterators and collate functions must preserve row order and batch length."
+)
+
+
+class _IndexedInferenceDataset(torch.utils.data.Dataset):
+    """Carry positional row identities through inference loading, including worker processes."""
+
+    def __init__(self, dataset: Any) -> None:
+        self.dataset = dataset
+
+    def __len__(self) -> int:
+        return len(self.dataset)
+
+    def __getitem__(self, row_index: Any) -> Tuple[int, Any]:
+        try:
+            row_index = integer_index(row_index)
+        except TypeError as error:
+            raise ValueError(_INFERENCE_ROW_ERROR) from error
+        if not 0 <= row_index < len(self):
+            raise ValueError(_INFERENCE_ROW_ERROR)
+        return row_index, self.dataset[row_index]
+
+
+def _collate_inference_rows(rows: Any, *, collate_fn: Callable, auto_collation: bool) -> Tuple[Tensor, Any]:
+    """Keep row IDs separate from the payload passed to the configured collator."""
+    if not auto_collation:
+        rows = [rows]
+    if not rows:
+        raise ValueError(_INFERENCE_ROW_ERROR)
+    row_indices, samples = zip(*rows)
+    batch = collate_fn(list(samples)) if auto_collation else default_collate([collate_fn(samples[0])])
+    features = batch[0] if isinstance(batch, (tuple, list)) else batch
+    if len(features) != len(row_indices):
+        raise ValueError(_INFERENCE_ROW_ERROR)
+    return torch.tensor(row_indices, dtype=torch.long), batch
+
 
 # ==============================================================================
 # MODULE-LEVEL HELPERS
@@ -1390,7 +1435,18 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         # Merge the additional module__ parameters
         params.update(params_to_add)
 
-        return super().set_params(**params)  # type: ignore
+        iterator_params = {
+            name: params.pop(name)
+            for name in list(params)
+            if name in {"iterator_train", "iterator_valid"} or name.startswith(("iterator_train__", "iterator_valid__"))
+        }
+        result = super().set_params(**params)
+        for name, value in iterator_params.items():
+            setattr(self, name, value)
+            self._params_to_validate.add(name)
+        if iterator_params and self.initialized_:
+            self._validate_params()
+        return result
 
     def __sklearn_clone__(self) -> "BaseNODEEstimator":
         """Custom sklearn cloning: excludes 'module' which is constructed dynamically."""
@@ -1404,22 +1460,41 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         """Prepare input data for prediction, handling DataFrame inputs."""
         return self._prepare_data_for_node(X)
 
-    def get_iterator(self, dataset: Any, training: bool = False) -> Any:
-        """Preserve sample identity across predictions and repeated MC-dropout passes."""
-        iterator = super().get_iterator(dataset, training=training)
-        if not training and isinstance(iterator, torch.utils.data.DataLoader):
-            if not isinstance(iterator.sampler, torch.utils.data.SequentialSampler):
-                raise ValueError(
-                    "NODE inference requires a sequential sampler to preserve row alignment across MC passes. "
-                    "Set iterator_valid__shuffle=False and do not use a non-sequential validation sampler."
-                )
-            if iterator.drop_last:
-                raise ValueError("NODE inference requires iterator_valid__drop_last=False to preserve all input rows.")
-            if iterator.batch_sampler is not None and (
-                type(iterator.batch_sampler) is not torch.utils.data.BatchSampler or iterator.batch_sampler.drop_last
-            ):
-                raise ValueError("NODE inference requires standard sequential batches without dropping input rows.")
-        return iterator
+    def _get_inference_iterator(self, dataset: Any) -> Iterator[Any]:
+        """Check rows actually delivered by inference loaders without restricting sampler classes."""
+        kwargs = self.get_params_for("iterator_valid")
+        batch_size = kwargs.setdefault("batch_size", self.batch_size)
+        if batch_size == -1:
+            kwargs["batch_size"] = len(dataset)
+        auto_collation = batch_size is not None or kwargs.get("batch_sampler") is not None
+        collate_fn = kwargs.get("collate_fn") or (default_collate if auto_collation else default_convert)
+        kwargs["collate_fn"] = partial(_collate_inference_rows, collate_fn=collate_fn, auto_collation=auto_collation)
+        iterator = self.iterator_valid(_IndexedInferenceDataset(dataset), **kwargs)
+        next_row = 0
+        for indexed_batch in iterator:
+            if not isinstance(indexed_batch, (tuple, list)) or len(indexed_batch) != 2:
+                raise ValueError(_INFERENCE_ROW_ERROR)
+            row_indices, batch = indexed_batch
+            if not isinstance(row_indices, Tensor) or row_indices.ndim != 1:
+                raise ValueError(_INFERENCE_ROW_ERROR)
+            batch_end = next_row + len(row_indices)
+            expected = torch.arange(next_row, batch_end, device=row_indices.device)
+            if batch_end > len(dataset) or not torch.equal(row_indices, expected):
+                raise ValueError(_INFERENCE_ROW_ERROR)
+            next_row = batch_end
+            yield batch
+        if next_row != len(dataset):
+            raise ValueError(_INFERENCE_ROW_ERROR)
+
+    def forward_iter(self, X: Any, training: bool = False, device: Any = "cpu") -> Iterator[Any]:
+        """Apply row checks to prediction only; fitting retains Skorch's validation iterator."""
+        if training:
+            yield from super().forward_iter(X, training=True, device=device)
+            return
+        self.check_is_fitted()
+        self._set_training(False)
+        for batch in self._get_inference_iterator(self.get_dataset(X)):
+            yield to_device(self.evaluation_step(batch, training=False), device=device)
 
     def get_embeddings(self, X: Union[pd.DataFrame, npt.NDArray[np.float32]]) -> npt.NDArray[np.float32]:
         """
@@ -1452,7 +1527,7 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         batches = []
         model_device = next(self.module_.parameters()).device
         with torch.no_grad():
-            for batch in self.get_iterator(X_prepared, training=False):
+            for batch in self._get_inference_iterator(X_prepared):
                 features = batch[0] if isinstance(batch, (tuple, list)) else batch
                 tree_outputs = self.module_.forward_features(features.to(model_device))
                 batches.append(tree_outputs.flatten(start_dim=1).cpu().numpy())
@@ -1572,18 +1647,19 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
 
         try:
             with torch.no_grad():
-                for _ in range(num_samples):
+                for batch in self._get_inference_iterator(X):
+                    features = batch[0] if isinstance(batch, (tuple, list)) else batch
+                    features = features.to(self.device)
                     sample_predictions = []
-                    for batch in self.get_iterator(X, training=False):
-                        features = batch[0] if isinstance(batch, (tuple, list)) else batch
-                        predictions = model(features.to(self.device))
+                    for _ in range(num_samples):
+                        predictions = model(features)
                         sample_predictions.append(predictions.detach().cpu().numpy())
-                    all_predictions.append(np.concatenate(sample_predictions, axis=0))
+                    all_predictions.append(np.stack(sample_predictions, axis=0))
         finally:
             model.eval()
 
         # Stack predictions: shape (num_samples, n_samples, n_outputs)
-        all_predictions_np = np.stack(all_predictions, axis=0)
+        all_predictions_np = np.concatenate(all_predictions, axis=1)
 
         # Compute uncertainty measure across MC samples
         if use_std:
@@ -2530,25 +2606,21 @@ class NODERegressor(BaseNODEEstimator):
                 for _m in model.modules():
                     if isinstance(_m, (DenseODSTBlock, nn.Dropout)):
                         _m.training = True
-                pooled_by_batch: list = []
+                all_quantiles = []
                 try:
                     with torch.no_grad():
-                        for t in range(n_mc):
-                            for b, batch in enumerate(self.get_iterator(X_prep, training=False)):
-                                Xi = batch[0] if isinstance(batch, (tuple, list)) else batch
-                                Xi = Xi.to(self.device)
-                                yp = model(Xi)
-                                samp = yp.sample(torch.Size([n_flow_per_pass]))  # (S, batch, D)
-                                if t == 0:
-                                    pooled_by_batch.append(samp)
-                                else:
-                                    pooled_by_batch[b] = torch.cat([pooled_by_batch[b], samp], dim=0)
+                        for batch in self._get_inference_iterator(X_prep):
+                            features = batch[0] if isinstance(batch, (tuple, list)) else batch
+                            features = features.to(self.device)
+                            pooled = torch.cat(
+                                [model(features).sample(torch.Size([n_flow_per_pass])) for _ in range(n_mc)],
+                                dim=0,
+                            )
+                            all_quantiles.append(
+                                torch.stack([torch.quantile(pooled, quantile, dim=0) for quantile in quantiles], dim=0)
+                            )
                 finally:
                     model.eval()
-                all_quantiles = []
-                with torch.no_grad():
-                    for pooled in pooled_by_batch:  # (T*S, batch, D)
-                        all_quantiles.append(torch.stack([torch.quantile(pooled, q, dim=0) for q in quantiles], dim=0))
             else:
                 all_quantiles = []
                 with torch.no_grad():
@@ -2900,24 +2972,23 @@ class NODERegressor(BaseNODEEstimator):
         # drawn from each.  The distribution objects are stored so we can later
         # cross-evaluate log p_{t'}(y_{t,s}) for the mixture-entropy term.
         # Call the module directly (not forward_iter) so skorch does not reset the
-        # training flags per batch, and iterate with training=False so the batch
-        # order is stable across the T passes (dists_by_batch[b] stays aligned).
+        # training flags per batch.
         dists_by_batch = []  # dists_by_batch[b][t]
         samples_by_batch = []  # samples_by_batch[b][t] : (S, B, D)
 
         try:
             with torch.no_grad():
-                for t in range(num_mc_samples):
-                    for b, batch in enumerate(self.get_iterator(X, training=False)):
-                        Xi = batch[0] if isinstance(batch, (tuple, list)) else batch
-                        Xi = Xi.to(self.device)
-                        yp = model(Xi)  # flow distribution for this dropout pass
-                        if t == 0:
-                            dists_by_batch.append([])
-                            samples_by_batch.append([])
-                        samp = yp.sample(torch.Size([num_flow_samples]))  # (S, B, D)
-                        dists_by_batch[b].append(yp)
-                        samples_by_batch[b].append(samp)
+                for batch in self._get_inference_iterator(X):
+                    features = batch[0] if isinstance(batch, (tuple, list)) else batch
+                    features = features.to(self.device)
+                    batch_distributions = []
+                    batch_samples = []
+                    for _ in range(num_mc_samples):
+                        distribution = model(features)
+                        batch_distributions.append(distribution)
+                        batch_samples.append(distribution.sample(torch.Size([num_flow_samples])))
+                    dists_by_batch.append(batch_distributions)
+                    samples_by_batch.append(batch_samples)
         finally:
             model.eval()
 
@@ -3562,18 +3633,19 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
         all_probs = []
         try:
             with torch.no_grad():
-                for _ in range(num_samples):
+                for batch in self._get_inference_iterator(X_prep):
+                    features = batch[0] if isinstance(batch, (tuple, list)) else batch
+                    features = features.to(self.device)
                     batch_probs = []
-                    for batch in self.get_iterator(X_prep, training=False):
-                        features = batch[0] if isinstance(batch, (tuple, list)) else batch
-                        logits = model(features.to(self.device))
+                    for _ in range(num_samples):
+                        logits = model(features)
                         probs = torch.sigmoid(logits) if use_sigmoid else torch.softmax(logits, dim=1)
                         batch_probs.append(probs.detach().cpu().numpy())
-                    all_probs.append(np.concatenate(batch_probs, axis=0))
+                    all_probs.append(np.stack(batch_probs, axis=0))
         finally:
             model.eval()
 
-        return np.stack(all_probs, axis=0)
+        return np.concatenate(all_probs, axis=1)
 
     def predict_quantiles(
         self,
