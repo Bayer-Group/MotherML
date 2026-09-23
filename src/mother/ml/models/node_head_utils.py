@@ -11,6 +11,8 @@ from typing import Any, List, Optional
 import torch
 import torch.nn as nn
 
+from mother.ml.models.node_utils import validate_dropout_rates
+
 try:
     import zuko
 except ModuleNotFoundError:  # pragma: no cover - optional dependency
@@ -31,6 +33,7 @@ class MLPHead(nn.Module):
     ) -> None:
         """Build a stack of Linear/Norm/activation/Dropout blocks from `input_dim` to `output_dim`."""
         super().__init__()
+        validate_dropout_rates(mlp_dropout=dropout)
 
         def _make_activation() -> nn.Module:
             """Instantiate the configured activation module by name."""
@@ -149,6 +152,7 @@ class FlowHead(nn.Module):
     ) -> None:
         """Build a zuko conditional flow of type `flow_type`, with an optional MLP conditioner encoder."""
         super().__init__()
+        validate_dropout_rates(mlp_dropout=mlp_dropout)
         if zuko is None:  # pragma: no cover
             raise ModuleNotFoundError(
                 "zuko is required for FlowHead. Install optional dependencies, e.g. `pip install mother-ml[node]`."

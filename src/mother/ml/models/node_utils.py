@@ -14,6 +14,7 @@ the Skorch/sklearn wrappers and can be used standalone in PyTorch.
 """
 
 import logging
+from numbers import Real
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from warnings import warn
 
@@ -27,6 +28,17 @@ from torch.autograd import Function
 from torch.jit import script
 
 module_logger = logging.getLogger(__name__)
+
+
+def validate_dropout_rates(**rates: float) -> None:
+    """Validate PyTorch dropout probabilities and the stricter whole-tree keep probability."""
+    for name, rate in rates.items():
+        upper_inclusive = name != "tree_dropout"
+        valid = isinstance(rate, Real) and 0 <= rate and (rate <= 1 if upper_inclusive else rate < 1)
+        if not valid:
+            interval = "[0, 1]" if upper_inclusive else "[0, 1)"
+            raise ValueError(f"{name} must be in the interval {interval}, got {rate!r}.")
+
 
 # ==============================================================================
 # UTILITY FUNCTIONS FOR SPARSE ACTIVATIONS
@@ -393,6 +405,7 @@ class Embedding1dLayer(nn.Module):
     ) -> None:
         """Build optional continuous-feature batch norm and per-column categorical embeddings."""
         super().__init__()
+        validate_dropout_rates(embedding_dropout=embedding_dropout)
 
         if categorical_embedding_dims is None:
             categorical_embedding_dims = []
@@ -788,8 +801,7 @@ class DenseODSTBlock(nn.Sequential):
             Module: ODST class (or compatible) to use for each layer.
             **kwargs: Forwarded to each ``Module(...)`` constructor.
         """
-        if not 0 <= tree_dropout < 1:
-            raise ValueError(f"tree_dropout must be in the interval [0, 1), got {tree_dropout!r}.")
+        validate_dropout_rates(input_dropout=input_dropout, tree_dropout=tree_dropout)
 
         # Ensure max_layers_retained is never smaller than 1
         effective_max_layers_retained = max_layers_retained

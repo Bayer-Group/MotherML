@@ -125,6 +125,7 @@ from mother.ml.models.node_utils import (
     entmoid15,
     sparsemax,
     sparsemoid,
+    validate_dropout_rates,
 )
 
 # Setup module logger
@@ -745,6 +746,12 @@ class CompletePyTorchTabularNODE(nn.Module):
     ) -> None:
         """Configure and build the embedding, Dense ODST backbone, and head (see class docstring for args)."""
         super().__init__()
+        validate_dropout_rates(
+            input_dropout=input_dropout,
+            tree_dropout=tree_dropout,
+            mlp_dropout=mlp_dropout,
+            embedding_dropout=embedding_dropout,
+        )
 
         # Store configuration
         self.input_dim = input_dim
@@ -975,8 +982,12 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         This is required for ``sklearn.clone()`` which re-creates the
         estimator from ``get_params()`` → ``__init__(**params)``.
         """
-        if not 0 <= tree_dropout < 1:
-            raise ValueError(f"tree_dropout must be in the interval [0, 1), got {tree_dropout!r}.")
+        validate_dropout_rates(
+            input_dropout=input_dropout,
+            tree_dropout=tree_dropout,
+            mlp_dropout=mlp_dropout,
+            embedding_dropout=embedding_dropout,
+        )
         self.num_layers = num_layers
         self.num_trees = num_trees
         self.additional_tree_output_dim = additional_tree_output_dim
@@ -1083,23 +1094,25 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
             include_mlp: Whether to count MLP-head dropout. Set to ``False``
                 when checking dropout for flow heads (MLP dropout is irrelevant).
         """
-        if hasattr(self, "input_dropout") and self.input_dropout > 0:
-            return True
         if hasattr(self, "module_"):
-            if hasattr(self.module_, "input_dropout") and self.module_.input_dropout > 0:
+            if self.module_.tree_dropout_only_head and self.module_.tree_dropout > 0:
                 return True
-            if hasattr(self.module_, "tree_dropout") and self.module_.tree_dropout > 0:
-                return True
+            for block in self.module_.modules():
+                if isinstance(block, DenseODSTBlock) and (
+                    block.input_dropout > 0 or (not block.tree_dropout_only_head and block.tree_dropout > 0)
+                ):
+                    return True
             if (
                 include_mlp
                 and getattr(self.module_, "head_type", None) == "mlp"
-                and getattr(self.module_, "mlp_dropout", 0) > 0
+                and any(isinstance(layer, nn.Dropout) and layer.p > 0 for layer in self.module_.head.modules())
             ):
                 return True
             embedding_layer = getattr(self.module_, "embedding_layer", None)
             if (
                 getattr(embedding_layer, "cat_embedding_layers", None) is not None
                 and getattr(embedding_layer, "embedding_dropout", 0) > 0
+                and embedding_layer.embedding_dropout_layer.p > 0
             ):
                 return True
         return False
@@ -1310,6 +1323,14 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         Syncs NODE architecture params to their module__ counterparts so
         skorch knows to re-initialize the module with new values.
         """
+        dropout_parameters = {"input_dropout", "tree_dropout", "mlp_dropout", "embedding_dropout"}
+        validate_dropout_rates(
+            **{
+                name.removeprefix("module__"): value
+                for name, value in params.items()
+                if name.removeprefix("module__") in dropout_parameters
+            }
+        )
         if "criterion" in params:
             default_criterion = nn.CrossEntropyLoss if isinstance(self, NeuralNetClassifier) else nn.MSELoss
             self._user_provided_criterion = params["criterion"] is not default_criterion
@@ -1382,6 +1403,23 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
     def _prepare_input_data(self, X: Union[pd.DataFrame, npt.NDArray[np.float32]]) -> npt.NDArray[np.float32]:
         """Prepare input data for prediction, handling DataFrame inputs."""
         return self._prepare_data_for_node(X)
+
+    def get_iterator(self, dataset: Any, training: bool = False) -> Any:
+        """Preserve sample identity across predictions and repeated MC-dropout passes."""
+        iterator = super().get_iterator(dataset, training=training)
+        if not training and isinstance(iterator, torch.utils.data.DataLoader):
+            if not isinstance(iterator.sampler, torch.utils.data.SequentialSampler):
+                raise ValueError(
+                    "NODE inference requires a sequential sampler to preserve row alignment across MC passes. "
+                    "Set iterator_valid__shuffle=False and do not use a non-sequential validation sampler."
+                )
+            if iterator.drop_last:
+                raise ValueError("NODE inference requires iterator_valid__drop_last=False to preserve all input rows.")
+            if iterator.batch_sampler is not None and (
+                type(iterator.batch_sampler) is not torch.utils.data.BatchSampler or iterator.batch_sampler.drop_last
+            ):
+                raise ValueError("NODE inference requires standard sequential batches without dropping input rows.")
+        return iterator
 
     def get_embeddings(self, X: Union[pd.DataFrame, npt.NDArray[np.float32]]) -> npt.NDArray[np.float32]:
         """
@@ -3504,6 +3542,8 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
         Returns:
             Array of shape ``(num_samples, n_datapoints, n_classes)``.
         """
+        if num_samples < 1:
+            raise ValueError("num_samples must be positive.")
         model = self.module_
         model.eval()
         X_prep = self._prepare_data_for_node(X)

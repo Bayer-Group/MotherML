@@ -485,3 +485,203 @@ def test_embedding_dropout_is_recognized():
     assert model._has_active_dropout()
     result = model.predict_uncertainty(features, num_samples=20)
     assert result["knowledge_uncertainty"].max() > 1e-6
+
+
+def test_empty_mlp_does_not_report_nonexistent_dropout(tiny_regression_data):
+    features, targets = tiny_regression_data
+    model = NODERegressor(
+        head_type="mlp",
+        mlp_hidden_dims=[],
+        mlp_dropout=0.3,
+        input_dropout=0.0,
+        tree_dropout=0.0,
+        num_trees=4,
+        depth=2,
+        max_epochs=1,
+        device="cpu",
+        verbose=0,
+    ).fit(features, targets)
+
+    assert not model._has_active_dropout()
+    with pytest.warns(UserWarning, match="MC-dropout repeats are deterministic"):
+        result = model.predict_uncertainty(features, num_samples=3)
+    np.testing.assert_array_equal(result["knowledge_uncertainty"], 0.0)
+
+
+@pytest.mark.parametrize(
+    ("model_class", "head_type", "mechanism"),
+    [
+        (NODERegressor, "subset", "input"),
+        (NODERegressor, "linear", "internal_tree"),
+        (NODERegressor, "mlp", "mlp"),
+        (NODERegressor, "flow", "input"),
+        (NODERegressor, "flow", "internal_tree"),
+        (NODERegressor, "flow", "embedding"),
+        (NODEClassifier, "subset", "head_tree"),
+        (NODEClassifier, "subset", "embedding"),
+        (NODEClassifier, "linear", "input"),
+        (NODEClassifier, "mlp", "mlp"),
+    ],
+)
+@pytest.mark.parametrize(
+    "device", ["cpu", pytest.param("cuda", marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="No CUDA"))]
+)
+def test_isolated_mc_dropout_preserves_fitted_state(model_class, head_type, mechanism, device):
+    if head_type == "flow":
+        pytest.importorskip("zuko")
+    rng = np.random.default_rng(42)
+    features = pd.DataFrame({"measure": rng.normal(size=24).astype(np.float32), "category": ["a", "b", "c"] * 8})
+    targets = features["measure"].to_numpy().copy()
+    if model_class is NODEClassifier:
+        targets = (targets > 0).astype(np.int64)
+    model = model_class(
+        head_type=head_type,
+        num_trees=8,
+        depth=2,
+        num_layers=2,
+        max_epochs=1,
+        batch_size=8,
+        input_dropout=0.3 if mechanism == "input" else 0.0,
+        tree_dropout=0.3 if "tree" in mechanism else 0.0,
+        tree_dropout_only_head=mechanism != "internal_tree",
+        mlp_dropout=0.3 if mechanism == "mlp" else 0.0,
+        mlp_hidden_dims=[8],
+        cat_features=["category"],
+        embedding_dropout=0.3 if mechanism == "embedding" else 0.0,
+        batch_norm_continuous_input=True,
+        device=device,
+        verbose=0,
+    ).fit(features, targets)
+    test_features = features.iloc[:5]
+    torch.manual_seed(43)
+    before_prediction = model.predict(test_features)
+    before_state = {name: value.clone() for name, value in model.module_.state_dict().items()}
+    stochastic_outputs = []
+
+    def capture_output(module, inputs, output):
+        if module.training:
+            for child in module.modules():
+                if isinstance(child, torch.nn.modules.batchnorm._BatchNorm):
+                    assert not child.training
+            if head_type == "flow":
+                output = output.log_prob(torch.zeros(len(inputs[0]), 1, device=inputs[0].device))
+            stochastic_outputs.append(output.detach().cpu())
+
+    handle = model.module_.register_forward_hook(capture_output)
+    try:
+        result = model.predict_uncertainty(test_features, num_samples=8, num_flow_samples=12)
+    finally:
+        handle.remove()
+
+    assert len(stochastic_outputs) == 8
+    assert torch.stack(stochastic_outputs).var(dim=0, unbiased=False).max() > 1e-10
+    assert np.isfinite(result["knowledge_uncertainty"]).all()
+    assert all(not module.training for module in model.module_.modules())
+    for name, value in model.module_.state_dict().items():
+        torch.testing.assert_close(value, before_state[name], atol=0, rtol=0)
+    torch.manual_seed(43)
+    np.testing.assert_array_equal(model.predict(test_features), before_prediction)
+
+
+@pytest.mark.parametrize("return_quantiles", [False, True])
+def test_flow_dropout_overrides_restore_on_sampling_error(tiny_regression_data, monkeypatch, return_quantiles):
+    pytest.importorskip("zuko")
+    features, targets = tiny_regression_data
+    model = NODERegressor(
+        head_type="flow",
+        num_trees=4,
+        depth=2,
+        max_epochs=1,
+        input_dropout=0.0,
+        tree_dropout=0.0,
+        tree_dropout_only_head=False,
+        batch_norm_continuous_input=True,
+        device="cpu",
+        verbose=0,
+    ).fit(features, targets)
+
+    class BrokenDistribution:
+        def sample(self, shape):
+            assert model.module_.dense_block.input_dropout == 0.2
+            assert model.module_.dense_block.tree_dropout == 0.3
+            assert not model.module_.embedding_layer.cont_batch_norm.training
+            raise RuntimeError("sampling failed")
+
+    monkeypatch.setattr(model.module_, "forward", lambda features: BrokenDistribution())
+    with pytest.raises(RuntimeError, match="sampling failed"):
+        model.predict_uncertainty(
+            features[:3],
+            input_dropout=0.2,
+            tree_dropout=0.3,
+            return_quantiles=return_quantiles,
+            num_samples=4,
+            num_mc_samples=4,
+            num_flow_samples=8,
+        )
+    assert all(not module.training for module in model.module_.modules())
+    for component in (model, model.module_, model.module_.dense_block):
+        assert component.input_dropout == 0.0
+        assert component.tree_dropout == 0.0
+
+
+@pytest.mark.parametrize("model_class", [NODERegressor, NODEClassifier])
+@pytest.mark.parametrize("invalid_iterator", ["shuffle", "drop_last", "sampler"])
+def test_mc_dropout_rejects_misaligned_inference_rows(tiny_regression_data, model_class, invalid_iterator):
+    features, targets = tiny_regression_data
+    if model_class is NODEClassifier:
+        targets = (targets > 0).astype(np.int64)
+    model = model_class(num_trees=4, depth=2, max_epochs=1, batch_size=8, device="cpu", verbose=0).fit(
+        features, targets
+    )
+    option = torch.utils.data.RandomSampler(range(len(features))) if invalid_iterator == "sampler" else True
+    model.set_params(**{f"iterator_valid__{invalid_iterator}": option})
+
+    with pytest.raises(ValueError, match="NODE inference requires"):
+        model.predict_uncertainty(features[:5], num_samples=3)
+    assert all(not module.training for module in model.module_.modules())
+
+
+@pytest.mark.parametrize("return_quantiles", [False, True])
+def test_flow_mc_dropout_rejects_shuffled_rows(tiny_regression_data, return_quantiles):
+    pytest.importorskip("zuko")
+    features, targets = tiny_regression_data
+    model = NODERegressor(
+        head_type="flow",
+        num_trees=4,
+        depth=2,
+        max_epochs=1,
+        iterator_valid__shuffle=True,
+        device="cpu",
+        verbose=0,
+    ).fit(features, targets)
+
+    with pytest.raises(ValueError, match="sequential sampler"):
+        model.predict_uncertainty(
+            features[:5],
+            num_samples=3,
+            num_mc_samples=3,
+            num_flow_samples=5,
+            return_quantiles=return_quantiles,
+        )
+    assert all(not module.training for module in model.module_.modules())
+
+
+def test_sequential_prediction_batches_preserve_rows(tiny_regression_data):
+    features, targets = tiny_regression_data
+    model = NODERegressor(num_trees=4, depth=2, max_epochs=1, batch_size=8, device="cpu", verbose=0).fit(
+        features, targets
+    )
+    for _ in range(2):
+        rows = torch.cat(list(model.get_iterator(features[:19], training=False))).numpy()
+        np.testing.assert_array_equal(rows, features[:19])
+    assert isinstance(model.get_iterator(features, training=True).sampler, torch.utils.data.RandomSampler)
+
+
+@pytest.mark.parametrize("count", [0, -1])
+def test_classifier_mc_dropout_requires_positive_sample_count(tiny_regression_data, count):
+    features, targets = tiny_regression_data
+    model = NODEClassifier(num_trees=4, depth=2, max_epochs=1, device="cpu", verbose=0).fit(
+        features, (targets > 0).astype(int)
+    )
+    with pytest.raises(ValueError, match="num_samples must be positive"):
+        model.predict_uncertainty(features[:5], num_samples=count)

@@ -150,6 +150,115 @@ def test_dense_odst_tree_dropout_is_applied_once_per_layer_or_deferred_to_head()
     assert deferred_dropout_calls == 0
 
 
+@pytest.mark.parametrize("input_only", [False, True])
+@pytest.mark.parametrize("retained_layers", [None, 1])
+def test_input_dropout_masks_each_layer_independently(input_only, retained_layers):
+    features = torch.full((64, 3), 2.0)
+    block = DenseODSTBlock(
+        input_dim=3,
+        num_trees=4,
+        num_layers=3,
+        tree_output_dim=2,
+        max_layers_retained=retained_layers,
+        input_dropout=0.5,
+        input_dropout_only_input=input_only,
+        Module=RecordingConstantTreeLayer,
+    )
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(27)
+        block.train()
+        block(features)
+
+    for layer_index, layer in enumerate(block):
+        recorded = layer.inputs[0]
+        assert torch.all((recorded[:, :3] == 0) | (recorded[:, :3] == 4))
+        assert (recorded[:, :3] == 0).any() and (recorded[:, :3] == 4).any()
+        if layer_index:
+            assert not torch.equal(recorded[:, :3], block[layer_index - 1].inputs[0][:, :3])
+            retained = layer_index if retained_layers is None else min(layer_index, retained_layers)
+            expected_tail = block[0].tree_outputs.repeat(retained).expand(64, -1)
+            if input_only:
+                torch.testing.assert_close(recorded[:, 3:], expected_tail)
+            else:
+                ratios = recorded[:, 3:] / expected_tail
+                assert torch.all((ratios == 0) | (ratios == 2))
+                assert (ratios == 0).any() and (ratios == 2).any()
+
+    block.eval()
+    block(features)
+    for layer in block:
+        torch.testing.assert_close(layer.inputs[-1][:, :3], features)
+
+
+@pytest.mark.parametrize("head_only", [False, True])
+def test_full_node_tree_dropout_is_applied_once(head_only, monkeypatch):
+    model = CompletePyTorchTabularNODE(
+        input_dim=2,
+        output_dim=1,
+        num_layers=3,
+        num_trees=4,
+        depth=2,
+        additional_tree_output_dim=1,
+        tree_dropout=0.5,
+        tree_dropout_only_head=head_only,
+    )
+    model.dense_block = DenseODSTBlock(
+        input_dim=2,
+        num_trees=4,
+        num_layers=3,
+        tree_output_dim=2,
+        tree_dropout=0.5,
+        tree_dropout_only_head=head_only,
+        Module=RecordingConstantTreeLayer,
+    )
+    model.head = nn.Identity()
+    draws = []
+    original_bernoulli = torch.bernoulli
+
+    def record_draw(probabilities):
+        draws.append(probabilities.shape)
+        return original_bernoulli(probabilities)
+
+    monkeypatch.setattr(torch, "bernoulli", record_draw)
+    features = torch.ones(64, 2)
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(29)
+        model.train()
+        output = model(features)
+
+    assert len(draws) == (1 if head_only else 3)
+    reference = torch.arange(1, 9, dtype=torch.float32).reshape(4, 2).repeat(3, 1)
+    ratios = output / reference
+    assert torch.all((ratios == 0) | (ratios == 2))
+    torch.testing.assert_close(ratios[..., 0], ratios[..., 1])
+    assert not torch.equal(ratios[0], ratios[1])
+    first_layer_input_to_second = model.dense_block[1].inputs[0][:, 2:].reshape(64, 4, 2)
+    if head_only:
+        torch.testing.assert_close(first_layer_input_to_second, reference[:4].expand(64, -1, -1))
+    else:
+        torch.testing.assert_close(first_layer_input_to_second, output[:, :4])
+
+    draws.clear()
+    model.eval()
+    torch.testing.assert_close(model(features), reference.expand(64, -1, -1))
+    assert not draws
+
+
+def test_tree_dropout_preserves_mean_and_masks_gradients():
+    block = DenseODSTBlock(input_dim=2, num_trees=3, num_layers=1, tree_output_dim=2, tree_dropout=0.25)
+    features = torch.ones(32768, 6, requires_grad=True)
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(31)
+        dropped = block._apply_tree_dropout(features)
+    dropped.sum().backward()
+
+    torch.testing.assert_close(features.grad, dropped)
+    torch.testing.assert_close(dropped[:, ::2], dropped[:, 1::2])
+    assert float((dropped == 0).float().mean()) == pytest.approx(0.25, abs=0.006)
+    assert float(dropped.mean()) == pytest.approx(1.0, abs=0.01)
+    assert float(dropped.var(unbiased=False)) == pytest.approx(0.25 / 0.75, abs=0.01)
+
+
 class DropoutScopeTrial:
     """Minimal Optuna-trial stand-in that records sampled float bounds."""
 
@@ -207,6 +316,38 @@ def test_one_layer_dropout_tuning_uses_non_redundant_defaults():
 def test_tree_dropout_rejects_probability_one():
     with pytest.raises(ValueError, match=r"tree_dropout must be in the interval \[0, 1\)"):
         NODERegressor(tree_dropout=1.0, device="cpu")
+
+
+@pytest.mark.parametrize("parameter", ["input_dropout", "tree_dropout", "mlp_dropout", "embedding_dropout"])
+@pytest.mark.parametrize("value", [-0.1, 1.1, float("nan"), float("inf")])
+def test_dropout_rates_reject_invalid_values_without_mutation(parameter, value):
+    for model_class in (NODERegressor, NODEClassifier):
+        with pytest.raises(ValueError, match=parameter):
+            model_class(**{parameter: value}, device="cpu", verbose=0)
+        model = model_class(num_trees=4, depth=2, device="cpu", verbose=0).initialize()
+        before_module = model.module_
+        before_value = getattr(model, parameter)
+        for name in (parameter, f"module__{parameter}"):
+            with pytest.raises(ValueError, match=parameter):
+                model.set_params(**{name: value})
+            assert model.module_ is before_module
+            assert getattr(model, parameter) == before_value
+
+
+def test_standalone_dropout_modules_validate_even_unused_rates():
+    from mother.ml.models.node_head_utils import FlowHead, MLPHead
+    from mother.ml.models.node_utils import Embedding1dLayer
+
+    constructors = [
+        lambda: MLPHead(2, 1, hidden_dims=[], dropout=float("nan")),
+        lambda: FlowHead(2, 1, mlp_dropout=-0.1),
+        lambda: Embedding1dLayer(continuous_dim=2, embedding_dropout=1.1),
+        lambda: DenseODSTBlock(input_dim=2, num_trees=4, num_layers=1, input_dropout=float("nan")),
+        lambda: CompletePyTorchTabularNODE(input_dim=2, output_dim=1, num_trees=4, mlp_dropout=-0.1),
+    ]
+    for constructor in constructors:
+        with pytest.raises(ValueError, match="dropout"):
+            constructor()
 
 
 def test_fast_classification():
