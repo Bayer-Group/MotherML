@@ -167,7 +167,10 @@ class CheMeleonFingerprintTransformer(BaseEstimator, TransformerMixin):
         """Convert RDKit Mol objects to CheMeleon fingerprints, NaN-filling any invalid molecules."""
         check_is_fitted(self, "is_fitted_")
 
-        values = np.array(list(X), dtype=object).reshape(-1)
+        values = np.asarray(X if hasattr(X, "__array__") else list(X), dtype=object)
+        if values.ndim not in (1, 2) or (values.ndim == 2 and values.shape[1] != 1):
+            raise ValueError("Expected a 1D sequence of molecules or a single-column table.")
+        values = values.reshape(-1)
         out = np.full((len(values), self.output_dim), np.nan, dtype=np.float32)
         if len(values) == 0:
             return out
@@ -191,6 +194,8 @@ class CheMeleonFingerprintTransformer(BaseEstimator, TransformerMixin):
                 raise ValueError("CheMeleon embedder must return a 2D array.")
             if batch_embeddings.shape[1] != self.output_dim:
                 raise ValueError(f"Expected embedding size {self.output_dim} but received {batch_embeddings.shape[1]}.")
+            if batch_embeddings.shape[0] != len(batch):
+                raise ValueError(f"Expected {len(batch)} embedding rows but received {batch_embeddings.shape[0]}.")
             rows.append(batch_embeddings)
 
         out[valid_mask, :] = np.vstack(rows)

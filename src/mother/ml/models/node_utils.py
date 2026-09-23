@@ -294,7 +294,7 @@ def sparsemax(X: Tensor, dim: int = -1, k: Optional[int] = None) -> Tensor:
 def entmax15(X: Tensor, dim: int = -1, k: Optional[int] = None) -> Tensor:
     """1.5-entmax: normalizing sparse transform (a la softmax).
 
-    Solves: max_p <x, p> - H_1.5(p)    s.t.    p >= 0, sum(p) == 1.
+    Solves: max_p <x, p> + H_1.5(p)    s.t.    p >= 0, sum(p) == 1.
     where H_1.5(p) is the Tsallis alpha-entropy with alpha=1.5.
     """
     return Entmax15Function.apply(X, dim, k)
@@ -660,7 +660,8 @@ class ODST(ModuleWithInit):
                 "This may reduce threshold initialization quality on some datasets. "
                 "Prefer at least 256 samples for stable initialization; 512+ can be more robust "
                 "when memory allows. You can run manual initialization before training, ideally "
-                "under torch.no_grad() for memory efficiency."
+                "under torch.no_grad() for memory efficiency.",
+                stacklevel=2,
             )
 
         with torch.no_grad():
@@ -674,7 +675,7 @@ class ODST(ModuleWithInit):
             feature_values = torch.einsum("bi,ind->bnd", input_tensor, feature_selectors)
 
             # Initialize thresholds from sampled data quantiles (Beta distribution)
-            rng = np.random.default_rng(self.random_state)
+            rng = np.random.default_rng(self.random_state) if self.random_state is not None else np.random
             percentiles_q = 100 * rng.beta(
                 self.threshold_init_beta,
                 self.threshold_init_beta,
@@ -689,10 +690,8 @@ class ODST(ModuleWithInit):
                         feature_values_np[:, tree_idx, depth_idx], percentiles_q[tree_idx, depth_idx]
                     )
 
-            self.feature_thresholds.data[...] = torch.as_tensor(
-                thresholds,
-                dtype=feature_values.dtype,
-                device=feature_values.device,
+            self.feature_thresholds.copy_(
+                torch.as_tensor(thresholds, dtype=feature_values.dtype, device=feature_values.device)
             )
 
             # Initialize temperatures from data spread around thresholds
@@ -705,7 +704,9 @@ class ODST(ModuleWithInit):
                     )
 
             temperatures /= max(1.0, self.threshold_init_cutoff)
-            self.log_temperatures.data[...] = torch.log(torch.as_tensor(temperatures) + eps)
+            self.log_temperatures.copy_(
+                torch.log(torch.as_tensor(temperatures, dtype=feature_values.dtype, device=feature_values.device) + eps)
+            )
 
     def __repr__(self) -> str:
         """Return a compact string summarising the tree ensemble's shape hyperparameters."""
@@ -796,7 +797,8 @@ class DenseODSTBlock(nn.Sequential):
         if effective_max_layers_retained is not None and effective_max_layers_retained < 1:
             warn(
                 f"max_layers_retained={effective_max_layers_retained} is smaller than 1; "
-                "using max_layers_retained=1 to keep dimensions consistent."
+                "using max_layers_retained=1 to keep dimensions consistent.",
+                stacklevel=2,
             )
             effective_max_layers_retained = 1
 

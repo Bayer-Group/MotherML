@@ -34,7 +34,7 @@ Flow Head (NodeFlow Architecture):
     The flow head implements the NodeFlow architecture, which combines NODE with
     conditional normalizing flows for probabilistic regression. This provides:
     - Flexible uncertainty quantification
-    - Non-parametric density estimation
+    - Flexible conditional density estimation
     - Multiple flow architectures (GMM, NICE, RealNVP, NAF, UNAF, NSF, BPF) via Zuko library
 
 Usage Examples:
@@ -90,6 +90,7 @@ References:
     Entropy, 26(7), 593.
 """
 
+import copy
 import logging
 import warnings
 from contextlib import contextmanager
@@ -226,12 +227,17 @@ class InputOutputShapeSetter(skorch.callbacks.Callback):
         an error.
         """
         if isinstance(X, pd.DataFrame):
+            if not X.columns.is_unique:
+                raise ValueError("Feature column names must be unique.")
             self.feature_names_ = list(X.columns)
 
             # Only explicitly declared columns are categorical. Everything else is
             # treated as continuous (no auto-detection).
             if self.categorical_columns is not None:
-                categorical_cols = [col for col in self.categorical_columns if col in X.columns]
+                missing = [column for column in self.categorical_columns if column not in X.columns]
+                if missing:
+                    raise ValueError(f"Declared categorical columns are missing: {missing}.")
+                categorical_cols = list(dict.fromkeys(self.categorical_columns))
             else:
                 categorical_cols = []
             continuous_cols = [col for col in X.columns if col not in categorical_cols]
@@ -254,7 +260,7 @@ class InputOutputShapeSetter(skorch.callbacks.Callback):
             # For numpy arrays, treat all as continuous (backward compatibility)
             n_features: int = X.shape[1] if hasattr(X, "shape") else len(X[0])
             self.feature_names_ = [f"feature_{i}" for i in range(n_features)]
-            return list(range(n_features)), []
+            return self.feature_names_.copy(), []
 
     def _calculate_embedding_dim(self, n_categories: int) -> int:
         """Calculate appropriate embedding dimension for categorical feature."""
@@ -263,6 +269,8 @@ class InputOutputShapeSetter(skorch.callbacks.Callback):
 
     def _setup_categorical_encoders(self, X: Union[pd.DataFrame, npt.NDArray[np.float32]]) -> None:
         """Set up label encoders for categorical features."""
+        self.label_encoders_ = {}
+        self.categorical_embedding_dims_ = []
         if isinstance(X, pd.DataFrame) and self.categorical_columns_:
             for col in self.categorical_columns_:
                 # Create and fit label encoder
@@ -273,48 +281,33 @@ class InputOutputShapeSetter(skorch.callbacks.Callback):
                 # Calculate embedding dimension
                 n_categories: int = len(le.classes_)
                 embedding_dim: int = self._calculate_embedding_dim(n_categories)
-                self.categorical_embedding_dims_.append((n_categories, embedding_dim))
+                self.categorical_embedding_dims_.append((n_categories + 1, embedding_dim))
 
     def _prepare_data_for_node(self, X: Union[pd.DataFrame, npt.NDArray[np.float32]]) -> npt.NDArray[np.float32]:
-        """Convert DataFrame input to numpy array for NODE (NO dictionaries!)."""
+        """Preserve fitted column order and reserve the last category code for unknown values."""
         if isinstance(X, pd.DataFrame):
-            # Create a copy to avoid modifying original
-            X_processed: pd.DataFrame = X.copy()
+            if not X.columns.is_unique or set(X.columns) != set(self.feature_names_):
+                raise ValueError("Input columns must match the columns used during fit.")
+            processed = X.loc[:, self.feature_names_].copy()
+            for column in self.categorical_columns_:
+                encoder = self.label_encoders_[column]
+                values = processed[column].astype(str)
+                known = values.isin(encoder.classes_)
+                encoded = np.full(len(processed), len(encoder.classes_), dtype=np.int64)
+                if known.any():
+                    encoded[known] = encoder.transform(values[known])
+                processed[column] = encoded
+            for column in self.continuous_columns_:
+                if _is_string_or_object_dtype(processed[column]) or isinstance(
+                    processed[column].dtype, pd.CategoricalDtype
+                ):
+                    raise ValueError(f"Column '{column}' is non-numeric but is not declared categorical.")
+            return processed.to_numpy(dtype=np.float32)
 
-            # Encode categorical columns (both object/string and category dtypes)
-            for col in X_processed.columns:
-                # Check if it's a categorical column (object/string dtype or category dtype)
-                is_object = _is_string_or_object_dtype(X_processed[col])
-                is_category = isinstance(X_processed[col].dtype, pd.CategoricalDtype)
-
-                if is_object or is_category:
-                    # If it's a designated categorical column, use proper label encoder
-                    if col in self.categorical_columns_ and col in self.label_encoders_:
-                        try:
-                            X_processed[col] = self.label_encoders_[col].transform(X_processed[col].astype(str))
-                        except ValueError:
-                            # Handle unseen categories by assigning to first category
-                            encoded: npt.NDArray[np.int_] = np.zeros(len(X_processed), dtype=int)
-                            known_mask: pd.Series = (
-                                X_processed[col].astype(str).isin(self.label_encoders_[col].classes_)
-                            )
-                            if known_mask.any():
-                                encoded[known_mask] = self.label_encoders_[col].transform(
-                                    X_processed[col].astype(str)[known_mask]
-                                )
-                            X_processed[col] = encoded
-                    else:
-                        raise ValueError(
-                            f"Column '{col}' has a non-numeric dtype ({X_processed[col].dtype}) "
-                            f"but is not declared categorical. NODE does not auto-detect categorical "
-                            f"features. Please list '{col}' in 'cat_features' or convert it to numeric."
-                        )
-
-            # Return as numpy array - NO dictionaries!
-            return X_processed.values.astype(np.float32)
-        else:
-            # Already numpy array
-            return np.asarray(X, dtype=np.float32)
+        values = np.asarray(X, dtype=np.float32)
+        if values.ndim != 2 or values.shape[1] != len(self.feature_names_):
+            raise ValueError(f"Expected a 2D array with {len(self.feature_names_)} features.")
+        return values
 
     def on_train_begin(
         self,
@@ -330,8 +323,7 @@ class InputOutputShapeSetter(skorch.callbacks.Callback):
         self.continuous_columns_, self.categorical_columns_ = self._detect_feature_types(original_X)
 
         # === CATEGORICAL FEATURE SETUP ===
-        if self.categorical_columns_:
-            self._setup_categorical_encoders(original_X)
+        self._setup_categorical_encoders(original_X)
 
         # === INPUT DIMENSION DETECTION ===
         # Total input dimension is all features combined
@@ -377,19 +369,22 @@ class InputOutputShapeSetter(skorch.callbacks.Callback):
         update_params: Dict[str, Any] = {}
 
         # Get current parameters
-        current_params: Dict[str, Any] = net.get_params()
-
-        # Only add parameters that have changed
-        if current_params.get("module__input_dim") != input_dim:
-            update_params["module__input_dim"] = input_dim
-        if current_params.get("module__output_dim") != output_dim:
-            update_params["module__output_dim"] = output_dim
+        current_params: Dict[str, Any] = net.get_params_for("module")
+        detected_params = {
+            "input_dim": input_dim,
+            "output_dim": output_dim,
+            "categorical_indices": [self.feature_names_.index(column) for column in self.categorical_columns_],
+            "categorical_embedding_dims": self.categorical_embedding_dims_,
+        }
+        for name, value in detected_params.items():
+            if current_params.get(name) != value:
+                update_params[f"module__{name}"] = value
 
         # CRITICAL: If we're updating dimensions, preserve head_type to avoid it resetting to default
         # This ensures flow heads and other non-default heads work correctly after re-initialization
         if update_params and hasattr(net, "head_type"):
             existing_head_type = net.head_type
-            if current_params.get("module__head_type") != existing_head_type:
+            if current_params.get("head_type") != existing_head_type:
                 update_params["module__head_type"] = existing_head_type
 
         # Only update if there are actual changes
@@ -430,7 +425,7 @@ class LossFunctionSetter(skorch.callbacks.Callback):
         Delegates to ``net._set_loss(y)`` which is implemented separately
         by ``NODEClassifier`` and ``NODERegressor``.
         """
-        if hasattr(net, "_user_provided_criterion"):
+        if getattr(net, "_user_provided_criterion", False):
             return
 
         net._set_loss(y)
@@ -745,14 +740,21 @@ class CompletePyTorchTabularNODE(nn.Module):
         flow_degree: int = 16,  # Polynomial degree (BPF)
         flow_signal: int = 16,  # Hidden signal dim (NAF, UNAF)
         flow_components: int = 8,  # Mixture components (GMM)
+        categorical_indices: Optional[List[int]] = None,
+        categorical_embedding_dims: Optional[List[Tuple[int, int]]] = None,
     ) -> None:
         """Configure and build the embedding, Dense ODST backbone, and head (see class docstring for args)."""
         super().__init__()
 
         # Store configuration
-        self.continuous_dim = input_dim
-        self.embedded_cat_dim = 0
-        self.embedding_dims = []
+        self.input_dim = input_dim
+        self.categorical_indices = list(categorical_indices or [])
+        self.continuous_indices = [index for index in range(input_dim or 0) if index not in self.categorical_indices]
+        self.continuous_dim = len(self.continuous_indices)
+        self.embedding_dims = list(categorical_embedding_dims or [])
+        if len(self.categorical_indices) != len(self.embedding_dims):
+            raise ValueError("Each categorical input requires an embedding dimension.")
+        self.embedded_cat_dim = sum(dimension for _, dimension in self.embedding_dims)
         self.embedding_dropout = embedding_dropout
         self.batch_norm_continuous_input = batch_norm_continuous_input
         self.output_dim = output_dim
@@ -875,6 +877,16 @@ class CompletePyTorchTabularNODE(nn.Module):
         """Original NODE head: take first ``output_dim`` dims and mean across trees."""
         return x[..., : self.output_dim].mean(dim=-2)
 
+    def forward_features(self, features: Tensor) -> Tensor:
+        """Embed declared categories and compute tree representations before the prediction head."""
+        if features.ndim != 2 or features.shape[1] != self.input_dim:
+            raise ValueError(f"Expected a 2D tensor with {self.input_dim} input features.")
+        inputs = {
+            "continuous": features[:, self.continuous_indices] if self.continuous_indices else None,
+            "categorical": features[:, self.categorical_indices].long() if self.categorical_indices else None,
+        }
+        return self.dense_block(self.embedding_layer(inputs))
+
     def forward(self, x: Tensor) -> Tensor:
         """
         Forward pass: raw features → embedding → ODST blocks → (tree dropout) → head.
@@ -885,26 +897,7 @@ class CompletePyTorchTabularNODE(nn.Module):
         Returns:
             Predictions [batch_size, output_dim] (or flow distribution for flow heads).
         """
-        # Prepare input dict for embedding layer
-        if hasattr(self, "categorical_columns_") and hasattr(self, "continuous_columns_"):
-            continuous_indices: List[int] = []
-            categorical_indices: List[int] = []
-            all_columns: List[str] = getattr(self, "feature_names_", [])
-            if all_columns:
-                for i, col in enumerate(all_columns):
-                    if col in self.continuous_columns_:
-                        continuous_indices.append(i)
-                    elif col in self.categorical_columns_:
-                        categorical_indices.append(i)
-
-            continuous_data: Optional[Tensor] = x[:, continuous_indices] if continuous_indices else None
-            categorical_data: Optional[Tensor] = x[:, categorical_indices].long() if categorical_indices else None
-            x_dict: Dict[str, Optional[Tensor]] = {"continuous": continuous_data, "categorical": categorical_data}
-        else:
-            x_dict = {"continuous": x, "categorical": None}
-
-        x = self.embedding_layer(x_dict)
-        x = self.dense_block(x)
+        x = self.forward_features(x)
 
         # Tree dropout: randomly drop entire trees during training.
         # With tree_dropout_only_head=False the dense block already dropped whole
@@ -1056,8 +1049,9 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         - ``EarlyStopping`` (patience=20, monitor valid_loss)
         """
         callbacks_list = callbacks[:] if callbacks is not None else []
-        has_shape_setter = any(isinstance(cb, InputOutputShapeSetter) for cb in callbacks_list)
-        has_loss_setter = any(isinstance(cb, LossFunctionSetter) for cb in callbacks_list)
+        callback_objects = [callback[1] if isinstance(callback, tuple) else callback for callback in callbacks_list]
+        has_shape_setter = any(isinstance(callback, InputOutputShapeSetter) for callback in callback_objects)
+        has_loss_setter = any(isinstance(callback, LossFunctionSetter) for callback in callback_objects)
 
         if not has_shape_setter:
             callbacks_list = [
@@ -1102,6 +1096,12 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
                 and getattr(self.module_, "mlp_dropout", 0) > 0
             ):
                 return True
+            embedding_layer = getattr(self.module_, "embedding_layer", None)
+            if (
+                getattr(embedding_layer, "cat_embedding_layers", None) is not None
+                and getattr(embedding_layer, "embedding_dropout", 0) > 0
+            ):
+                return True
         return False
 
     @contextmanager
@@ -1125,19 +1125,21 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
             yield
             return
 
-        original_estimator_rates = {name: getattr(self, name) for name in overrides}
-        original_module_rates = {name: getattr(self.module_, name) for name in overrides}
+        components = [self, self.module_]
+        components.extend(module for module in self.module_.modules() if isinstance(module, DenseODSTBlock))
+        original_rates = [
+            (component, {name: getattr(component, name) for name in overrides}) for component in components
+        ]
         try:
             for name, value in overrides.items():
                 if value is not None:
-                    setattr(self, name, value)
-                    setattr(self.module_, name, value)
+                    for component in components:
+                        setattr(component, name, value)
             yield
         finally:
-            for name, value in original_estimator_rates.items():
-                setattr(self, name, value)
-            for name, value in original_module_rates.items():
-                setattr(self.module_, name, value)
+            for component, rates in original_rates:
+                for name, value in rates.items():
+                    setattr(component, name, value)
 
     def _warn_zero_dropout_mc(self, context: str) -> None:
         """Warn when MC-dropout uncertainty is requested with all dropouts disabled."""
@@ -1152,25 +1154,18 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         warnings.warn(msg, UserWarning, stacklevel=3)
 
     def _prepare_fit_X(self, X: Union[pd.DataFrame, npt.NDArray[np.float32]]) -> npt.NDArray[np.float32]:
-        """Convert DataFrame to float32 numpy array for the DataLoader.
-
-        Stores the original DataFrame so ``InputOutputShapeSetter`` can detect
-        categorical columns during ``on_train_begin``.
-        """
-        self._is_dataframe_input = hasattr(X, "columns")
-
-        if self._is_dataframe_input:
-            self._original_X_train = X
-            X_processed = X.copy()
-            for col in X_processed.columns:
-                if _is_string_or_object_dtype(X_processed[col]) or isinstance(
-                    X_processed[col].dtype, pd.CategoricalDtype
-                ):
-                    le = LabelEncoder()
-                    X_processed[col] = le.fit_transform(X_processed[col].astype(str))
-            return X_processed.values.astype(np.float32)
-
-        return np.asarray(X, dtype=np.float32)
+        """Encode training inputs with the same configured encoder used for prediction."""
+        self._is_dataframe_input = isinstance(X, pd.DataFrame)
+        if not self._is_dataframe_input:
+            X = np.asarray(X, dtype=np.float32)
+            if X.ndim != 2:
+                raise ValueError("Expected a 2D array of features.")
+        self._original_X_train = X
+        callback_objects = [callback[1] if isinstance(callback, tuple) else callback for callback in self.callbacks]
+        shape_setter = next(callback for callback in callback_objects if isinstance(callback, InputOutputShapeSetter))
+        shape_setter.continuous_columns_, shape_setter.categorical_columns_ = shape_setter._detect_feature_types(X)
+        shape_setter._setup_categorical_encoders(X)
+        return shape_setter._prepare_data_for_node(X)
 
     def _build_skorch_init_params(
         self,
@@ -1315,6 +1310,14 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         Syncs NODE architecture params to their module__ counterparts so
         skorch knows to re-initialize the module with new values.
         """
+        if "criterion" in params:
+            default_criterion = nn.CrossEntropyLoss if isinstance(self, NeuralNetClassifier) else nn.MSELoss
+            self._user_provided_criterion = params["criterion"] is not default_criterion
+        if "cat_features" in params:
+            for callback in self.callbacks:
+                callback = callback[1] if isinstance(callback, tuple) else callback
+                if isinstance(callback, InputOutputShapeSetter):
+                    callback.categorical_columns = params["cat_features"]
         if not self._supports_flow_configuration:
             invalid_flow_params = sorted(k for k in params if k.startswith("flow_"))
             if invalid_flow_params:
@@ -1371,7 +1374,7 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
     def __sklearn_clone__(self) -> "BaseNODEEstimator":
         """Custom sklearn cloning: excludes 'module' which is constructed dynamically."""
         # Get clean parameters without 'module'
-        params = self.get_params(deep=False)
+        params = copy.deepcopy(self.get_params(deep=False))
 
         # Create new instance with clean parameters
         return self.__class__(**params)
@@ -1408,55 +1411,22 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         # Set model to evaluation mode
         self.module_.eval()
 
-        # Extract embeddings
+        batches = []
+        model_device = next(self.module_.parameters()).device
         with torch.no_grad():
-            # Convert to tensor
-            X_tensor = torch.tensor(X_prepared, dtype=torch.float32)
+            for batch in self.get_iterator(X_prepared, training=False):
+                features = batch[0] if isinstance(batch, (tuple, list)) else batch
+                tree_outputs = self.module_.forward_features(features.to(model_device))
+                batches.append(tree_outputs.flatten(start_dim=1).cpu().numpy())
 
-            # Forward through embedding layer if it exists
-            # The embedding layer expects a dict with 'continuous' and 'categorical' keys
-            if hasattr(self.module_, "embedding_layer") and self.module_.embedding_layer is not None:
-                # Split features into continuous/categorical using the same logic as forward()
-                if (
-                    hasattr(self.module_, "categorical_columns_")
-                    and hasattr(self.module_, "continuous_columns_")
-                    and hasattr(self.module_, "feature_names_")
-                    and self.module_.feature_names_
-                ):
-                    continuous_indices = [
-                        i
-                        for i, col in enumerate(self.module_.feature_names_)
-                        if col in self.module_.continuous_columns_
-                    ]
-                    categorical_indices = [
-                        i
-                        for i, col in enumerate(self.module_.feature_names_)
-                        if col in self.module_.categorical_columns_
-                    ]
-                    continuous_data = X_tensor[:, continuous_indices] if continuous_indices else None
-                    categorical_data = X_tensor[:, categorical_indices].long() if categorical_indices else None
-                    x_dict: Dict[str, Optional[Tensor]] = {
-                        "continuous": continuous_data,
-                        "categorical": categorical_data,
-                    }
-                else:
-                    x_dict = {"continuous": X_tensor, "categorical": None}
-                X_embedded = self.module_.embedding_layer(x_dict)
-            else:
-                X_embedded = X_tensor
-
-            # Forward through the dense block (NODE layers) to get tree outputs
-            # This is the representation before the head
-            tree_outputs = self.module_.dense_block(X_embedded)
-
-            # Flatten the tree outputs to get embeddings
-            # Shape: (batch_size, num_layers, num_trees, total_output_dim) -> (batch_size, -1)
-            embeddings = tree_outputs.reshape(tree_outputs.shape[0], -1)
-
-            # Convert to numpy
-            embeddings_np = embeddings.cpu().numpy()
-
-        return embeddings_np
+        if batches:
+            return np.concatenate(batches, axis=0)
+        output_width = (
+            self.module_.num_layers
+            * self.module_.num_trees
+            * (self.module_.output_dim + self.module_.additional_tree_output_dim)
+        )
+        return np.empty((0, output_width), dtype=np.float32)
 
     def _predict_uncertainty_mc_dropout(
         self,
@@ -1465,7 +1435,8 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         quantiles: Optional[List[float]] = None,
         return_dataframe: bool = False,
         use_std: bool = True,
-    ) -> Union[npt.NDArray[np.float32], pd.DataFrame]:
+        return_mean: bool = False,
+    ) -> Union[npt.NDArray[np.float32], pd.DataFrame, Tuple[npt.NDArray[np.float32], npt.NDArray[np.float32]]]:
         """
         Monte Carlo Dropout for uncertainty estimation (shared by regressor and classifier).
 
@@ -1483,6 +1454,10 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         Returns:
             Array of std/IQR values or DataFrame with std/IQR and quantiles
         """
+        if num_samples < 1:
+            raise ValueError("num_samples must be positive.")
+        if return_mean and (quantiles is not None or return_dataframe):
+            raise ValueError("return_mean cannot be combined with quantiles or return_dataframe.")
         # Determine if this is a classifier based on the instance type
         is_classifier = isinstance(self, NeuralNetClassifier)
 
@@ -1496,6 +1471,9 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
                 predictions = self.predict_proba(X)  # type: ignore
             else:
                 predictions = self.predict(X)  # type: ignore
+
+            if return_mean:
+                return np.zeros_like(predictions), predictions
 
             # Return zeros for IQR since there's no uncertainty
             if quantiles and return_dataframe:
@@ -1554,28 +1532,17 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
 
         all_predictions = []
 
-        with torch.no_grad():
-            for _ in range(num_samples):
-                sample_predictions = []
-
-                # Iterate through batches
-                for batch in self.get_iterator(X, training=False):
-                    Xi = batch[0] if isinstance(batch, (tuple, list)) else batch
-                    Xi = Xi.to(self.device)
-
-                    # Use model's forward method which includes appropriate dropout
-                    # - Subset/Linear/Flow: tree dropout applied in forward pass
-                    # - MLP: internal dropout layers in MLP head are active
-                    predictions = model(Xi)
-
-                    sample_predictions.append(predictions.detach().cpu().numpy())
-
-                # Concatenate all batch predictions for this sample
-                sample_predictions_np = np.concatenate(sample_predictions, axis=0)
-                all_predictions.append(sample_predictions_np)
-
-        # Restore model to eval mode
-        model.eval()
+        try:
+            with torch.no_grad():
+                for _ in range(num_samples):
+                    sample_predictions = []
+                    for batch in self.get_iterator(X, training=False):
+                        features = batch[0] if isinstance(batch, (tuple, list)) else batch
+                        predictions = model(features.to(self.device))
+                        sample_predictions.append(predictions.detach().cpu().numpy())
+                    all_predictions.append(np.concatenate(sample_predictions, axis=0))
+        finally:
+            model.eval()
 
         # Stack predictions: shape (num_samples, n_samples, n_outputs)
         all_predictions_np = np.stack(all_predictions, axis=0)
@@ -1591,6 +1558,8 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
             uncertainty = q75 - q25
 
         # If no quantiles requested, return std/IQR only
+        if return_mean:
+            return uncertainty, all_predictions_np.mean(axis=0)
         if quantiles is None:
             # Flatten if single output dimension
             if hasattr(self, "module_") and getattr(self.module_, "output_dim", 1) == 1 and not is_classifier:
@@ -1964,6 +1933,7 @@ class NODERegressor(BaseNODEEstimator):
         self.model_type = model_type
         self.target_type = target_type
         self.task_weights = task_weights
+        self._user_provided_criterion = criterion is not nn.MSELoss
 
         # Resolve mutable default for mlp_hidden_dims
         if mlp_hidden_dims is None:
@@ -2053,6 +2023,10 @@ class NODERegressor(BaseNODEEstimator):
           for multi-task regression
         """
         if self._is_flow_head:
+            if self.task_weights is not None:
+                raise ValueError("task_weights are only supported for non-flow regression heads.")
+            if not torch.isfinite(y_true).all():
+                raise ValueError("Flow heads require complete, finite targets; use a non-flow head for NaN masking.")
             # For flow heads, y_pred is the flow distribution conditioned on X
             # We need to compute the negative log probability directly
             model_device = next(self.module_.parameters()).device if hasattr(self, "module_") else y_true.device
@@ -2074,10 +2048,11 @@ class NODERegressor(BaseNODEEstimator):
         # Handle NaN values in multi-task regression targets
         has_nan = torch.isnan(y_true).any()
 
-        if has_nan:
+        if has_nan or self.task_weights is not None:
             is_multitask = y_true.dim() > 1 and y_true.shape[-1] > 1
 
             if is_multitask:
+                y_true = y_true.to(y_pred.device)
                 mask = ~torch.isnan(y_true)
                 has_any_valid = mask.any(dim=-1)
 
@@ -2103,13 +2078,14 @@ class NODERegressor(BaseNODEEstimator):
                 if hasattr(criterion_instance, "reduction"):
                     criterion_instance.reduction = "none"
 
-                # Replace NaN with zeros to prevent NaN gradients
-                y_true_safe = torch.where(mask, y_true, torch.zeros_like(y_true))
-                loss_all = criterion_instance(y_pred, y_true_safe)
-
-                # Restore original reduction setting
-                if hasattr(criterion_instance, "reduction"):
-                    criterion_instance.reduction = original_reduction
+                try:
+                    y_true_safe = torch.where(mask, y_true, torch.zeros_like(y_true))
+                    loss_all = criterion_instance(y_pred, y_true_safe)
+                finally:
+                    if hasattr(criterion_instance, "reduction"):
+                        criterion_instance.reduction = original_reduction
+                if loss_all.shape != y_true.shape:
+                    raise ValueError("NaN masking and task_weights require an elementwise regression loss.")
 
                 # Mask out losses for NaN targets, compute per-target mean
                 loss_masked = torch.where(mask, loss_all, torch.tensor(0.0, device=loss_all.device))
@@ -2125,11 +2101,17 @@ class NODERegressor(BaseNODEEstimator):
                     else:
                         task_weights_tensor = self.task_weights.to(loss_per_target.device)
 
-                    if task_weights_tensor.shape[0] != loss_per_target.shape[0]:
+                    if task_weights_tensor.ndim != 1 or task_weights_tensor.numel() != loss_per_target.numel():
                         raise ValueError(
-                            f"task_weights length ({task_weights_tensor.shape[0]}) must match "
+                            f"task_weights must be a vector whose length ({task_weights_tensor.numel()}) matches "
                             f"number of targets ({loss_per_target.shape[0]})"
                         )
+                    if (
+                        not torch.isfinite(task_weights_tensor).all()
+                        or (task_weights_tensor < 0).any()
+                        or task_weights_tensor.sum() <= 0
+                    ):
+                        raise ValueError("task_weights must be finite, non-negative, and have a positive sum.")
 
                     # Normalize weights so weighted avg == unweighted when all weights equal
                     normalized_weights = task_weights_tensor * len(task_weights_tensor) / task_weights_tensor.sum()
@@ -2138,6 +2120,8 @@ class NODERegressor(BaseNODEEstimator):
                 else:
                     return loss_per_target.mean()
             else:
+                if self.task_weights is not None:
+                    raise ValueError("task_weights require multi-target regression.")
                 # Single-task regression with NaN - not supported
                 num_nan = torch.isnan(y_true).sum().item()
                 total = y_true.numel()
@@ -2173,30 +2157,7 @@ class NODERegressor(BaseNODEEstimator):
         **fit_params: Any,
     ) -> "NODERegressor":
         """Enhanced fit method with DataFrame support."""
-        # Store whether input was DataFrame for later use
-        self._is_dataframe_input = hasattr(X, "columns")
-
-        # For DataFrames, store original for callback processing
-        if self._is_dataframe_input:
-            self._original_X_train = X
-            # Convert DataFrame to numpy for PyTorch DataLoader compatibility
-            # The callback will detect categorical features and set up encoders
-            # But we need numeric data for DataLoader, so encode object/category columns temporarily
-            X_processed = X.copy()
-
-            for col in X_processed.columns:
-                # Encode both object/string and category dtypes
-                if _is_string_or_object_dtype(X_processed[col]) or isinstance(
-                    X_processed[col].dtype, pd.CategoricalDtype
-                ):
-                    # Temporary encoding for DataLoader compatibility
-                    le = LabelEncoder()
-                    X_processed[col] = le.fit_transform(X_processed[col].astype(str))
-
-            X = X_processed.values.astype(np.float32)
-        else:
-            X = np.asarray(X, dtype=np.float32)
-
+        X = self._prepare_fit_X(X)
         y = np.asarray(y, dtype=np.float32)
         return super().fit(X, y, **fit_params)  # type: ignore
 
@@ -2303,6 +2264,9 @@ class NODERegressor(BaseNODEEstimator):
             predictions = y_scaler.inverse_transform(predictions_scaled.reshape(-1, 1)).ravel()
             ```
         """
+        if num_samples < 1:
+            raise ValueError("num_samples must be positive.")
+        X = self._prepare_data_for_node(X)
         self.module_.eval()
         sampled_distributions: List[Tensor] = []
         modes: List[Tensor] = []
@@ -2324,9 +2288,8 @@ class NODERegressor(BaseNODEEstimator):
                     modes.append(samples_bsd[row_idx, best_sample_idx])
 
         if return_sample_distribution:
-            # Concatenate batches along molecule axis, permute to (N, S, D), sort samples ascending
             merged = torch.cat(sampled_distributions, dim=1).permute(1, 0, 2)
-            sampled_np: npt.NDArray[np.float32] = torch.sort(merged, dim=1).values.cpu().numpy()
+            sampled_np: npt.NDArray[np.float32] = merged.cpu().numpy()
             return sampled_np
 
         # Concatenate and convert to numpy
@@ -2349,6 +2312,8 @@ class NODERegressor(BaseNODEEstimator):
         knowledge_method: Literal["bald", "balsa_emd"] = "bald",
         input_dropout: Optional[float] = None,
         tree_dropout: Optional[float] = None,
+        num_mc_samples: Optional[int] = None,
+        num_flow_samples: int = 100,
         **kwargs: Any,
     ) -> Union[pd.DataFrame, Tuple[pd.DataFrame, npt.NDArray[np.float32]]]:
         """Predict uncertainty, optionally overriding custom NODE dropout rates.
@@ -2365,6 +2330,9 @@ class NODERegressor(BaseNODEEstimator):
                 ``[0.0, 1.0)``. ``None`` preserves the fitted rate.
             tree_dropout: Temporary whole-tree dropout rate in ``[0.0, 1.0)``.
                 ``None`` preserves the fitted rate.
+            num_mc_samples: Dropout passes for flow decomposition. ``None`` uses
+                ``num_samples`` for backwards compatibility.
+            num_flow_samples: Density samples per dropout pass for flow decomposition.
 
         Raises:
             ValueError: If either supplied rate is outside ``[0.0, 1.0)``.
@@ -2378,6 +2346,8 @@ class NODERegressor(BaseNODEEstimator):
                 num_samples=num_samples,
                 use_std=use_std,
                 knowledge_method=knowledge_method,
+                num_mc_samples=num_mc_samples,
+                num_flow_samples=num_flow_samples,
                 **kwargs,
             )
 
@@ -2390,7 +2360,9 @@ class NODERegressor(BaseNODEEstimator):
         num_samples: int = 100,
         use_std: bool = True,
         knowledge_method: Literal["bald", "balsa_emd"] = "bald",
-        **kwargs,
+        num_mc_samples: Optional[int] = None,
+        num_flow_samples: int = 100,
+        **kwargs: Any,
     ) -> Union[pd.DataFrame, Tuple[pd.DataFrame, npt.NDArray[np.float32]]]:
         """
         Predict with uncertainty estimation for regression (Mother framework compatible).
@@ -2400,8 +2372,8 @@ class NODERegressor(BaseNODEEstimator):
         estimates in a standardised DataFrame.
 
         Three uncertainty estimation methods:
-        1. **Flow head with dropout**: Provides both data uncertainty (from flow) and
-           knowledge uncertainty (from MC Dropout) — the gold standard.
+          1. **Flow head with dropout**: Estimates data uncertainty from conditional
+              densities and knowledge uncertainty from MC-dropout disagreement.
         2. **Flow head without dropout**: Returns data uncertainty only from flow distribution.
         3. **Non-flow heads with dropout**: Returns knowledge uncertainty from MC Dropout.
 
@@ -2420,10 +2392,10 @@ class NODERegressor(BaseNODEEstimator):
                 no epistemic estimate.
                 For a flow head **with** dropout the score is *always* the sampled
                 BALSA-EMD disagreement (``knowledge_method`` is overridden to
-                ``"balsa_emd"``), because Werner & Schmidt-Thieme (2025) show that
-                the full distributional distance between MC-dropout flows ranks
-                query candidates better than the entropy-subtraction ``BALD_H``
-                score, which collapses each flow to a single entropy value. These
+                ``"balsa_emd"``), following a distribution-disagreement acquisition
+                strategy. This is a design choice, not a guarantee of better
+                rankings on every dataset. BALD also uses the predictive mixture
+                and captures disagreement between densities. These
                 scores are Wasserstein distances on the target scale (not nats), so
                 they are only meaningful as a *relative ranking* signal and are not
                 additive with ``data_uncertainty``.
@@ -2471,6 +2443,8 @@ class NODERegressor(BaseNODEEstimator):
             ...     X_test, return_quantiles=True, quantiles=[0.025, 0.5, 0.975]
             ... )
         """
+        if num_samples < 1 or num_flow_samples < 1 or (num_mc_samples is not None and num_mc_samples < 1):
+            raise ValueError("Sampling counts must be positive.")
         # Check if using flow head
         is_flow_head = (
             hasattr(self, "module_") and hasattr(self.module_, "head_type") and self.module_.head_type == "flow"
@@ -2479,8 +2453,6 @@ class NODERegressor(BaseNODEEstimator):
         # For flow heads, only input/tree dropout influence MC uncertainty.
         has_dropout = self._has_active_dropout(include_mlp=not is_flow_head)
 
-        # Active learning always uses the BALSA-EMD disagreement score, which ranks
-        # candidates better than the entropy-subtraction BALD_H term for flows.
         if uncertainty_for_opt and is_flow_head and has_dropout:
             knowledge_method = "balsa_emd"
 
@@ -2514,7 +2486,7 @@ class NODERegressor(BaseNODEEstimator):
 
             if has_dropout:
                 # Split the sample budget across MC passes.
-                n_mc = max(5, num_samples // 20)
+                n_mc = num_mc_samples if num_mc_samples is not None else max(5, num_samples // 20)
                 n_flow_per_pass = max(10, num_samples // n_mc)
                 model.training = True
                 for _m in model.modules():
@@ -2556,8 +2528,8 @@ class NODERegressor(BaseNODEEstimator):
             # Get the full stats to access total_uncertainty
             stats = self.predict_with_combined_uncertainty(
                 X,
-                num_mc_samples=num_samples,
-                num_flow_samples=100,
+                num_mc_samples=num_samples if num_mc_samples is None else num_mc_samples,
+                num_flow_samples=num_flow_samples,
                 knowledge_method=knowledge_method,
                 return_all=True,
             )
@@ -2585,6 +2557,7 @@ class NODERegressor(BaseNODEEstimator):
             self.module_.eval()
 
             all_modes = []
+            all_means = []
             data_unc_list = []
 
             with torch.no_grad():
@@ -2595,16 +2568,18 @@ class NODERegressor(BaseNODEEstimator):
                     fsamples = yp.sample(torch.Size([num_samples]))
                     entropy = -yp.log_prob(fsamples).mean(dim=0)
                     all_modes.append(mode_pred)
+                    all_means.append(fsamples.mean(dim=0))
                     data_unc_list.append(entropy)
 
             # Concatenate and convert to numpy
             predictions = torch.cat(all_modes, 0).cpu().numpy()
+            mean_predictions = torch.cat(all_means, 0).cpu().numpy()
             uncertainties = torch.cat(data_unc_list, 0).cpu().numpy().flatten()  # Always 1D
 
             results = pd.DataFrame(
                 {
                     "pred": _prepare_for_dataframe(predictions),
-                    "mean_predictions": _prepare_for_dataframe(predictions),
+                    "mean_predictions": _prepare_for_dataframe(mean_predictions),
                     "knowledge_uncertainty": None,
                     "data_uncertainty": uncertainties,  # Always scalar (1D array)
                     "total_uncertainty": uncertainties,  # Always scalar (1D array)
@@ -2616,18 +2591,19 @@ class NODERegressor(BaseNODEEstimator):
         else:
             predictions = self.predict(X)
 
-            uncertainties = super()._predict_uncertainty_mc_dropout(
+            uncertainties, mean_predictions = super()._predict_uncertainty_mc_dropout(
                 X,
                 num_samples=num_samples,
                 quantiles=None,
                 return_dataframe=False,
                 use_std=use_std,
+                return_mean=True,
             )
 
             results = pd.DataFrame(
                 {
                     "pred": _prepare_for_dataframe(predictions),
-                    "mean_predictions": _prepare_for_dataframe(predictions),
+                    "mean_predictions": _prepare_for_dataframe(mean_predictions),
                     "knowledge_uncertainty": _prepare_for_dataframe(uncertainties),
                     "data_uncertainty": None,
                     "total_uncertainty": _prepare_for_dataframe(uncertainties),
@@ -2746,80 +2722,23 @@ class NODERegressor(BaseNODEEstimator):
             provably non-negative (clamped at 0 to absorb Monte-Carlo noise) so the
             identity ``total == data + knowledge`` holds exactly.
 
-            The ``knowledge`` term above is exactly BALD with continuous entropy
-            (``BALD_H`` in Werner & Schmidt-Thieme, 2025): a *scalar-entropy*
-            acquisition score computed by first aggregating each flow ``p_t`` into a
-            single number ``H[p_t]`` and then subtracting from the mixture entropy.
+                        This mutual information also equals the mean KL divergence from each
+                        dropout density to their mixture. It captures differences in location
+                        and shape even when all component entropies are identical.
 
-        Sources / lineage (name the right ones):
-            * MI decomposition: Houlsby et al. 2011 (BALD).
-            * MC-dropout ensemble approximation: Gal, Islam & Ghahramani 2017.
-            * Continuous / regression via differential entropy: Depeweg et al. 2018.
-            * Flow ensemble + *sampled* entropy ``H = -(1/S) Σ_s log p(y_s)`` combined
-              by subtraction: this is exactly the ``NFlows Out`` method of Berry &
-              Meger 2023 (AAAI 2023, pp. 6806-6814; arXiv:2308.13498). Werner &
-              Schmidt-Thieme 2025 (BALSA) label this baseline ``BALD_H``.
-            IMPORTANT attribution details:
-              - We estimate the entropy by SAMPLING (as ``NFlows Out`` does), NOT on a
-                fixed grid; the grid/trapezoidal variant is BALSA's own ``BALD_H``.
-              - Dropout lives in the NODE trunk / flow-head conditioner with RANDOM
-                masks (matches BALSA's stated setup), whereas ``NFlows Out`` uses FIXED
-                masks inside the flow's bijective transforms. The decomposition maths is
-                identical; only the location/type of the injected noise differs.
+                The alternative ``balsa_emd`` score sums empirical Wasserstein-1 distances
+                between consecutive dropout distributions. For multiple targets it uses
+                random one-dimensional projections (sliced Wasserstein), not exact joint
+                Earth Mover's Distance. This score depends on target scaling, the number
+                of dropout passes, and finite-sample noise. Keep these settings fixed when
+                ranking candidates; even identical densities can have positive empirical
+                distance. It is not calibrated uncertainty and is not additive with entropy.
 
-        Relation to BALSA (Bayesian Active Learning by Distribution Disagreement):
-            BALSA (Werner & Schmidt-Thieme, 2025; arXiv:2501.01248) is an
-            active-learning acquisition function that improves on BALD_H for
-            normalizing-flow regression. The insight: collapsing each ``p_t`` to a
-            single entropy value throws away most of the distributional information,
-            and Shannon-entropy / std / least-confidence scores empirically pick poor
-            query points for flows. BALSA instead measures the *disagreement between
-            the flows directly* with a full distributional distance ``φ`` rather than
-            the ``H[mixture] - mean H`` subtraction:
-
-                BALD_H(x)  = Σ_t ( H[p̄] - H[p_t] )          (current code)
-                BALSA(x)   = Σ_t φ( p_t , p̄ )                (distribution distance)
-
-            with ``p̄ = (1/T) Σ_t p_t`` the mixture ("average") flow. Two variants of
-            ``φ`` and two ways to form ``p̄`` are proposed:
-
-            * ``BALSA_KL`` — φ = KL divergence between densities. Best performer
-              overall (``BALSA_KL Pair`` was SOTA across 4 datasets). Two flavours:
-                - *Grid*: normalise ``y`` to [0, 1], evaluate every ``p_t`` on a fixed
-                  grid (≈200 points) to get likelihood vectors, average them into
-                  ``p̄``, then Σ_t KL(p_t, p̄).
-                - *Pair*: skip ``p̄`` entirely and sum KL over the ``T-1`` consecutive
-                  i.i.d. dropout pairs, Σ_t KL(p_t, p_{t+1}).
-            * ``BALSA_EMD`` — φ = Earth-Mover's / Wasserstein distance over i.i.d.
-              samples of consecutive pairs, Σ_t EMD(y'_t, y'_{t+1}), y'_t ~ p_t
-              (pair-only, since EMD needs samples not grid densities).
-
-            Recommended MC-dropout rate for BALSA is low (~0.05), a full order of
-            magnitude below the classic 0.5 used for classification BALD.
-
-        Integrating BALSA into this estimator (not yet implemented):
-            All ingredients already exist in this method — no re-training needed:
-
-            * ``dists_by_batch[b][t]`` holds the ``T`` per-pass zuko flow objects and
-              ``samples_by_batch[b][t]`` the ``S`` samples drawn from each. The
-              ``lp_stack`` cross-evaluation (``log p_{t'}(y_{t,s})`` for all ``t'``)
-              already computes everything ``BALSA_KL Pair`` needs, because
-              ``KL(p_t, p_{t+1}) ≈ (1/S) Σ_s [log p_t(y_s) - log p_{t+1}(y_s)]``,
-              ``y_s ~ p_t`` — i.e. a cheap slice of the tensor we build for the
-              mixture-entropy term (essentially free).
-            * ``BALSA_KL Grid`` needs a fixed 1-D grid over the (normalised) target
-              range and ``flow.log_prob`` evaluated on it, then a mean over ``t`` and a
-              trapezoidal KL — a handful of extra tensor ops.
-            * ``BALSA_EMD`` needs ``scipy.stats.wasserstein_distance`` (or a sorted-
-              sample 1-D EMD) on the per-pass sample sets already stored.
-
-            Suggested surface: a sibling ``acquisition_score(X, method="balsa_kl_pair"
-            | "balsa_kl_grid" | "balsa_emd" | "bald")`` returning one score per row for
-            pool-based active-learning point selection. It would reuse this method's
-            MC-dropout collection loop and simply swap the final reduction. The
-            existing ``knowledge_uncertainty`` (BALD_H) already serves as the
-            ``"bald"`` baseline. Multi-target (D > 1) would need a per-dimension or
-            joint-grid extension, as the paper only covers scalar targets.
+                MC dropout approximates a model ensemble; it does not guarantee calibrated
+                uncertainty. Validate density quality, interval coverage, and acquisition
+                performance for the intended dataset. Related methods include BALD
+                (Houlsby et al., 2011), MC dropout (Gal and Ghahramani, 2016), and BALSA
+                (Werner and Schmidt-Thieme, 2025).
 
         Args:
             X: Input features [n_samples, n_features]
@@ -2854,6 +2773,8 @@ class NODERegressor(BaseNODEEstimator):
 
         if knowledge_method not in {"bald", "balsa_emd"}:
             raise ValueError("knowledge_method must be one of {'bald', 'balsa_emd'}.")
+        if num_mc_samples < 1 or num_flow_samples < 1:
+            raise ValueError("num_mc_samples and num_flow_samples must be positive.")
 
         # Check if ANY dropout is configured that affects the flow head.
         # Note: mlp_dropout is not relevant for flow heads (only for MLP heads).
@@ -2970,6 +2891,7 @@ class NODERegressor(BaseNODEEstimator):
         pred_list = []
         per_pass_entropy_list = []  # each (T, B) -> mc_uncertainties
         per_pass_mean_list = []  # each (T, B, D) -> mc_means
+        per_pass_std_list = []
 
         with torch.no_grad():
             for b in range(len(dists_by_batch)):
@@ -2980,32 +2902,34 @@ class NODERegressor(BaseNODEEstimator):
                 per_source_self = []  # each (S, B): log p_t(y_{t,s})
                 for t in range(T):
                     samp_t = samples_b[t]  # (S, B, D)
-                    # log p_{t'}(y_{t,s}) for every t' -> (T, S, B)
-                    lp_stack = torch.stack([dists_b[tp].log_prob(samp_t) for tp in range(T)], dim=0)
-                    # Mixture density: log p-bar = logsumexp_t' log p_t'  - log T
-                    per_source_mix.append(torch.logsumexp(lp_stack, dim=0) - log_T)  # (S, B)
-                    per_source_self.append(lp_stack[t])  # (S, B)
+                    if knowledge_method == "bald":
+                        lp_stack = torch.stack([distribution.log_prob(samp_t) for distribution in dists_b], dim=0)
+                        per_source_mix.append(torch.logsumexp(lp_stack, dim=0) - log_T)
+                        per_source_self.append(lp_stack[t])
+                    else:
+                        per_source_self.append(dists_b[t].log_prob(samp_t))
 
-                mix_all = torch.stack(per_source_mix, dim=0)  # (T, S, B)
                 self_all = torch.stack(per_source_self, dim=0)  # (T, S, B)
 
                 # Differential entropies (per sample in batch)
-                total_list.append(-mix_all.mean(dim=(0, 1)))  # (B,)
+                if per_source_mix:
+                    total_list.append(-torch.stack(per_source_mix, dim=0).mean(dim=(0, 1)))
                 data_list.append(-self_all.mean(dim=(0, 1)))  # (B,)
 
                 # Per-pass diagnostics
                 per_pass_entropy_list.append(-self_all.mean(dim=1))  # (T, B)
                 samp_stack = torch.stack(samples_b, dim=0)  # (T, S, B, D)
                 per_pass_mean_list.append(samp_stack.mean(dim=1))  # (T, B, D)
+                per_pass_std_list.append(samp_stack.std(dim=1, unbiased=False))
 
                 # Point prediction: mean over all pooled samples
                 pred_list.append(samp_stack.mean(dim=(0, 1)))  # (B, D)
 
         data_uncertainty = torch.cat(data_list, dim=0).detach().cpu().numpy()  # (N,)
-        total_raw = torch.cat(total_list, dim=0).detach().cpu().numpy()  # (N,)
         predictions = torch.cat(pred_list, dim=0).detach().cpu().numpy()  # (N, D)
 
         if knowledge_method == "bald":
+            total_raw = torch.cat(total_list, dim=0).detach().cpu().numpy()
             # Knowledge = mutual information = total - data. Clamp at 0
             # (Monte-Carlo noise can push the Jensen gap slightly negative), then
             # re-derive total so total == data + knowledge holds exactly.
@@ -3021,6 +2945,7 @@ class NODERegressor(BaseNODEEstimator):
         # Per-pass diagnostics: (T, N) -> (num_mc, N, 1); means (num_mc, N, D)
         mc_unc = torch.cat(per_pass_entropy_list, dim=1).unsqueeze(-1).detach().cpu().numpy()
         mc_means = torch.cat(per_pass_mean_list, dim=1).detach().cpu().numpy()
+        mc_stds = torch.cat(per_pass_std_list, dim=1).detach().cpu().numpy()
 
         # Flatten per-sample scores to 1D
         data_uncertainty = data_uncertainty.flatten()
@@ -3041,7 +2966,7 @@ class NODERegressor(BaseNODEEstimator):
                 "knowledge_method": knowledge_method,
                 "mc_means": mc_means,  # [num_mc, total_samples, output_dim]
                 "mc_uncertainties": mc_unc,  # [num_mc, total_samples, 1] - per-pass entropy
-                "mc_stds": mc_unc,  # legacy alias for backward compatibility
+                "mc_stds": mc_stds,
             }
         else:
             return predictions, knowledge_uncertainty, data_uncertainty
@@ -3254,6 +3179,7 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
         self.model_type = model_type
 
         # Classifier does not accept any flow-specific kwargs.
+        self._user_provided_criterion = criterion is not nn.CrossEntropyLoss
         invalid_flow_kwargs = sorted(k for k in kwargs if k.startswith("flow_"))
         if invalid_flow_kwargs:
             raise TypeError(
@@ -3370,29 +3296,7 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
         **fit_params: Any,
     ) -> "NODEClassifier":
         """Enhanced fit method with DataFrame support."""
-        # Store whether input was DataFrame for later use
-        self._is_dataframe_input = hasattr(X, "columns")
-
-        # For DataFrames, store original for callback processing
-        if self._is_dataframe_input:
-            self._original_X_train = X
-            # Convert DataFrame to numpy for PyTorch DataLoader compatibility
-            # The callback will detect categorical features and set up encoders
-            # But we need numeric data for DataLoader, so encode object/category columns temporarily
-            X_processed = X.copy()
-
-            for col in X_processed.columns:
-                # Encode both object/string and category dtypes
-                if _is_string_or_object_dtype(X_processed[col]) or isinstance(
-                    X_processed[col].dtype, pd.CategoricalDtype
-                ):
-                    # Temporary encoding for DataLoader compatibility
-                    le = LabelEncoder()
-                    X_processed[col] = le.fit_transform(X_processed[col].astype(str))
-
-            X = X_processed.values.astype(np.float32)
-        else:
-            X = np.asarray(X, dtype=np.float32)
+        X = self._prepare_fit_X(X)
 
         # Convert y to appropriate dtype based on criterion
         # BCELoss/BCEWithLogitsLoss need float32; CrossEntropyLoss needs int64.
@@ -3408,7 +3312,7 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
                 y = y.flatten()
 
             criterion_class = self.criterion if isinstance(self.criterion, type) else type(self.criterion)
-            if criterion_class in (nn.BCELoss, nn.BCEWithLogitsLoss):
+            if self._user_provided_criterion and criterion_class in (nn.BCELoss, nn.BCEWithLogitsLoss):
                 y = np.asarray(y, dtype=np.float32)
             else:
                 # Default to int64 for CrossEntropyLoss and most classification losses
@@ -3499,6 +3403,11 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
         returning predictions along with uncertainty estimates in a standardised
         DataFrame.
 
+        For multi-label classification, ``pred`` contains a binary vector and
+        ``mean_predictions`` contains a probability vector for each row. The
+        uncertainty columns sum the per-label Bernoulli entropies and mutual
+        information; these are marginal-label summaries, not joint-label entropy.
+
         Args:
             X: Input features.
             return_quantiles: Not supported for classification. Quantiles are only
@@ -3530,9 +3439,8 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
         """
         if return_quantiles:
             raise ValueError(
-                "Quantiles are only available for flow heads. NODE classification "
-                "estimates uncertainty via MC-dropout, not a calibrated predictive "
-                "distribution. Set return_quantiles=False."
+                "Quantiles are only available for flow heads. Use predict_proba() "
+                "or predict_uncertainty(return_quantiles=False) for classification."
             )
 
         from scipy.stats import entropy
@@ -3542,29 +3450,33 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
 
         # Predictive (mean) distribution across MC passes.
         mean_probs = probabilities.mean(axis=0)  # (n_datapoints, n_classes)
-        pred = mean_probs.argmax(axis=1)
 
         # Uncertainty decomposition matching CatBoost (Malinin et al.):
         #   total     = entropy of the mean predictive distribution  H(mean_p)
         #   data      = mean per-pass entropy (expected entropy)      E_t[H(p_t)]
         #   knowledge = total - data (mutual information; 0 when dropout inactive)
-        total_uncertainty = entropy(mean_probs, axis=1)
-        per_pass_entropy = entropy(probabilities, axis=2)  # (num_samples, n_datapoints)
+        if isinstance(self.criterion_, nn.BCEWithLogitsLoss):
+            pred = (mean_probs > 0.5).astype(int)
+            mean_predictions = mean_probs
+            mean_bernoulli = np.stack([mean_probs, 1.0 - mean_probs], axis=-1)
+            per_pass_bernoulli = np.stack([probabilities, 1.0 - probabilities], axis=-1)
+            total_uncertainty = entropy(mean_bernoulli, axis=-1).sum(axis=-1)
+            per_pass_entropy = entropy(per_pass_bernoulli, axis=-1).sum(axis=-1)
+        else:
+            pred = mean_probs.argmax(axis=1)
+            mean_predictions = mean_probs[:, 1] if mean_probs.shape[1] == 2 else mean_probs.max(axis=1)
+            total_uncertainty = entropy(mean_probs, axis=1)
+            per_pass_entropy = entropy(probabilities, axis=2)
         data_uncertainty = per_pass_entropy.mean(axis=0)
-        knowledge_uncertainty = total_uncertainty - data_uncertainty
+        knowledge_uncertainty = np.maximum(total_uncertainty - data_uncertainty, 0.0)
+        total_uncertainty = data_uncertainty + knowledge_uncertainty
 
         index = X.index if isinstance(X, pd.DataFrame) else None
 
-        # mean_predictions: mean-over-dropout probability of the reported class.
-        if mean_probs.shape[1] == 2:
-            mean_predictions = mean_probs[:, 1]
-        else:
-            mean_predictions = mean_probs.max(axis=1)
-
         results = pd.DataFrame(
             {
-                "pred": pred,
-                "mean_predictions": mean_predictions,
+                "pred": _prepare_for_dataframe(pred),
+                "mean_predictions": _prepare_for_dataframe(mean_predictions),
                 "knowledge_uncertainty": knowledge_uncertainty,
                 "data_uncertainty": data_uncertainty,
                 "total_uncertainty": total_uncertainty,
@@ -3608,19 +3520,18 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
 
         use_sigmoid = isinstance(self.criterion_, nn.BCEWithLogitsLoss)
         all_probs = []
-        with torch.no_grad():
-            for _ in range(num_samples):
-                batch_probs = []
-                for batch in self.get_iterator(X_prep, training=False):
-                    Xi = batch[0] if isinstance(batch, (tuple, list)) else batch
-                    Xi = Xi.to(self.device)
-                    logits = model(Xi)
-                    probs = torch.sigmoid(logits) if use_sigmoid else torch.softmax(logits, dim=1)
-                    batch_probs.append(probs.detach().cpu().numpy())
-                all_probs.append(np.concatenate(batch_probs, axis=0))
-
-        # Restore eval mode.
-        model.eval()
+        try:
+            with torch.no_grad():
+                for _ in range(num_samples):
+                    batch_probs = []
+                    for batch in self.get_iterator(X_prep, training=False):
+                        features = batch[0] if isinstance(batch, (tuple, list)) else batch
+                        logits = model(features.to(self.device))
+                        probs = torch.sigmoid(logits) if use_sigmoid else torch.softmax(logits, dim=1)
+                        batch_probs.append(probs.detach().cpu().numpy())
+                    all_probs.append(np.concatenate(batch_probs, axis=0))
+        finally:
+            model.eval()
 
         return np.stack(all_probs, axis=0)
 
@@ -3642,8 +3553,8 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
         """
         raise ValueError(
             "predict_quantiles() is only available for flow heads (regression). "
-            "NODE classification does not model a predictive distribution; use "
-            "predict_uncertainty() for MC-dropout uncertainty instead."
+            "Use predict_proba() for class probabilities or predict_uncertainty() "
+            "for MC-dropout uncertainty instead."
         )
 
     def suggested_params_head(

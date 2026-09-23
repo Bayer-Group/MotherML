@@ -101,12 +101,12 @@ class FlowHead(nn.Module):
             return obj
         visited.add(oid)
 
+        if isinstance(obj, nn.Parameter):
+            return obj
+
         if isinstance(obj, torch.Tensor):
             if obj.device != device:
                 return obj.to(device)
-            return obj
-
-        if isinstance(obj, nn.Parameter):
             return obj
 
         if isinstance(obj, dict):

@@ -10,7 +10,9 @@ issues with PyTorch and multiprocessing.
 """
 
 import numpy as np
+import pandas as pd
 import pytest
+from sklearn.base import clone
 from sklearn.datasets import make_classification, make_regression
 from sklearn.metrics import accuracy_score, r2_score
 from sklearn.model_selection import KFold, train_test_split
@@ -26,6 +28,7 @@ import torch.nn as nn  # noqa: E402
 # Import NODE models
 from mother.ml.models.m_node import (  # noqa: E402
     CompletePyTorchTabularNODE,
+    InputOutputShapeSetter,
     NODEClassifier,
     NODERegressor,
 )
@@ -746,6 +749,103 @@ def test_fast_explicit_categorical():
     print("✅ Explicit categorical test passed!")
 
 
+@pytest.mark.parametrize("model_class", [NODERegressor, NODEClassifier])
+@pytest.mark.parametrize("categorical_values", [[10, 20, 30] * 4, ["red", "green", "blue"] * 4])
+def test_categorical_embeddings_are_used(model_class, categorical_values):
+    features = pd.DataFrame(
+        {
+            "measure": np.linspace(0, 1, 12, dtype=np.float32),
+            "category": categorical_values,
+            "other_category": ["left", "right"] * 6,
+        }
+    )
+    targets = np.arange(12) % 2
+    model = model_class(
+        cat_features=["other_category", "category"],
+        num_trees=8,
+        depth=2,
+        max_epochs=1,
+        batch_size=4,
+        device="cpu",
+        verbose=0,
+    ).fit(features, targets)
+
+    layers = model.module_.embedding_layer.cat_embedding_layers
+    assert layers is not None and len(layers) == 2
+    assert model.module_.continuous_dim == 1
+    for layer in layers:
+        assert layer.weight.grad is not None
+        assert torch.isfinite(layer.weight.grad).all()
+    prepared = model._prepare_data_for_node(features)
+    expected_codes = model.label_encoders_["category"].transform(features["category"].astype(str))
+    np.testing.assert_array_equal(prepared[:, 1], expected_codes)
+    np.testing.assert_allclose(model.predict(features), model.predict(features[features.columns[::-1]]))
+    assert model.get_embeddings(features).shape[0] == len(features)
+
+    unknown = features.iloc[:1].copy().astype({"category": object})
+    unknown.loc[unknown.index[0], "category"] = "unseen"
+    assert model._prepare_data_for_node(unknown)[0, 1] == len(model.label_encoders_["category"].classes_)
+    assert np.isfinite(model.predict(unknown)).all()
+    with pytest.raises(ValueError, match="columns"):
+        model.predict(features.drop(columns="measure"))
+
+    model.fit(features, targets)
+    assert len(model.categorical_embedding_dims_) == 2
+
+
+def test_custom_categorical_callback_is_independent_after_clone():
+    features = pd.DataFrame({"category": [10, 20, 30] * 4})
+    targets = np.arange(12, dtype=np.float32)
+    model = NODERegressor(
+        callbacks=[("shape", InputOutputShapeSetter(categorical_columns=["category"]))],
+        num_trees=4,
+        depth=2,
+        max_epochs=1,
+        device="cpu",
+        verbose=0,
+    ).fit(features, targets)
+    expected_classes = model.label_encoders_["category"].classes_.copy()
+
+    clone(model).fit(pd.DataFrame({"category": [40, 50, 60] * 4}), targets)
+
+    np.testing.assert_array_equal(model.label_encoders_["category"].classes_, expected_classes)
+    assert model.module_.embedding_layer.cat_embedding_layers is not None
+
+
+@pytest.mark.parametrize(
+    "device",
+    [
+        "cpu",
+        pytest.param("cuda", marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")),
+    ],
+)
+def test_get_embeddings_uses_model_device_and_batches(device, monkeypatch):
+    features = np.random.default_rng(42).normal(size=(12, 3)).astype(np.float32)
+    model = NODERegressor(
+        num_trees=4,
+        depth=2,
+        max_epochs=1,
+        batch_size=4,
+        device=device,
+        verbose=0,
+    ).fit(features, features[:, 0])
+    batch_lengths = []
+    original_forward = model.module_.forward_features
+
+    def record_forward(batch):
+        batch_lengths.append(len(batch))
+        assert batch.device == next(model.module_.parameters()).device
+        return original_forward(batch)
+
+    monkeypatch.setattr(model.module_, "forward_features", record_forward)
+    result = model.get_embeddings(features[:9])
+
+    assert batch_lengths == [4, 4, 1]
+    assert result.shape == (9, 16)
+    assert np.isfinite(result).all()
+    assert model.get_embeddings(features[:0]).shape == (0, 16)
+
+
 def test_fast_mlp_head_comprehensive():
     """Comprehensive test of MLP head with all activation functions and configurations"""
     print("\n🚀 Comprehensive MLP Head Test")
@@ -1084,11 +1184,14 @@ def test_predict_uncertainty():
         ]
     ), "Should have all required uncertainty columns"
     assert len(uncertainties) == len(y_test), "Uncertainties length should match targets"
-    # Note: total_uncertainty can be None for flow+dropout (different scales)
-    # but predict_uncertainty combines them with domain-specific weighting
-    if uncertainties["total_uncertainty"].notna().any():
-        assert (uncertainties["total_uncertainty"].dropna() >= 0).all(), "Uncertainties should be non-negative"
-        assert uncertainties["total_uncertainty"].mean() > 0, "Mean uncertainty should be positive"
+    assert np.isfinite(uncertainties["total_uncertainty"]).all()
+    assert np.isfinite(uncertainties["data_uncertainty"]).all()
+    assert (uncertainties["knowledge_uncertainty"] >= -1e-6).all()
+    np.testing.assert_allclose(
+        uncertainties["total_uncertainty"],
+        uncertainties["data_uncertainty"] + uncertainties["knowledge_uncertainty"],
+        atol=1e-6,
+    )
     print("  ✅ predict_uncertainty works correctly")
 
     # Test non-flow head uses MC Dropout
@@ -2681,6 +2784,117 @@ def test_loss_function_setter():
 
     print(f"✓ Regression uses {reg.criterion_.__class__.__name__}")
     assert isinstance(reg.criterion_, nn.MSELoss)
+
+
+@pytest.mark.parametrize("has_missing", [False, True])
+def test_task_weights_control_loss_and_gradients(has_missing):
+    model = NODERegressor(num_trees=4, depth=2, task_weights=[1.0, 0.0], device="cpu", verbose=0).initialize()
+    predictions = torch.tensor([[1.0, 10.0], [1.0, 10.0]], requires_grad=True)
+    targets = torch.zeros_like(predictions)
+    if has_missing:
+        targets[0, 1] = float("nan")
+
+    loss = model.get_loss(predictions, targets, X=torch.zeros(2, 1))
+    loss.backward()
+
+    assert loss.item() == pytest.approx(1.0)
+    assert torch.count_nonzero(predictions.grad[:, 1]) == 0
+    assert torch.isfinite(predictions.grad).all()
+
+
+@pytest.mark.parametrize("weights", [[0.0, 0.0], [-1.0, 2.0], [float("nan"), 1.0], [[1.0], [1.0]], [1.0]])
+def test_task_weights_reject_invalid_values(weights):
+    model = NODERegressor(num_trees=4, depth=2, task_weights=weights, device="cpu", verbose=0).initialize()
+    with pytest.raises(ValueError, match="task_weights"):
+        model.get_loss(torch.ones(2, 2), torch.zeros(2, 2), X=torch.zeros(2, 1))
+
+
+@pytest.mark.parametrize("via_set_params", [False, True])
+def test_explicit_regression_criterion_is_preserved(via_set_params):
+    features = np.arange(24, dtype=np.float32).reshape(12, 2)
+    targets = np.linspace(0, 1, 12, dtype=np.float32)
+    model = NODERegressor(
+        num_trees=4,
+        depth=2,
+        max_epochs=1,
+        criterion=nn.MSELoss if via_set_params else nn.L1Loss,
+        device="cpu",
+        verbose=0,
+    )
+    if via_set_params:
+        model.set_params(criterion=nn.L1Loss)
+    model.fit(features, targets)
+
+    assert isinstance(model.criterion_, nn.L1Loss)
+    loss = model.get_loss(torch.tensor([1.0, 10.0]), torch.zeros(2), X=torch.zeros(2, 2))
+    assert loss.item() == pytest.approx(5.5)
+
+
+def test_multilabel_criterion_preserves_positive_weights():
+    features = np.random.default_rng(42).normal(size=(12, 2)).astype(np.float32)
+    targets = (features > 0).astype(np.float32)
+    positive_weights = torch.tensor([2.0, 5.0])
+    model = NODEClassifier(
+        num_trees=4,
+        depth=2,
+        max_epochs=1,
+        criterion=nn.BCEWithLogitsLoss,
+        criterion__pos_weight=positive_weights,
+        device="cpu",
+        verbose=0,
+    ).fit(features, targets)
+
+    torch.testing.assert_close(model.criterion_.pos_weight, positive_weights)
+
+
+@pytest.mark.parametrize("weighted", [False, True])
+def test_flow_rejects_unsupported_target_losses(weighted):
+    features = np.random.default_rng(42).normal(size=(12, 2)).astype(np.float32)
+    targets = features.copy()
+    if not weighted:
+        targets[0, 0] = np.nan
+    model = NODERegressor(
+        num_trees=4,
+        depth=2,
+        max_epochs=1,
+        head_type="flow",
+        task_weights=[1.0, 1.0] if weighted else None,
+        device="cpu",
+        verbose=0,
+    )
+
+    with pytest.raises(ValueError, match="task_weights|complete, finite targets"):
+        model.fit(features, targets)
+
+
+def test_node_initialization_respects_numpy_and_torch_seeds():
+    features = np.random.default_rng(9).normal(size=(24, 3)).astype(np.float32)
+    states = []
+    for _ in range(2):
+        np.random.seed(42)
+        torch.manual_seed(42)
+        model = NODERegressor(
+            num_trees=4,
+            depth=2,
+            max_epochs=1,
+            device="cpu",
+            verbose=0,
+        ).fit(features, features[:, 0])
+        states.append(model.module_.state_dict())
+
+    for name, values in states[0].items():
+        torch.testing.assert_close(values, states[1][name], rtol=0, atol=0)
+
+
+def test_flow_device_walker_preserves_parameters():
+    from mother.ml.models.node_head_utils import FlowHead
+
+    parameter = nn.Parameter(torch.ones(2))
+    result = FlowHead._move_nested_tensors_to_device(parameter, torch.device("meta"))
+
+    assert result is parameter
+    assert isinstance(result, nn.Parameter)
+    assert result.device.type == "cpu"
 
 
 def test_activation_functions():
