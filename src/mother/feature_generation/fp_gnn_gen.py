@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Callable, Iterable, List, Optional, Sequence
 
 import numpy as np
+import pandas as pd
 from rdkit import Chem
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.utils.validation import check_is_fitted
@@ -129,7 +130,13 @@ def _default_chemeleon_embedder(
 
 
 class CheMeleonFingerprintTransformer(BaseEstimator, TransformerMixin):
-    """Sklearn-compatible transformer creating CheMeleon embeddings from RDKit Mol objects."""
+    """Sklearn-compatible transformer creating CheMeleon embeddings from RDKit Mol objects.
+
+    ``return_separate_columns=True`` preserves the default numeric matrix output,
+    with feature names prefixed by ``embedding_column_name``. Set it to ``False``
+    to return a DataFrame with one vector-valued column named
+    ``embedding_column_name``, preserving the index of pandas inputs.
+    """
 
     def __init__(
         self,
@@ -138,6 +145,8 @@ class CheMeleonFingerprintTransformer(BaseEstimator, TransformerMixin):
         checkpoint_path: Optional[str] = None,
         device: str = "cpu",
         embedder: Optional[Callable[[Sequence[str]], np.ndarray]] = None,
+        embedding_column_name: str = "CheMeleonGNNFP",
+        return_separate_columns: bool = True,
     ) -> None:
         """Validate and store CheMeleon embedding configuration for later use in `fit`."""
         if output_dim <= 0:
@@ -149,6 +158,8 @@ class CheMeleonFingerprintTransformer(BaseEstimator, TransformerMixin):
         self.checkpoint_path = checkpoint_path
         self.device = device
         self.embedder = embedder
+        self.embedding_column_name = embedding_column_name
+        self.return_separate_columns = return_separate_columns
 
     def fit(self, X: Iterable, y: object | None = None) -> "CheMeleonFingerprintTransformer":
         """Load the CheMeleon embedder (or use the injected one) and mark the transformer as fitted."""
@@ -163,7 +174,7 @@ class CheMeleonFingerprintTransformer(BaseEstimator, TransformerMixin):
         self.is_fitted_ = True
         return self
 
-    def transform(self, X: Iterable) -> np.ndarray:
+    def transform(self, X: Iterable) -> np.ndarray | pd.DataFrame:
         """Convert RDKit Mol objects to CheMeleon fingerprints, NaN-filling any invalid molecules."""
         check_is_fitted(self, "is_fitted_")
 
@@ -173,7 +184,7 @@ class CheMeleonFingerprintTransformer(BaseEstimator, TransformerMixin):
         values = values.reshape(-1)
         out = np.full((len(values), self.output_dim), np.nan, dtype=np.float32)
         if len(values) == 0:
-            return out
+            return self._format_output(out, X)
 
         valid_mask = np.array([isinstance(compound, Chem.Mol) for compound in values], dtype=bool)
 
@@ -184,7 +195,7 @@ class CheMeleonFingerprintTransformer(BaseEstimator, TransformerMixin):
         valid_mols = values[valid_mask].tolist()
         valid_smiles = [Chem.MolToSmiles(mol) for mol in valid_mols]
         if not valid_smiles:
-            return out
+            return self._format_output(out, X)
 
         rows = []
         for start in range(0, len(valid_smiles), self.batch_size):
@@ -199,19 +210,32 @@ class CheMeleonFingerprintTransformer(BaseEstimator, TransformerMixin):
             rows.append(batch_embeddings)
 
         out[valid_mask, :] = np.vstack(rows)
-        return out
+        return self._format_output(out, X)
+
+    def _format_output(self, embeddings: np.ndarray, X: Iterable) -> np.ndarray | pd.DataFrame:
+        """Apply the requested column layout without changing embedding values or row order."""
+        if self.return_separate_columns:
+            return embeddings
+        index = X.index if isinstance(X, (pd.DataFrame, pd.Series)) else None
+        return pd.DataFrame({self.embedding_column_name: list(embeddings)}, index=index)
 
     def get_output_dimension(self) -> int:
         """Return the number of embedding dimensions produced by this transformer."""
         return self.output_dim
 
     def get_feature_names_out(self, input_features: Optional[Iterable[str]] = None) -> List[str]:
-        """Return sklearn-style output feature names, one per embedding dimension."""
-        return [f"CheMeleonGNNFP_{i}" for i in range(self.output_dim)]
+        """Return output column names for the selected embedding layout."""
+        if self.return_separate_columns:
+            return [f"{self.embedding_column_name}_{index}" for index in range(self.output_dim)]
+        return [self.embedding_column_name]
 
 
 class CheMeleonFingerprintFactory:
-    """Factory creating sklearn transformers for CheMeleon GNN fingerprints."""
+    """Factory creating sklearn transformers for CheMeleon GNN fingerprints.
+
+    ``embedding_column_name`` and ``return_separate_columns`` are forwarded to
+    the transformer to choose expanded numeric features or one embedding column.
+    """
 
     def __init__(
         self,
@@ -220,6 +244,8 @@ class CheMeleonFingerprintFactory:
         checkpoint_path: Optional[str] = None,
         device: str = "cpu",
         embedder: Optional[Callable[[Sequence[str]], np.ndarray]] = None,
+        embedding_column_name: str = "CheMeleonGNNFP",
+        return_separate_columns: bool = True,
     ) -> None:
         """Validate and store the configuration used to build fingerprint transformers."""
         if output_dim <= 0:
@@ -231,6 +257,8 @@ class CheMeleonFingerprintFactory:
         self.checkpoint_path = checkpoint_path
         self.device = device
         self.embedder = embedder
+        self.embedding_column_name = embedding_column_name
+        self.return_separate_columns = return_separate_columns
 
     def get_fingerprint_generator(self) -> CheMeleonFingerprintTransformer:
         """Build a `CheMeleonFingerprintTransformer` using this factory's stored configuration."""
@@ -243,4 +271,6 @@ class CheMeleonFingerprintFactory:
             checkpoint_path=self.checkpoint_path,
             device=self.device,
             embedder=self.embedder,
+            embedding_column_name=self.embedding_column_name,
+            return_separate_columns=self.return_separate_columns,
         )
