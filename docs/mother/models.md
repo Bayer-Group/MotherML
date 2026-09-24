@@ -11,6 +11,16 @@ At the moment, the built-in algorithm groups are:
 - `randomforest`
 - `lasso`
 - `tabpfn`
+- `node`
+- `tabicl`
+
+`node` and `tabicl` (like `tabpfn`) are optional extras and require their dependencies to be
+installed before they show up in the registry, e.g.:
+
+```bash
+pip install 'mother-ml[node]'
+pip install 'mother-ml[tabicl]'
+```
 
 You can always verify what is available in your environment:
 
@@ -29,6 +39,13 @@ print(ml.get_supported_models())
 | `randomforest` | `RandomForestRegressorMother`, `RandomForestClassifierMother` |
 | `lasso` | `LassoRegressorMother`, `LassoClassifierBinaryMother`, `LassoClassifierMulticlassMother` |
 | `tabpfn` | `TabPFNRegressorMother`, `TabPFNClassifierMother` |
+| `node` | `NODERegressor`, `NODEClassifier` |
+| `tabicl` | `TabICLRegressorMother`, `TabICLClassifierMother` |
+
+`node` wraps Neural Oblivious Decision Ensembles (NODE), a neural network architecture for tabular
+data with differentiable oblivious decision trees, optionally paired with a probabilistic "flow"
+head (NodeFlow) for uncertainty-aware regression. `tabicl` wraps
+[TabICL](https://github.com/soda-inria/tabicl), an in-context tabular foundation model.
 
 ### Easy usage patterns
 

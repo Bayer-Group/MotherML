@@ -62,7 +62,9 @@ jobs:
         uses: ./.github/actions/setup-uv-env
         with:
           python-version: ${{ matrix.python-version }}
-          install-args: "--extra rna --extra report --extra tabpfn --extra tabicl --extra clustering --group test_duration"
+          install-args: >-
+            --extra rna --extra report --extra tabpfn --extra tabicl
+            --extra node --extra clustering --group test_duration
 
       - name: Cache HuggingFace and Torch models 🗂️
         uses: actions/cache@v4
@@ -116,7 +118,9 @@ jobs:
         uses: ./.github/actions/setup-uv-env
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          install-args: "--extra rna --extra report --extra tabpfn --extra tabicl --extra clustering --group test_duration"
+          install-args: >-
+            --extra rna --extra report --extra tabpfn --extra tabicl
+            --extra node --extra clustering --group test_duration
 
       - name: Cache HuggingFace and Torch models 🗂️
         uses: actions/cache@v4
