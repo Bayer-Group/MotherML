@@ -23,6 +23,17 @@ module_logger: logging.Logger = logging.getLogger(__name__)
 # Initialize containers for automatically discovered model classes and algorithms
 
 
+def _algorithm_from_module_name(module_name: str) -> str:
+    """Derive the algorithm name from an ``m_*.py`` model module filename stem.
+
+    ``str.removeprefix`` is used instead of ``str.lstrip`` because the latter
+    strips a *set* of characters rather than a prefix, which silently mangles
+    module names whose algorithm name starts with ``m``
+    (e.g. ``m_mlp`` would become ``lp`` instead of ``mlp``).
+    """
+    return module_name.lower().removeprefix("m_")
+
+
 class MotherModelRegistry:
     """
     Singleton registry for dynamically discovering and managing model classes in the 'mother.ml.models' package.
@@ -84,7 +95,7 @@ class MotherModelRegistry:
                         self.model_classes[name] = obj
                         self.model_classes_lower[name.lower()] = name  # Add lower-case mapping
 
-                        algo: str = model_file.lower().lstrip("m_")
+                        algo: str = _algorithm_from_module_name(model_file)
 
                         if algo not in self.supported_algorithms:
                             self.supported_algorithms[algo] = set()
@@ -93,7 +104,7 @@ class MotherModelRegistry:
                 module_logger.warning(
                     (
                         f"Warning: Failed to load model from {model_file}: {str(e)} "
-                        f"(Please, ignore this message if you don't need {model_file.split('m_')[1]})"
+                        f"(Please, ignore this message if you don't need {_algorithm_from_module_name(model_file)})"
                     )
                 )
         module_logger.debug("Model loading complete.")
