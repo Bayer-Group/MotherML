@@ -24,7 +24,7 @@ jobs:
         uses: ./.github/actions/setup-uv-env
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          install-args: "--extra report --extra rna --extra tabpfn --extra tabicl"
+          install-args: "--only-group dev"
 
       # - name: Run type checks #needs a lot of type fixing
       #   run: |
