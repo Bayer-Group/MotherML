@@ -99,7 +99,6 @@ dev = [
   "git-changelog>=2.9.4",
 ]
 examples = [
-  "polaris-lib>=0.13.0,<0.14",
   "shap>=0.47.2,<0.48",
 ]
 docs = [
@@ -250,7 +249,7 @@ show_column_numbers = true
 warn_no_return = true
 
 [tool.isort]
-extend_skip = [".gitignore", ".pylintrc", "sonar-project.properties"]
+extend_skip = [".gitignore", ".pylintrc"]
 
 [tool.semantic_release]
 version_toml = ["pyproject.toml:project.version"]
@@ -326,10 +325,6 @@ ignore_merge_commits = true
 
 
 [tool.poe.tasks]
-analyse-coverage = [
-  "coverage",
-  { shell = "coverage xml -o coverage-report.xml", help = "Generate coverage for sonar qube" },
-]
 build = "uv build"
 check-format = { cmd = "ruff format --check src test examples", help = "Check code format compliance" }
 check-hook = "pre-commit run --all-files"

@@ -1,6 +1,6 @@
 import logging
 from abc import abstractmethod
-from typing import Iterable, List, Optional, Tuple
+from typing import Iterable, List, Optional, Tuple, final
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -22,8 +22,9 @@ class _TransformOnlyValidMols:
 
     @abstractmethod
     def _transform_molecules(self, valid_compounds: Iterable) -> np.ndarray:
-        pass
+        raise NotImplementedError
 
+    @final
     def transform(self, compounds: Iterable) -> np.ndarray:
         """helper function for passing only valid rdkit-mols to the transformation function"""
         valid_compounds: ArrayLike = np.array(compounds).reshape(-1)
@@ -119,7 +120,12 @@ class FingerprintsGeneric(BaseEstimator, TransformerMixin, _TransformOnlyValidMo
 
 class MorganFingerprints(FingerprintsGeneric):
     def __init__(
-        self, radius: int = 2, fpSize: int = 2048, include_chirality: bool = False, use_counts: bool = True, **kwargs
+        self,
+        radius: int = 2,
+        fpSize: int = 2048,
+        include_chirality: bool = False,
+        use_counts: bool = True,
+        **kwargs,
     ) -> None:
         super().__init__(
             "MorganFP",

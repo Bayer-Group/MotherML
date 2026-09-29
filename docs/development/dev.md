@@ -54,7 +54,7 @@ Dependency groups are development dependencies that are NOT published with the p
 
 | Group | Description | Installation |
 |-------|-------------|--------------|
-| `examples` | Dependencies for example notebooks (polaris-lib, shap) | `uv sync --group examples` |
+| `examples` | Dependencies for example notebooks (shap) | `uv sync --group examples` |
 | `docs` | Documentation building tools (zensical, mkdocstrings, etc.) | `uv sync --group docs` |
 | `test_duration` | Test performance analysis (pytest-html, pytest-xdist) | `uv sync --group test_duration` |
 
