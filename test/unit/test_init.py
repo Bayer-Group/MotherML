@@ -83,7 +83,6 @@ def test_available_algorithms_are_well_formed_module_names():
     from pathlib import Path
 
     import mother.ml.models as models_pkg
-
     from mother.ml import _algorithm_from_module_name
 
     models_dir = Path(models_pkg.__file__).parent
