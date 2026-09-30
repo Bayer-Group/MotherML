@@ -1,10 +1,17 @@
-name: Workflow for model testing and release
+name: CI
 
 on:
   workflow_dispatch:
   pull_request:
     branches: [main]
   push:
+    branches: [main]
+
+# Cancel superseded runs on the same ref (but never cancel a push to main,
+# so release-bearing commits always complete their pipeline).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -14,51 +21,44 @@ env:
 
 jobs:
   style:
+    name: Style & Lint
     runs-on: ubuntu-latest
     steps:
       - name: Checkout 🛎
         uses: actions/checkout@v7
 
       - name: Setup uv environment 📚
-        id: setup-uv-env
         uses: ./.github/actions/setup-uv-env
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           install-args: "--only-group dev"
 
       # - name: Run type checks #needs a lot of type fixing
-      #   run: |
-      #     uv run poe check-types
+      #   run: uv run poe check-types
       - name: Run style checks
-        run: |
-          uv run poe check-style
+        run: uv run poe check-style
 
       - name: Run linter
-        run: |
-          uv run poe check-lint
+        run: uv run poe check-lint
+
   test:
+    name: Test 🧪 using 🐍 ${{ matrix.python-version }}
     needs: style
     runs-on: ubuntu-latest
-    if:
-      ${{ success() && (github.ref == 'refs/heads/main' || github.event_name ==
-      'pull_request') }}
     strategy:
       matrix:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
-      # When set to true, GitHub cancels all in-progress jobs if any matrix job fails.
       fail-fast: true
-    name: Test 🧪 using 🐍
     steps:
       - name: Checkout 🛎
         uses: actions/checkout@v7
-        # needed for report dependencies
+
       - name: Prepare environment
         run: |
           sudo apt-get update
           sudo apt-get install -y libfontconfig1 libxrender1 libxtst6
 
       - name: Setup uv environment 📚
-        id: setup-uv-env
         uses: ./.github/actions/setup-uv-env
         with:
           python-version: ${{ matrix.python-version }}
@@ -75,17 +75,13 @@ jobs:
             models-${{ runner.os }}-
 
       - name: Download TabPFN checkpoint
-        run: |
-          uv run python scripts/prepareTabpfn.py
+        run: uv run python scripts/prepareTabpfn.py
 
-      #----------------------------------------------
-      #              run test suite
-      #----------------------------------------------
       - name: Test and generate code coverage report
-        run: |
-          uv run poe coverage
+        run: uv run poe coverage
 
-      - uses: actions/upload-artifact@v7
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-py${{ matrix.python-version }}
           path: ./coverage.xml
@@ -96,23 +92,19 @@ jobs:
           uv run poe dist-test
 
   test-slow:
+    name: Test Slow 🐢 using 🐍 3.14
     needs: test
     runs-on: ubuntu-latest
-    if:
-      ${{ success() && (github.ref == 'refs/heads/main' || github.event_name ==
-      'pull_request') }}
-    name: Test Slow 🐢 using 🐍 3.14
     steps:
       - name: Checkout 🛎
         uses: actions/checkout@v7
-        # needed for report dependencies
+
       - name: Prepare environment
         run: |
           sudo apt-get update
           sudo apt-get install -y libfontconfig1 libxrender1 libxtst6
 
       - name: Setup uv environment 📚
-        id: setup-uv-env
         uses: ./.github/actions/setup-uv-env
         with:
           python-version: ${{ env.PYTHON_VERSION }}
@@ -129,23 +121,15 @@ jobs:
             models-${{ runner.os }}-
 
       - name: Download TabPFN checkpoint
-        run: |
-          uv run python scripts/prepareTabpfn.py
+        run: uv run python scripts/prepareTabpfn.py
 
-      #----------------------------------------------
-      #              run slow test suite
-      #----------------------------------------------
       - name: Run slow tests
-        run: |
-          uv run poe test-slow
+        run: uv run poe test-slow
 
   release-preflight:
     name: Release Preflight
     needs: test-slow
     runs-on: ubuntu-latest
-    if:
-      ${{ success() && (github.ref == 'refs/heads/main' || github.event_name ==
-      'pull_request') }}
     # Least privilege: this job checks out and runs untrusted PR code
     # (scripts/release_preflight.py), so it must never hold a write-scoped token.
     # Posting the report comment is handled by the separate comment-preflight
@@ -163,8 +147,7 @@ jobs:
         run: |
           set +e
           python3 scripts/release_preflight.py --strict --output release-preflight-report.md
-          exit_code=$?
-          echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
           exit 0
 
       - name: Upload preflight artifact
@@ -244,104 +227,18 @@ jobs:
             }
 
   release:
-    name: Create Release package
-    needs: release-preflight
-    if: success() && github.ref == 'refs/heads/main' &&
-      !contains(github.event.head_commit.message, '[skip release]')
-    runs-on: ubuntu-latest
-    concurrency: release
-    environment: release
-    outputs:
-      released: ${{ steps.release.outputs.released }}
-      version: ${{ steps.release.outputs.version }}
+    name: Release & Publish
+    needs: [test-slow, release-preflight]
+    # Only release from pushes to main, and never from semantic-release's own
+    # release commit (which is what previously caused the workflow to loop).
+    if: >-
+      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      !contains(github.event.head_commit.message, 'Automatically generated by python-semantic-release')
     permissions:
-      id-token: write
       contents: write
-    steps:
-      - name: Checkout 🛎
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          persist-credentials: false # Make sure to not use the GITHUB_TOKEN for checkout and thus enable updating the version with the PAT
-      - name: Set python version 🐍
-        run: echo "PYTHON_VERSION=3.11" >> $GITHUB_ENV
-
-      - name: Install the latest version of uv
-        uses: ./.github/actions/setup-uv-env
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Python Semantic Release
-        uses: python-semantic-release/python-semantic-release@2896129e02bb7809d2cf0c1b8e9e795ee27acbcf # v10.2.0
-        id: release
-        with:
-          github_token: ${{ secrets.PAT_RELEASE_PIPELINE }}
-
-      #----------------------------------------------
-      #              run publish
-      #----------------------------------------------
-      - name: Build package
-        shell: bash
-        run: |
-          uv build
-
-      - name: Check dist
-        run: uv tool run twine check --strict dist/*
-
-      - name: Upload distribution artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: Packages
-          path: dist/
-          if-no-files-found: error
-
-  # test-pypi-publish:
-  #   name: Publish dev package to test.pypi.org
-  #   runs-on: ubuntu-latest
-  #   needs: release
-  #   if: ${{ (github.repository == 'bayer-group/motherml' && github.event_name == 'push' && github.ref == 'refs/heads/main') }}
-
-  #   environment:
-  #     name: test-pypi
-  #     url: https://test.pypi.org/p/mother-ml
-
-  #   permissions:
-  #     id-token: write
-
-  #   steps:
-  #     - uses: actions/download-artifact@v8
-  #       with:
-  #         name: Packages
-  #         path: dist
-
-  #     - name: Upload package to Test PyPI
-  #       uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc # v1.12.4
-  #       with:
-  #         repository-url: https://test.pypi.org/legacy/
-  #         skip-existing: true
-  #         packages-dir: dist/
-
-  publish-pypi:
-    name: Publish to PyPI
-    needs: release
-    if: ${{ (github.repository == 'bayer-group/motherml' && github.event_name == 'push' && github.ref == 'refs/heads/main') && needs.release.outputs.released == 'true' }}
-    environment:
-      name: pypi
-      url: https://pypi.org/project/mother-ml/
-    runs-on: ubuntu-latest
-    permissions:
       id-token: write
-    steps:
-      - name: Download distribution artifacts
-        uses: actions/download-artifact@v8
-        with:
-          name: Packages
-          path: dist/
-
-      - name: Publish package distributions to PyPI
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
-        with:
-          packages-dir: dist/
+    uses: ./.github/workflows/release.yml
+    secrets: inherit
 
   build-docs:
     name: Build Docs
@@ -363,7 +260,6 @@ jobs:
           sudo apt-get install -y libfontconfig1 libxrender1 libxtst6
 
       - name: Setup uv environment 📚
-        id: setup-uv-env
         uses: ./.github/actions/setup-uv-env
         with:
           python-version: "3.11"

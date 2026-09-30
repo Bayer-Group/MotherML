@@ -1,0 +1,42 @@
+name: Manual PyPI Publish
+
+# Break-glass workflow to publish an already-built distribution to PyPI when the
+# automated publish step was skipped or failed. It does NOT rebuild: it downloads
+# the "Packages" artifact produced by a prior release run (already twine-checked)
+# and uploads it through the same OIDC trusted-publishing path as the normal
+# pipeline. Trigger from the Actions tab (Run workflow) with the release run's ID.
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "ID of the release CI run that produced the 'Packages' artifact"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish-pypi:
+    name: Publish to PyPI
+    if: github.repository == 'Bayer-Group/MotherML'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/mother-ml/
+    permissions:
+      id-token: write # OIDC trusted publishing
+      actions: read # read artifacts from another workflow run
+    steps:
+      - name: Download distribution artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: Packages
+          path: dist/
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish package distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: dist/

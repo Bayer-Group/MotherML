@@ -1,0 +1,87 @@
+name: Release
+
+# Reusable workflow invoked by CI after tests pass on a push to main. Kept
+# separate from CI so the release logic has a single, auditable entry point and
+# never runs speculatively on pull requests.
+on:
+  workflow_call:
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    concurrency: release
+    environment: release
+    outputs:
+      released: ${{ steps.release.outputs.released }}
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+    permissions:
+      id-token: write
+      contents: write
+    steps:
+      - name: Checkout 🛎
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          # Do not persist the ambient GITHUB_TOKEN; semantic-release pushes the
+          # release commit and tag with the PAT below, which is allowed to push
+          # to the protected main branch.
+          persist-credentials: false
+
+      - name: Setup uv environment 📚
+        uses: ./.github/actions/setup-uv-env
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      # Run semantic-release from the host environment (not its Docker action)
+      # so build_command's `uv lock` executes against the uv install created
+      # above. This is what fixes the previous "uv.lock asset not found" failure:
+      # the lock is regenerated in-place before semantic-release stages it into
+      # the release commit and uploads it as a release asset.
+      - name: Python Semantic Release
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.PAT_RELEASE_PIPELINE }}
+        run: uv run semantic-release version
+
+      - name: Build package
+        if: steps.release.outputs.released == 'true'
+        run: uv build
+
+      - name: Check dist
+        if: steps.release.outputs.released == 'true'
+        run: uv tool run twine check --strict dist/*
+
+      - name: Upload distribution artifacts
+        if: steps.release.outputs.released == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: Packages
+          path: dist/
+          if-no-files-found: error
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: release
+    if: needs.release.outputs.released == 'true' && github.repository == 'Bayer-Group/MotherML'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/mother-ml/
+    permissions:
+      id-token: write
+    steps:
+      - name: Download distribution artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: Packages
+          path: dist/
+
+      - name: Publish package distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: dist/
