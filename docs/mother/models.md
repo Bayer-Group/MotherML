@@ -11,6 +11,16 @@ At the moment, the built-in algorithm groups are:
 - `randomforest`
 - `lasso`
 - `tabpfn`
+- `node`
+- `tabicl`
+
+`node` and `tabicl` (like `tabpfn`) are optional extras and require their dependencies to be
+installed before they show up in the registry, e.g.:
+
+```bash
+pip install 'mother-ml[node]'
+pip install 'mother-ml[tabicl]'
+```
 
 You can always verify what is available in your environment:
 
@@ -29,6 +39,13 @@ print(ml.get_supported_models())
 | `randomforest` | `RandomForestRegressorMother`, `RandomForestClassifierMother` |
 | `lasso` | `LassoRegressorMother`, `LassoClassifierBinaryMother`, `LassoClassifierMulticlassMother` |
 | `tabpfn` | `TabPFNRegressorMother`, `TabPFNClassifierMother` |
+| `node` | `NODERegressor`, `NODEClassifier` |
+| `tabicl` | `TabICLRegressorMother`, `TabICLClassifierMother` |
+
+`node` wraps Neural Oblivious Decision Ensembles (NODE), a neural network architecture for tabular
+data with differentiable oblivious decision trees, optionally paired with a probabilistic "flow"
+head (NodeFlow) for uncertainty-aware regression. `tabicl` wraps
+[TabICL](https://github.com/soda-inria/tabicl), an in-context tabular foundation model.
 
 ### Easy usage patterns
 
@@ -66,6 +83,30 @@ from mother import ml
 all_catboost_models = ml.get_model_class_by_algorithm("catboost")
 print([m.__name__ for m in all_catboost_models])
 ```
+
+## NODE memory usage
+
+`NODERegressor` and `NODEClassifier` accept `tree_chunk_size`, defaulting to `256`
+trees per slice. The same limit applies to feature selection, tree routing, and
+first-batch initialization. Use a smaller positive integer to reduce working
+memory, or a larger value for fewer slices. Setting
+`None` evaluates all trees together and disables the associated gradient checkpointing.
+Smaller chunks can add computation overhead; this setting does not change the model's
+tree count or training batch size.
+
+```python
+from mother.ml.models.m_node import NODEClassifier, NODERegressor
+
+regressor = NODERegressor(tree_chunk_size=64)
+classifier = NODEClassifier(tree_chunk_size=None)
+```
+
+The setting is preserved by scikit-learn cloning and is not tuned automatically by
+Optuna. Each tree still selects from all input features, and initialization uses
+all samples in the initial batch with the same percentile draws. During training,
+feature selection is recomputed inside each tree slice's checkpoint to avoid
+retaining all selector activations. Model parameters, gradients, optimizer state,
+and final outputs still consume memory independently of the chunk size.
 
 ## Ranking with `CatboostRankerMother`
 
