@@ -14,7 +14,7 @@ the Skorch/sklearn wrappers and can be used standalone in PyTorch.
 """
 
 import logging
-from numbers import Real
+from numbers import Integral, Real
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from warnings import warn
 
@@ -38,6 +38,14 @@ def validate_dropout_rates(**rates: float) -> None:
         if not valid:
             interval = "[0, 1]" if upper_inclusive else "[0, 1)"
             raise ValueError(f"{name} must be in the interval {interval}, got {rate!r}.")
+
+
+def validate_tree_chunk_size(tree_chunk_size: Optional[int]) -> None:
+    """Require a positive tree-slice width, or None to disable chunking."""
+    if tree_chunk_size is not None and (
+        isinstance(tree_chunk_size, bool) or not isinstance(tree_chunk_size, Integral) or tree_chunk_size < 1
+    ):
+        raise ValueError(f"tree_chunk_size must be a positive integer or None, got {tree_chunk_size!r}.")
 
 
 # ==============================================================================
@@ -502,6 +510,10 @@ class ODST(ModuleWithInit):
     - Soft decisions: probabilistic splits instead of hard left/right
     - Sparse feature selection: focuses on most relevant features per depth level
     - Data-aware initialization: thresholds set from data quantiles for stable training
+
+    ``tree_chunk_size`` limits tree-routing slices to 256 trees by default.
+    Smaller values reduce routing memory; ``None`` disables chunking and its
+    gradient checkpointing. Feature selection and initialization remain full-width.
     """
 
     def __init__(
@@ -518,9 +530,11 @@ class ODST(ModuleWithInit):
         threshold_init_beta: float = 1.0,
         threshold_init_cutoff: float = 1.0,
         random_state: Optional[int] = None,
+        tree_chunk_size: Optional[int] = 256,
     ) -> None:
         """Allocate leaf responses, feature-selection logits, and (data-initialized) thresholds/temperatures."""
         super().__init__()
+        validate_tree_chunk_size(tree_chunk_size)
 
         self.depth = depth
         self.num_trees = num_trees
@@ -531,6 +545,7 @@ class ODST(ModuleWithInit):
         self.threshold_init_beta = threshold_init_beta
         self.threshold_init_cutoff = threshold_init_cutoff
         self.random_state = random_state
+        self.tree_chunk_size = tree_chunk_size
 
         # Leaf response values: [num_trees, tree_output_dim, 2^depth]
         self.response = nn.Parameter(torch.zeros([num_trees, tree_output_dim, 2**depth]), requires_grad=True)
@@ -595,7 +610,7 @@ class ODST(ModuleWithInit):
 
         # 2. Evaluate trees. Wide ensembles are processed in fixed-width slices to
         #    cap peak memory; the concatenation reproduces the full-width result.
-        chunk_size = self._AUTO_TREE_CHUNK_SIZE
+        chunk_size = getattr(self, "tree_chunk_size", self._AUTO_TREE_CHUNK_SIZE)
         if chunk_size is None or self.num_trees <= chunk_size:
             response = self._forward_tree_slice(input, feature_selectors, slice(0, self.num_trees))
         else:

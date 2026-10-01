@@ -130,6 +130,7 @@ from mother.ml.models.node_utils import (
     sparsemax,
     sparsemoid,
     validate_dropout_rates,
+    validate_tree_chunk_size,
 )
 
 # Setup module logger
@@ -499,6 +500,7 @@ class NODEBackbone(nn.Module):
             ``bin_function``, ``initialize_response``,
             ``initialize_selection_logits``, ``threshold_init_beta``,
             ``threshold_init_cutoff``.
+                Optional ``tree_chunk_size`` defaults to 256; ``None`` disables tree chunking.
     """
 
     def __init__(self, config: Any, **kwargs: Any) -> None:
@@ -533,6 +535,7 @@ class NODEBackbone(nn.Module):
             initialize_selection_logits_=getattr(nn.init, self.hparams.initialize_selection_logits + "_"),
             threshold_init_beta=self.hparams.threshold_init_beta,
             threshold_init_cutoff=self.hparams.threshold_init_cutoff,
+            tree_chunk_size=getattr(self.hparams, "tree_chunk_size", 256),
         )
         self.output_dim = self.hparams.output_dim + self.hparams.additional_tree_output_dim
 
@@ -727,6 +730,10 @@ class CompletePyTorchTabularNODE(nn.Module):
         output_dim: Prediction dimension (classes for clf, targets for reg).
         num_layers: Number of stacked ODST layers with dense connections.
         num_trees: Number of oblivious decision trees per layer.
+        tree_chunk_size: Maximum trees per routing slice (default 256).
+            Smaller positive integers reduce routing memory at a runtime cost.
+            ``None`` disables chunking and its gradient checkpointing.
+            Feature selection and initialization remain full-width.
         additional_tree_output_dim: Extra per-tree output dimensions beyond
             ``output_dim``.  Acts as auxiliary capacity during training;
             only the ``subset`` head discards them at inference.
@@ -788,9 +795,11 @@ class CompletePyTorchTabularNODE(nn.Module):
         flow_components: int = 8,  # Mixture components (GMM)
         categorical_indices: Optional[List[int]] = None,
         categorical_embedding_dims: Optional[List[Tuple[int, int]]] = None,
+        tree_chunk_size: Optional[int] = 256,
     ) -> None:
         """Configure and build the embedding, Dense ODST backbone, and head (see class docstring for args)."""
         super().__init__()
+        validate_tree_chunk_size(tree_chunk_size)
         validate_dropout_rates(
             input_dropout=input_dropout,
             tree_dropout=tree_dropout,
@@ -829,6 +838,7 @@ class CompletePyTorchTabularNODE(nn.Module):
         self.num_layers = num_layers
         self.depth = depth
         self.max_layers_retained = max_layers_retained
+        self.tree_chunk_size = tree_chunk_size
         self.input_dropout = input_dropout
         self.input_dropout_only_input = input_dropout_only_input
         self.choice_function = choice_function
@@ -876,6 +886,7 @@ class CompletePyTorchTabularNODE(nn.Module):
             initialize_selection_logits_=getattr(nn.init, self.initialize_selection_logits + "_"),
             threshold_init_beta=self.threshold_init_beta,
             threshold_init_cutoff=self.threshold_init_cutoff,
+            tree_chunk_size=self.tree_chunk_size,
         )
 
         # Embedding layer
@@ -976,6 +987,10 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
     This class implements all common methods for both NODERegressor and NODEClassifier,
     reducing code duplication and ensuring consistent behavior across both estimators.
 
+    ``tree_chunk_size`` defaults to 256 trees per routing slice. Smaller positive
+    integers reduce routing memory; ``None`` disables chunking and checkpointing.
+    This is a fixed resource setting, not an Optuna search-space parameter.
+
     Inherits from NeuralNet first to ensure proper MRO for sklearn compatibility methods.
     """
 
@@ -1021,12 +1036,14 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         cat_features: Optional[List[str]] = None,
         input_dropout_only_input: bool = False,
         tree_dropout_only_head: bool = True,
+        tree_chunk_size: Optional[int] = 256,
     ) -> None:
         """Persist all NODE-specific parameters as instance attributes.
 
         This is required for ``sklearn.clone()`` which re-creates the
         estimator from ``get_params()`` → ``__init__(**params)``.
         """
+        validate_tree_chunk_size(tree_chunk_size)
         validate_dropout_rates(
             input_dropout=input_dropout,
             tree_dropout=tree_dropout,
@@ -1040,6 +1057,7 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         self.choice_function = choice_function
         self.bin_function = bin_function
         self.max_layers_retained = max_layers_retained
+        self.tree_chunk_size = tree_chunk_size
         self.input_dropout = input_dropout
         self.input_dropout_only_input = input_dropout_only_input
         self.initialize_response = initialize_response
@@ -1256,6 +1274,7 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
             module__choice_function=self.choice_function,
             module__bin_function=self.bin_function,
             module__max_layers_retained=self.max_layers_retained,
+            module__tree_chunk_size=self.tree_chunk_size,
             module__input_dropout=self.input_dropout,
             module__input_dropout_only_input=self.input_dropout_only_input,
             module__initialize_response=self.initialize_response,
@@ -1304,6 +1323,7 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
             choice_function=self.choice_function,
             bin_function=self.bin_function,
             max_layers_retained=self.max_layers_retained,
+            tree_chunk_size=self.tree_chunk_size,
             input_dropout=self.input_dropout,
             input_dropout_only_input=self.input_dropout_only_input,
             initialize_response=self.initialize_response,
@@ -1368,6 +1388,9 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         Syncs NODE architecture params to their module__ counterparts so
         skorch knows to re-initialize the module with new values.
         """
+        for name in ("tree_chunk_size", "module__tree_chunk_size"):
+            if name in params:
+                validate_tree_chunk_size(params[name])
         dropout_parameters = {"input_dropout", "tree_dropout", "mlp_dropout", "embedding_dropout"}
         validate_dropout_rates(
             **{
@@ -1402,6 +1425,7 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
             "choice_function",
             "bin_function",
             "max_layers_retained",
+            "tree_chunk_size",
             "input_dropout",
             "input_dropout_only_input",
             "initialize_response",
@@ -2038,6 +2062,7 @@ class NODERegressor(BaseNODEEstimator):
         train_split: Optional[Any] = None,  # Validation split (None = no validation)
         callbacks: Optional[List[Any]] = None,  # Additional Skorch callbacks
         tune_head: bool = True,  # Tune head params during hyperparameter search
+        tree_chunk_size: Optional[int] = 256,
         **kwargs: Any,
     ) -> None:
         """Configure the NODE regressor's architecture, head, dropout, and training settings (see class docstring)."""
@@ -2085,6 +2110,7 @@ class NODERegressor(BaseNODEEstimator):
             cat_features,
             input_dropout_only_input=input_dropout_only_input,
             tree_dropout_only_head=tree_dropout_only_head,
+            tree_chunk_size=tree_chunk_size,
         )
 
         # Prepare callbacks list (inject EarlyStopping when val split active)
@@ -3276,6 +3302,7 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
         train_split: Optional[Any] = None,  # Validation split (None = no validation)
         callbacks: Optional[List[Any]] = None,  # Additional Skorch callbacks
         tune_head: bool = True,  # Tune head params during hyperparameter search
+        tree_chunk_size: Optional[int] = 256,
         **kwargs: Any,
     ) -> None:
         """Configure the NODE classifier's architecture, head, dropout, and training settings (see class docstring)."""
@@ -3347,6 +3374,7 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
             cat_features,
             input_dropout_only_input=input_dropout_only_input,
             tree_dropout_only_head=tree_dropout_only_head,
+            tree_chunk_size=tree_chunk_size,
         )
 
         # Prepare callbacks list (inject EarlyStopping when val split active)

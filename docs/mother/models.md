@@ -84,6 +84,26 @@ all_catboost_models = ml.get_model_class_by_algorithm("catboost")
 print([m.__name__ for m in all_catboost_models])
 ```
 
+## NODE memory usage
+
+`NODERegressor` and `NODEClassifier` accept `tree_chunk_size`, defaulting to `256`
+trees per routing slice to preserve the existing behavior. Use a smaller positive
+integer to reduce routing memory, or a larger value for fewer slices. Setting
+`None` evaluates all trees together and disables the associated gradient checkpointing.
+Smaller chunks can add computation overhead; this setting does not change the model's
+tree count or training batch size.
+
+```python
+from mother.ml.models.m_node import NODEClassifier, NODERegressor
+
+regressor = NODERegressor(tree_chunk_size=64)
+classifier = NODEClassifier(tree_chunk_size=None)
+```
+
+The setting is preserved by scikit-learn cloning and is not tuned automatically by
+Optuna. Feature selection and first-batch initialization still operate across all
+trees, as before, so chunking does not bound every source of memory usage.
+
 ## Ranking with `CatboostRankerMother`
 
 `CatboostRankerMother` wraps CatBoost's learning-to-rank (`CatBoostRanker`) for tasks where the goal is to

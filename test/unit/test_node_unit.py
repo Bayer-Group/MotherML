@@ -32,7 +32,7 @@ from mother.ml.models.m_node import (  # noqa: E402
     NODEClassifier,
     NODERegressor,
 )
-from mother.ml.models.node_utils import DenseODSTBlock  # noqa: E402
+from mother.ml.models.node_utils import ODST, DenseODSTBlock  # noqa: E402
 
 # Import mother tuner for hyperparameter optimization
 from mother.optimization import MotherTuner  # noqa: E402
@@ -41,6 +41,146 @@ from mother.optimization import MotherTuner  # noqa: E402
 # - serial: avoid PyTorch multiprocessing issues
 # - slow: neural network training is computationally expensive
 pytestmark = [pytest.mark.serial, pytest.mark.slow]
+
+
+@pytest.mark.parametrize(
+    "tree_chunk_size, num_trees, expected_ranges",
+    [
+        (256, 257, [(0, 256), (256, 257)]),
+        (None, 7, [(0, 7)]),
+        (3, 7, [(0, 3), (3, 6), (6, 7)]),
+        (16, 7, [(0, 7)]),
+    ],
+)
+def test_odst_tree_chunk_size_controls_routing(monkeypatch, tree_chunk_size, num_trees, expected_ranges):
+    module = ODST(3, num_trees, depth=2, tree_chunk_size=tree_chunk_size, random_state=0)
+    original_forward = module._forward_tree_slice
+    observed_ranges = []
+
+    def record_tree_slice(inputs, selectors, tree_slice):
+        observed_ranges.append((tree_slice.start, tree_slice.stop))
+        return original_forward(inputs, selectors, tree_slice)
+
+    monkeypatch.setattr(module, "_forward_tree_slice", record_tree_slice)
+    with torch.no_grad():
+        output = module(torch.randn(256, 3))
+
+    assert output.shape == (256, num_trees)
+    assert observed_ranges == expected_ranges
+
+
+def test_odst_tree_chunk_size_defaults_to_256():
+    assert ODST(3, 4).tree_chunk_size == 256
+
+
+@pytest.mark.parametrize("tree_chunk_size", [None, 1, 3, 7, 32])
+@pytest.mark.parametrize("training, requires_input_grad", [(False, False), (True, False), (True, True)])
+@pytest.mark.parametrize("flatten_output", [False, True])
+def test_odst_tree_chunk_size_preserves_outputs_and_gradients(
+    tree_chunk_size, training, requires_input_grad, flatten_output
+):
+    torch.manual_seed(0)
+    module_params = dict(in_features=5, num_trees=7, depth=3, tree_output_dim=2, flatten_output=flatten_output)
+    baseline = ODST(**module_params, tree_chunk_size=None, random_state=0)
+    with torch.no_grad():
+        baseline(torch.randn(256, 5))
+    chunked = ODST(**module_params, tree_chunk_size=tree_chunk_size)
+    chunked.load_state_dict(baseline.state_dict())
+    baseline.train(training)
+    chunked.train(training)
+
+    baseline_inputs = torch.randn(13, 5).requires_grad_(requires_input_grad)
+    chunked_inputs = baseline_inputs.detach().clone().requires_grad_(requires_input_grad)
+    baseline_output = baseline(baseline_inputs)
+    chunked_output = chunked(chunked_inputs)
+    torch.testing.assert_close(chunked_output, baseline_output, rtol=1e-4, atol=1e-5)
+
+    baseline_output.square().sum().backward()
+    chunked_output.square().sum().backward()
+    for baseline_parameter, chunked_parameter in zip(baseline.parameters(), chunked.parameters(), strict=True):
+        assert baseline_parameter.grad is not None
+        assert chunked_parameter.grad is not None
+        torch.testing.assert_close(chunked_parameter.grad, baseline_parameter.grad, rtol=1e-4, atol=1e-5)
+    if requires_input_grad:
+        torch.testing.assert_close(chunked_inputs.grad, baseline_inputs.grad, rtol=1e-4, atol=1e-5)
+
+
+@pytest.mark.parametrize("estimator_class", [NODERegressor, NODEClassifier])
+def test_node_tree_chunk_size_defaults_to_256(estimator_class):
+    assert estimator_class().get_params()["tree_chunk_size"] == 256
+
+
+@pytest.mark.parametrize("estimator_class", [NODERegressor, NODEClassifier])
+@pytest.mark.parametrize("tree_chunk_size", [None, 64, np.int64(3)])
+def test_node_tree_chunk_size_round_trips_and_reaches_all_layers(estimator_class, tree_chunk_size):
+    model = estimator_class(
+        num_trees=7, num_layers=2, depth=2, tree_chunk_size=tree_chunk_size, device="cpu", verbose=0
+    )
+    cloned = clone(model)
+    assert cloned.get_params()["tree_chunk_size"] == tree_chunk_size
+    cloned.initialize()
+    assert cloned.module_.tree_chunk_size == tree_chunk_size
+    assert all(layer.tree_chunk_size == tree_chunk_size for layer in cloned.module_.dense_block)
+
+    for updated_chunk_size in (2, None):
+        cloned.set_params(tree_chunk_size=updated_chunk_size)
+        assert cloned.get_params()["tree_chunk_size"] == updated_chunk_size
+        assert cloned.get_params_for("module")["tree_chunk_size"] == updated_chunk_size
+        assert all(layer.tree_chunk_size == updated_chunk_size for layer in cloned.module_.dense_block)
+        assert clone(cloned).get_params()["tree_chunk_size"] == updated_chunk_size
+
+
+@pytest.mark.parametrize("estimator_class", [NODERegressor, NODEClassifier])
+@pytest.mark.parametrize("tree_chunk_size", [None, 3])
+def test_node_tree_chunk_size_survives_fit(estimator_class, tree_chunk_size):
+    features = np.random.default_rng(0).normal(size=(32, 3)).astype(np.float32)
+    targets = np.arange(32) % 2 if estimator_class is NODEClassifier else features.sum(axis=1)
+    model = estimator_class(
+        num_trees=7,
+        num_layers=2,
+        depth=2,
+        tree_chunk_size=tree_chunk_size,
+        max_epochs=1,
+        batch_size=16,
+        device="cpu",
+        verbose=0,
+    )
+    model.fit(features, targets)
+
+    assert all(layer.tree_chunk_size == tree_chunk_size for layer in model.module_.dense_block)
+    predictions = model.predict(features)
+    assert predictions.shape[0] == features.shape[0]
+    assert np.isfinite(predictions).all()
+
+
+@pytest.mark.parametrize(
+    "model_class, required_params",
+    [
+        (ODST, {"in_features": 3, "num_trees": 4}),
+        (CompletePyTorchTabularNODE, {"input_dim": 3, "output_dim": 1}),
+        (NODERegressor, {}),
+        (NODEClassifier, {}),
+    ],
+)
+@pytest.mark.parametrize("tree_chunk_size", [0, -1, 1.5, True])
+def test_tree_chunk_size_rejects_invalid_values(model_class, required_params, tree_chunk_size):
+    with pytest.raises(ValueError, match="tree_chunk_size must be a positive integer or None"):
+        model_class(**required_params, tree_chunk_size=tree_chunk_size)
+
+
+@pytest.mark.parametrize("estimator_class", [NODERegressor, NODEClassifier])
+@pytest.mark.parametrize("parameter_name", ["tree_chunk_size", "module__tree_chunk_size"])
+@pytest.mark.parametrize("tree_chunk_size", [0, -1, 1.5, True])
+def test_tree_chunk_size_set_params_rejects_invalid_values_without_mutation(
+    estimator_class, parameter_name, tree_chunk_size
+):
+    model = estimator_class(num_trees=4, tree_chunk_size=64)
+    with pytest.raises(ValueError, match="tree_chunk_size must be a positive integer or None"):
+        model.set_params(num_trees=8, **{parameter_name: tree_chunk_size})
+
+    assert model.num_trees == 4
+    assert model.tree_chunk_size == 64
+    assert model.get_params_for("module")["tree_chunk_size"] == 64
 
 
 class RecordingConstantTreeLayer(nn.Module):
