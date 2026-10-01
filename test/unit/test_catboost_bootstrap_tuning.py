@@ -11,6 +11,7 @@ Covers:
 import numpy as np
 import pandas as pd
 import pytest
+from optuna.distributions import FloatDistribution
 from optuna.trial import FixedTrial
 from sklearn.base import clone
 
@@ -48,34 +49,42 @@ def _fixed_trial(bootstrap_type: str) -> FixedTrial:
 
 
 @pytest.mark.parametrize(
-    "bootstrap_type, expected, not_expected",
+    "bootstrap_type, expected, not_expected, expected_distribution",
     [
-        ("Bernoulli", _SUBSAMPLE, _BAGGING_TEMPERATURE),
-        ("Bayesian", _BAGGING_TEMPERATURE, _SUBSAMPLE),
+        ("Bernoulli", _SUBSAMPLE, _BAGGING_TEMPERATURE, FloatDistribution(0.25, 1.0)),
+        ("Bayesian", _BAGGING_TEMPERATURE, _SUBSAMPLE, FloatDistribution(0.01, 10.0, log=True)),
     ],
 )
 @pytest.mark.parametrize("model_class", [CatboostRegressorMother, CatboostRankerMother])
-def test_bootstrap_level_tuning_adds_matching_parameter(data, model_class, bootstrap_type, expected, not_expected):
+def test_bootstrap_level_tuning_adds_matching_parameter(
+    data, model_class, bootstrap_type, expected, not_expected, expected_distribution
+):
     X, y = data
     model = model_class(tune_bootstrap_level=True, tune_tree_structure_type=False, tune_loss_function=False)
+    trial = _fixed_trial(bootstrap_type)
 
-    params = model.get_hyperparameter_space(X, y, _fixed_trial(bootstrap_type))
+    params = model.get_hyperparameter_space(X, y, trial)
 
     assert params["bootstrap_type"] == bootstrap_type
-    assert expected in params
+    assert params[expected] == trial.params[expected]
+    assert trial.distributions[expected] == expected_distribution
     assert not_expected not in params
+    assert not_expected not in trial.distributions
 
 
 @pytest.mark.parametrize("model_class", [CatboostRegressorMother, CatboostRankerMother])
 def test_bootstrap_level_tuning_skips_mvs(data, model_class):
     X, y = data
     model = model_class(tune_bootstrap_level=True, tune_tree_structure_type=False, tune_loss_function=False)
+    trial = _fixed_trial("MVS")
 
-    params = model.get_hyperparameter_space(X, y, _fixed_trial("MVS"))
+    params = model.get_hyperparameter_space(X, y, trial)
 
     assert params["bootstrap_type"] == "MVS"
     assert _SUBSAMPLE not in params
     assert _BAGGING_TEMPERATURE not in params
+    assert _SUBSAMPLE not in trial.distributions
+    assert _BAGGING_TEMPERATURE not in trial.distributions
 
 
 @pytest.mark.parametrize("bootstrap_type", ["Bernoulli", "Bayesian", "MVS"])
@@ -85,11 +94,14 @@ def test_bootstrap_level_tuning_disabled_by_default(data, model_class, bootstrap
     model = model_class(tune_tree_structure_type=False, tune_loss_function=False)
 
     assert model.tune_bootstrap_level is False
+    trial = _fixed_trial(bootstrap_type)
 
-    params = model.get_hyperparameter_space(X, y, _fixed_trial(bootstrap_type))
+    params = model.get_hyperparameter_space(X, y, trial)
 
     assert _SUBSAMPLE not in params
     assert _BAGGING_TEMPERATURE not in params
+    assert _SUBSAMPLE not in trial.distributions
+    assert _BAGGING_TEMPERATURE not in trial.distributions
 
 
 def test_bootstrap_level_flag_round_trips_through_clone():
