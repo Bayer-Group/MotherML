@@ -730,10 +730,10 @@ class CompletePyTorchTabularNODE(nn.Module):
         output_dim: Prediction dimension (classes for clf, targets for reg).
         num_layers: Number of stacked ODST layers with dense connections.
         num_trees: Number of oblivious decision trees per layer.
-        tree_chunk_size: Maximum trees per routing slice (default 256).
-            Smaller positive integers reduce routing memory at a runtime cost.
+        tree_chunk_size: Maximum trees per feature-selection, routing, and initialization slice (default 256).
+            Smaller positive integers reduce working memory at a runtime cost.
             ``None`` disables chunking and its gradient checkpointing.
-            Feature selection and initialization remain full-width.
+            Every tree still uses all input features and all initialization samples.
         additional_tree_output_dim: Extra per-tree output dimensions beyond
             ``output_dim``.  Acts as auxiliary capacity during training;
             only the ``subset`` head discards them at inference.
@@ -987,8 +987,9 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
     This class implements all common methods for both NODERegressor and NODEClassifier,
     reducing code duplication and ensuring consistent behavior across both estimators.
 
-    ``tree_chunk_size`` defaults to 256 trees per routing slice. Smaller positive
-    integers reduce routing memory; ``None`` disables chunking and checkpointing.
+    ``tree_chunk_size`` defaults to 256 trees per feature-selection, routing, and
+    initialization slice. Smaller positive integers reduce working memory;
+    ``None`` disables chunking and checkpointing.
     This is a fixed resource setting, not an Optuna search-space parameter.
 
     Inherits from NeuralNet first to ensure proper MRO for sklearn compatibility methods.

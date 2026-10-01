@@ -511,9 +511,10 @@ class ODST(ModuleWithInit):
     - Sparse feature selection: focuses on most relevant features per depth level
     - Data-aware initialization: thresholds set from data quantiles for stable training
 
-    ``tree_chunk_size`` limits tree-routing slices to 256 trees by default.
-    Smaller values reduce routing memory; ``None`` disables chunking and its
-    gradient checkpointing. Feature selection and initialization remain full-width.
+    ``tree_chunk_size`` limits feature selection, routing, and initialization to
+    256 trees per slice by default. Smaller values reduce working memory;
+    ``None`` disables chunking and its gradient checkpointing. Every tree still
+    uses all input features and all samples in the initialization batch.
     """
 
     def __init__(
@@ -593,6 +594,10 @@ class ODST(ModuleWithInit):
         5. Compute leaf probabilities from decision products
         6. Weighted sum of leaf responses
 
+        All six steps run in ``_forward_tree_slice`` for each tree slice.
+        Feature selection still normalizes over all input features. During
+        checkpointed training, selection and routing are recomputed per slice.
+
         Args:
             input: [batch_size, in_features]
 
@@ -604,15 +609,11 @@ class ODST(ModuleWithInit):
         if len(input.shape) > 2:
             return self.forward(input.reshape(-1, input.shape[-1])).reshape(*input.shape[:-1], -1)
 
-        # 1. Sparse feature selection (entmax/sparsemax over input features).
-        feature_logits = self.feature_selection_logits  # [in_features, num_trees, depth]
-        feature_selectors = self.choice_function(feature_logits, dim=0)
-
-        # 2. Evaluate trees. Wide ensembles are processed in fixed-width slices to
-        #    cap peak memory; the concatenation reproduces the full-width result.
+        # Each tree slice performs all six steps, including sparse feature selection.
+        # Concatenation preserves tree order without keeping full-width intermediates.
         chunk_size = getattr(self, "tree_chunk_size", self._AUTO_TREE_CHUNK_SIZE)
         if chunk_size is None or self.num_trees <= chunk_size:
-            response = self._forward_tree_slice(input, feature_selectors, slice(0, self.num_trees))
+            response = self._forward_tree_slice(input, slice(0, self.num_trees))
         else:
             use_checkpoint = self.training and torch.is_grad_enabled()
             slice_outputs = []
@@ -623,39 +624,47 @@ class ODST(ModuleWithInit):
                     # bounded to one slice; numerically identical (no RNG here).
                     # Capture the non-tensor ``tree_slice`` in a closure so only
                     # tensors are passed to ``checkpoint`` (it inspects tensor args).
-                    def slice_forward(inp: Tensor, sel: Tensor, _tree_slice: slice = tree_slice) -> Tensor:
+                    def slice_forward(inp: Tensor, _tree_slice: slice = tree_slice) -> Tensor:
                         """Recompute one tree slice's output (used by gradient checkpointing)."""
-                        return self._forward_tree_slice(inp, sel, _tree_slice)
+                        return self._forward_tree_slice(inp, _tree_slice)
 
                     slice_outputs.append(
                         torch.utils.checkpoint.checkpoint(
                             slice_forward,
                             input,
-                            feature_selectors,
                             use_reentrant=False,
                         )
                     )
                 else:
-                    slice_outputs.append(self._forward_tree_slice(input, feature_selectors, tree_slice))
+                    slice_outputs.append(self._forward_tree_slice(input, tree_slice))
             response = torch.cat(slice_outputs, dim=1)
 
         return response.flatten(1, 2) if self.flatten_output else response
 
-    def _forward_tree_slice(self, input: Tensor, feature_selectors: Tensor, tree_slice: slice) -> Tensor:
-        """Compute soft-tree responses for the trees in ``tree_slice`` only.
+    def _forward_tree_slice(self, input: Tensor, tree_slice: slice) -> Tensor:
+        """Select features and compute soft-tree responses for ``tree_slice``.
 
-        Slicing the tree axis of the selectors, thresholds, temperatures and leaf
-        responses yields exactly the same per-tree outputs as the full-width path,
-        so concatenating slices reconstructs the unchunked result.
+        Sparse feature selection uses the complete input-feature axis. Only the
+        tree axis is sliced, preserving the full-width computation up to
+        floating-point rounding when slice outputs are concatenated.
+
+        Args:
+            input: Input features with shape [batch_size, in_features].
+            tree_slice: Contiguous range of trees to evaluate.
+
+        Returns:
+            Tree responses with shape [batch_size, slice_trees, tree_output_dim].
         """
-        selectors_slice = feature_selectors[:, tree_slice, :]
+        # 1. Sparse feature selection over all input features for this tree slice.
+        selectors_slice = self.choice_function(self.feature_selection_logits[:, tree_slice, :], dim=0)
         n_trees = selectors_slice.shape[1]
         selectors_2d = selectors_slice.reshape(selectors_slice.shape[0], -1)
 
+        # 2. Extract selected feature values for this tree slice.
         feature_values = input @ selectors_2d
         feature_values = feature_values.reshape(input.shape[0], n_trees, self.depth)
 
-        # Threshold comparison with temperature scaling
+        # 3. Threshold comparison with temperature scaling.
         threshold_logits = (feature_values - self.feature_thresholds[tree_slice]) * torch.exp(
             -self.log_temperatures[tree_slice]
         )
@@ -663,22 +672,28 @@ class ODST(ModuleWithInit):
         # and sparsemoid this yields complementary probabilities that sum to 1.
         threshold_logits = torch.stack([-threshold_logits, threshold_logits], dim=-1)
 
-        # Soft binary decisions
+        # 4. Soft binary decisions.
         bins = self.bin_function(threshold_logits)
 
-        # Leaf probability computation via binary code matching
+        # 5. Compute leaf probabilities from decision products.
         bin_matches = torch.einsum("btds,dcs->btdc", bins, self.bin_codes_1hot)
         response_weights = torch.prod(bin_matches, dim=-2)
 
-        # Weighted response aggregation for this slice of trees
+        # 6. Weighted sum of leaf responses for this tree slice.
         return torch.einsum("bnd,ncd->bnc", response_weights, self.response[tree_slice])
 
     def initialize(self, input: Tensor, eps: float = 1e-6) -> None:
         """
         Data-aware initialization of thresholds and temperatures from first batch.
 
-        Sets thresholds to data quantiles and temperatures based on data distribution
-        to ensure meaningful initial decisions and proper gradient flow.
+        Sparse feature selection is applied to each tree slice using all input
+        features. Selected feature values from the full initialization batch set
+        thresholds and temperatures. Percentile targets are drawn once for all
+        trees to preserve the random sequence independently of chunk size.
+
+        Args:
+            input: Initialization data with shape [batch_size, in_features].
+            eps: Small offset added before taking the logarithm of temperatures.
         """
         assert len(input.shape) == 2
 
@@ -698,11 +713,7 @@ class ODST(ModuleWithInit):
             else:
                 input_tensor = input
 
-            # Compute feature values using current selection weights
-            feature_selectors = self.choice_function(self.feature_selection_logits, dim=0)
-            feature_values = torch.einsum("bi,ind->bnd", input_tensor, feature_selectors)
-
-            # Initialize thresholds from sampled data quantiles (Beta distribution)
+            # Draw all percentile targets once before processing tree slices.
             rng = np.random.default_rng(self.random_state) if self.random_state is not None else np.random
             percentiles_q = 100 * rng.beta(
                 self.threshold_init_beta,
@@ -710,31 +721,48 @@ class ODST(ModuleWithInit):
                 size=[self.num_trees, self.depth],
             )
 
-            feature_values_np = feature_values.detach().cpu().numpy()
-            thresholds = np.zeros([self.num_trees, self.depth])
-            for tree_idx in range(self.num_trees):
-                for depth_idx in range(self.depth):
-                    thresholds[tree_idx, depth_idx] = np.percentile(
-                        feature_values_np[:, tree_idx, depth_idx], percentiles_q[tree_idx, depth_idx]
+            chunk_size = getattr(self, "tree_chunk_size", self._AUTO_TREE_CHUNK_SIZE)
+            if chunk_size is None:
+                chunk_size = self.num_trees
+            for start in range(0, self.num_trees, chunk_size):
+                stop = min(start + chunk_size, self.num_trees)
+                tree_slice = slice(start, stop)
+                # 1. Sparse feature selection over all input features for this tree slice.
+                feature_selectors = self.choice_function(self.feature_selection_logits[:, tree_slice, :], dim=0)
+                # 2. Extract selected feature values for the full initialization batch.
+                feature_values = torch.einsum("bi,ind->bnd", input_tensor, feature_selectors)
+
+                # 3. Initialize thresholds from the pre-drawn data quantiles.
+                feature_values_np = feature_values.detach().cpu().numpy()
+                thresholds = np.zeros([stop - start, self.depth])
+                for tree_idx in range(stop - start):
+                    for depth_idx in range(self.depth):
+                        thresholds[tree_idx, depth_idx] = np.percentile(
+                            feature_values_np[:, tree_idx, depth_idx], percentiles_q[start + tree_idx, depth_idx]
+                        )
+
+                self.feature_thresholds[tree_slice].copy_(
+                    torch.as_tensor(thresholds, dtype=feature_values.dtype, device=feature_values.device)
+                )
+
+                # 4. Initialize temperatures from data spread around the thresholds.
+                feature_threshold_diffs = (
+                    abs(feature_values - self.feature_thresholds[tree_slice]).detach().cpu().numpy()
+                )
+                temperatures = np.zeros([stop - start, self.depth])
+                for tree_idx in range(stop - start):
+                    for depth_idx in range(self.depth):
+                        temperatures[tree_idx, depth_idx] = np.percentile(
+                            feature_threshold_diffs[:, tree_idx, depth_idx],
+                            q=100 * min(1.0, self.threshold_init_cutoff),
+                        )
+
+                temperatures /= max(1.0, self.threshold_init_cutoff)
+                self.log_temperatures[tree_slice].copy_(
+                    torch.log(
+                        torch.as_tensor(temperatures, dtype=feature_values.dtype, device=feature_values.device) + eps
                     )
-
-            self.feature_thresholds.copy_(
-                torch.as_tensor(thresholds, dtype=feature_values.dtype, device=feature_values.device)
-            )
-
-            # Initialize temperatures from data spread around thresholds
-            feature_threshold_diffs = abs(feature_values - self.feature_thresholds).detach().cpu().numpy()
-            temperatures = np.zeros([self.num_trees, self.depth])
-            for tree_idx in range(self.num_trees):
-                for depth_idx in range(self.depth):
-                    temperatures[tree_idx, depth_idx] = np.percentile(
-                        feature_threshold_diffs[:, tree_idx, depth_idx], q=100 * min(1.0, self.threshold_init_cutoff)
-                    )
-
-            temperatures /= max(1.0, self.threshold_init_cutoff)
-            self.log_temperatures.copy_(
-                torch.log(torch.as_tensor(temperatures, dtype=feature_values.dtype, device=feature_values.device) + eps)
-            )
+                )
 
     def __repr__(self) -> str:
         """Return a compact string summarising the tree ensemble's shape hyperparameters."""

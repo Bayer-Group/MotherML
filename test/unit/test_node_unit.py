@@ -32,7 +32,12 @@ from mother.ml.models.m_node import (  # noqa: E402
     NODEClassifier,
     NODERegressor,
 )
-from mother.ml.models.node_utils import ODST, DenseODSTBlock  # noqa: E402
+from mother.ml.models.node_utils import (  # noqa: E402
+    ODST,
+    DenseODSTBlock,
+    entmax15,
+    sparsemax,
+)
 
 # Import mother tuner for hyperparameter optimization
 from mother.optimization import MotherTuner  # noqa: E402
@@ -57,9 +62,9 @@ def test_odst_tree_chunk_size_controls_routing(monkeypatch, tree_chunk_size, num
     original_forward = module._forward_tree_slice
     observed_ranges = []
 
-    def record_tree_slice(inputs, selectors, tree_slice):
+    def record_tree_slice(inputs, tree_slice):
         observed_ranges.append((tree_slice.start, tree_slice.stop))
-        return original_forward(inputs, selectors, tree_slice)
+        return original_forward(inputs, tree_slice)
 
     monkeypatch.setattr(module, "_forward_tree_slice", record_tree_slice)
     with torch.no_grad():
@@ -73,14 +78,45 @@ def test_odst_tree_chunk_size_defaults_to_256():
     assert ODST(3, 4).tree_chunk_size == 256
 
 
+@pytest.mark.parametrize("training", [False, True])
+@pytest.mark.parametrize("requires_input_grad", [False, True])
+def test_odst_tree_chunk_size_bounds_feature_selection(monkeypatch, training, requires_input_grad):
+    module = ODST(5, 7, depth=3, tree_chunk_size=3, random_state=0)
+    with torch.no_grad():
+        module(torch.randn(256, 5))
+    original_choice = module.choice_function
+    selection_shapes = []
+
+    def record_choice(logits, dim):
+        selection_shapes.append(tuple(logits.shape))
+        return original_choice(logits, dim=dim)
+
+    monkeypatch.setattr(module, "choice_function", record_choice)
+    module.train(training)
+    output = module(torch.randn(13, 5).requires_grad_(requires_input_grad))
+    expected_shapes = [(5, 3, 3), (5, 3, 3), (5, 1, 3)]
+    assert selection_shapes == expected_shapes
+
+    output.square().sum().backward()
+    assert sorted(selection_shapes) == sorted(expected_shapes * (2 if training else 1))
+
+
+@pytest.mark.parametrize("choice_function", [entmax15, sparsemax])
 @pytest.mark.parametrize("tree_chunk_size", [None, 1, 3, 7, 32])
 @pytest.mark.parametrize("training, requires_input_grad", [(False, False), (True, False), (True, True)])
 @pytest.mark.parametrize("flatten_output", [False, True])
 def test_odst_tree_chunk_size_preserves_outputs_and_gradients(
-    tree_chunk_size, training, requires_input_grad, flatten_output
+    tree_chunk_size, training, requires_input_grad, flatten_output, choice_function
 ):
     torch.manual_seed(0)
-    module_params = dict(in_features=5, num_trees=7, depth=3, tree_output_dim=2, flatten_output=flatten_output)
+    module_params = dict(
+        in_features=5,
+        num_trees=7,
+        depth=3,
+        tree_output_dim=2,
+        flatten_output=flatten_output,
+        choice_function=choice_function,
+    )
     baseline = ODST(**module_params, tree_chunk_size=None, random_state=0)
     with torch.no_grad():
         baseline(torch.randn(256, 5))
@@ -103,6 +139,62 @@ def test_odst_tree_chunk_size_preserves_outputs_and_gradients(
         torch.testing.assert_close(chunked_parameter.grad, baseline_parameter.grad, rtol=1e-4, atol=1e-5)
     if requires_input_grad:
         torch.testing.assert_close(chunked_inputs.grad, baseline_inputs.grad, rtol=1e-4, atol=1e-5)
+
+
+@pytest.mark.parametrize("choice_function", [entmax15, sparsemax])
+@pytest.mark.parametrize("tree_chunk_size", [None, 1, 3, 7, 32])
+@pytest.mark.parametrize("random_state", [None, 19])
+@pytest.mark.parametrize("threshold_init_cutoff", [0.75, 1.5])
+def test_odst_tree_chunk_size_preserves_initialization(
+    choice_function, tree_chunk_size, random_state, threshold_init_cutoff
+):
+    torch.manual_seed(0)
+    module_params = dict(
+        in_features=5,
+        num_trees=7,
+        depth=3,
+        choice_function=choice_function,
+        random_state=random_state,
+        threshold_init_beta=2.0,
+        threshold_init_cutoff=threshold_init_cutoff,
+    )
+    baseline = ODST(**module_params, tree_chunk_size=None)
+    chunked = ODST(**module_params, tree_chunk_size=tree_chunk_size)
+    chunked.load_state_dict(baseline.state_dict())
+    features = torch.randn(256, 5)
+    initial_random_state = np.random.get_state()
+    try:
+        np.random.seed(41)
+        with torch.no_grad():
+            baseline_output = baseline(features)
+        expected_next_draws = np.random.random(4)
+        np.random.seed(41)
+        with torch.no_grad():
+            chunked_output = chunked(features)
+        np.testing.assert_array_equal(np.random.random(4), expected_next_draws)
+    finally:
+        np.random.set_state(initial_random_state)
+
+    torch.testing.assert_close(chunked.feature_thresholds, baseline.feature_thresholds, rtol=1e-4, atol=1e-5)
+    torch.testing.assert_close(chunked.log_temperatures, baseline.log_temperatures, rtol=1e-4, atol=1e-5)
+    torch.testing.assert_close(chunked_output, baseline_output, rtol=1e-4, atol=1e-5)
+    assert chunked._is_initialized_tensor.item() == 1
+
+
+@pytest.mark.parametrize("tree_chunk_size, expected_widths", [(None, [7]), (3, [3, 3, 1]), (16, [7])])
+def test_odst_tree_chunk_size_bounds_initialization(monkeypatch, tree_chunk_size, expected_widths):
+    module = ODST(5, 7, depth=3, tree_chunk_size=tree_chunk_size, random_state=0)
+    original_choice = module.choice_function
+    selection_shapes = []
+
+    def record_choice(logits, dim):
+        selection_shapes.append(tuple(logits.shape))
+        return original_choice(logits, dim=dim)
+
+    monkeypatch.setattr(module, "choice_function", record_choice)
+    module.initialize(torch.randn(256, 5))
+
+    assert selection_shapes == [(5, width, 3) for width in expected_widths]
 
 
 @pytest.mark.parametrize("estimator_class", [NODERegressor, NODEClassifier])

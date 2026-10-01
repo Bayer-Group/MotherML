@@ -87,8 +87,9 @@ print([m.__name__ for m in all_catboost_models])
 ## NODE memory usage
 
 `NODERegressor` and `NODEClassifier` accept `tree_chunk_size`, defaulting to `256`
-trees per routing slice to preserve the existing behavior. Use a smaller positive
-integer to reduce routing memory, or a larger value for fewer slices. Setting
+trees per slice. The same limit applies to feature selection, tree routing, and
+first-batch initialization. Use a smaller positive integer to reduce working
+memory, or a larger value for fewer slices. Setting
 `None` evaluates all trees together and disables the associated gradient checkpointing.
 Smaller chunks can add computation overhead; this setting does not change the model's
 tree count or training batch size.
@@ -101,8 +102,11 @@ classifier = NODEClassifier(tree_chunk_size=None)
 ```
 
 The setting is preserved by scikit-learn cloning and is not tuned automatically by
-Optuna. Feature selection and first-batch initialization still operate across all
-trees, as before, so chunking does not bound every source of memory usage.
+Optuna. Each tree still selects from all input features, and initialization uses
+all samples in the initial batch with the same percentile draws. During training,
+feature selection is recomputed inside each tree slice's checkpoint to avoid
+retaining all selector activations. Model parameters, gradients, optimizer state,
+and final outputs still consume memory independently of the chunk size.
 
 ## Ranking with `CatboostRankerMother`
 
