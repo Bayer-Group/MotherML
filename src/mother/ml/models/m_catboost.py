@@ -238,8 +238,7 @@ class _CatboostHyperParams(AbstractMotherPipeline):
         if self.tune_bootstrap_level:
             if suggested_params[prefix + "bootstrap_type"] == "Bernoulli":
                 suggested_params[prefix + "subsample"] = trial.suggest_float(prefix + "subsample", 0.25, 1.0, log=False)
-
-            if suggested_params[prefix + "bootstrap_type"] == "Bayesian":
+            elif suggested_params[prefix + "bootstrap_type"] == "Bayesian":
                 suggested_params[prefix + "bagging_temperature"] = trial.suggest_float(
                     prefix + "bagging_temperature", 0.01, 10.0, log=True
                 )
@@ -1806,6 +1805,9 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
         Whether to include the "boosting_type" parameter in the hyperparameter space for tuning.
     tune_tree_structure_type : bool
         Whether to include the "grow_policy" parameter in the hyperparameter space for tuning.
+    tune_bootstrap_level : bool
+        Whether to tune subsample for Bernoulli or bagging_temperature for Bayesian bootstrap.
+        MVS sampling levels are intentionally left unchanged.
     tune_pairwise_type : bool
         Whether to include Pairwise loss functions (``YetiRankPairwise``,
         ``PairLogitPairwise``) in the hyperparameter space for tuning.
@@ -1855,6 +1857,7 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
         model_type: props.ModelType = "ranking",
         top: Optional[int] = 0,
         max_pairs: Optional[int] = None,
+        tune_bootstrap_level: bool = False,
         **kwargs,
     ):
         """
@@ -1901,6 +1904,8 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
                 Works with ``YetiRank`` and ``YetiRankPairwise`` in any mode except ``Classic``.
             max_pairs : Optional[int], optional
                 Maximum number of pairs to generate for PairLogit losses.
+            tune_bootstrap_level : bool, optional
+                Whether to tune bootstrap sampling or weighting levels. Defaults to ``False``.
             **kwargs
                 Additional CatBoostRanker parameters.
 
@@ -1911,7 +1916,9 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
                 ``boosting_type`` (not ``Plain``).
         """
         # Initialize hyperparameter tuning configuration
-        _CatboostHyperParams.__init__(self, tune_boosting_type, tune_tree_structure_type, tune_loss_function)
+        _CatboostHyperParams.__init__(
+            self, tune_boosting_type, tune_tree_structure_type, tune_loss_function, tune_bootstrap_level
+        )
 
         if model_type != "ranking":
             raise ValueError("model_type for CatboostRankerMother must be 'ranking'.")
@@ -2033,6 +2040,7 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
                 "tune_boosting_type": self.tune_boosting_type,
                 "tune_tree_structure_type": self.tune_tree_structure_type,
                 "tune_loss_function": self.tune_loss_function,
+                "tune_bootstrap_level": self.tune_bootstrap_level,
                 "top": self.top,
                 "max_pairs": self.max_pairs,
             }
@@ -2076,6 +2084,7 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
                 "tune_boosting_type",
                 "tune_tree_structure_type",
                 "tune_loss_function",
+                "tune_bootstrap_level",
             )
         }
 
@@ -2208,6 +2217,7 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
                 "tune_boosting_type": self.tune_boosting_type,
                 "tune_tree_structure_type": self.tune_tree_structure_type,
                 "tune_loss_function": self.tune_loss_function,
+                "tune_bootstrap_level": self.tune_bootstrap_level,
                 "top": self.top,
                 "max_pairs": self.max_pairs,
             }
@@ -2228,6 +2238,7 @@ class CatboostRankerMother(CatBoostRanker, _CatboostModelMotherBase, _CatboostHy
         self.tune_boosting_type = state.pop("tune_boosting_type", False)
         self.tune_tree_structure_type = state.pop("tune_tree_structure_type", True)
         self.tune_loss_function = state.pop("tune_loss_function", True)
+        self.tune_bootstrap_level = state.pop("tune_bootstrap_level", False)
         self.top = state.pop("top", 0)
         self.max_pairs = state.pop("max_pairs", None)
         super().__setstate__(state)

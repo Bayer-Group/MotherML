@@ -2,8 +2,8 @@
 
 Covers:
 - The bootstrap-level parameters are only suggested when ``tune_bootstrap_level=True``
-  and only for the bootstrap type that supports them (``subsample`` for Bernoulli,
-  ``bagging_temperature`` for Bayesian, neither for MVS).
+    (``subsample`` for Bernoulli, ``bagging_temperature`` for Bayesian).
+- MVS sampling levels are intentionally not tuned.
 - ``CatboostGaussianProcessRegressorMother`` deliberately does not expose the flag,
   because ``sample_gaussian_process`` ignores bootstrap parameters.
 """
@@ -16,6 +16,7 @@ from sklearn.base import clone
 
 from mother.ml.models.m_catboost import (
     CatboostGaussianProcessRegressorMother,
+    CatboostRankerMother,
     CatboostRegressorMother,
 )
 
@@ -53,9 +54,10 @@ def _fixed_trial(bootstrap_type: str) -> FixedTrial:
         ("Bayesian", _BAGGING_TEMPERATURE, _SUBSAMPLE),
     ],
 )
-def test_bootstrap_level_tuning_adds_matching_parameter(data, bootstrap_type, expected, not_expected):
+@pytest.mark.parametrize("model_class", [CatboostRegressorMother, CatboostRankerMother])
+def test_bootstrap_level_tuning_adds_matching_parameter(data, model_class, bootstrap_type, expected, not_expected):
     X, y = data
-    model = CatboostRegressorMother(tune_bootstrap_level=True, tune_tree_structure_type=False)
+    model = model_class(tune_bootstrap_level=True, tune_tree_structure_type=False, tune_loss_function=False)
 
     params = model.get_hyperparameter_space(X, y, _fixed_trial(bootstrap_type))
 
@@ -64,20 +66,23 @@ def test_bootstrap_level_tuning_adds_matching_parameter(data, bootstrap_type, ex
     assert not_expected not in params
 
 
-def test_bootstrap_level_tuning_skips_mvs(data):
+@pytest.mark.parametrize("model_class", [CatboostRegressorMother, CatboostRankerMother])
+def test_bootstrap_level_tuning_skips_mvs(data, model_class):
     X, y = data
-    model = CatboostRegressorMother(tune_bootstrap_level=True, tune_tree_structure_type=False)
+    model = model_class(tune_bootstrap_level=True, tune_tree_structure_type=False, tune_loss_function=False)
 
     params = model.get_hyperparameter_space(X, y, _fixed_trial("MVS"))
 
+    assert params["bootstrap_type"] == "MVS"
     assert _SUBSAMPLE not in params
     assert _BAGGING_TEMPERATURE not in params
 
 
 @pytest.mark.parametrize("bootstrap_type", ["Bernoulli", "Bayesian", "MVS"])
-def test_bootstrap_level_tuning_disabled_by_default(data, bootstrap_type):
+@pytest.mark.parametrize("model_class", [CatboostRegressorMother, CatboostRankerMother])
+def test_bootstrap_level_tuning_disabled_by_default(data, model_class, bootstrap_type):
     X, y = data
-    model = CatboostRegressorMother(tune_tree_structure_type=False)
+    model = model_class(tune_tree_structure_type=False, tune_loss_function=False)
 
     assert model.tune_bootstrap_level is False
 
