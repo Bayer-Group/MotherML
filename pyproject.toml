@@ -279,7 +279,7 @@ exclude_commit_patterns = [
   '''Initial [Cc]ommit.*''',
 ]
 mode = "update"
-insertion_flag = "..\n    All versions below are listed in reverse chronological order"
+insertion_flag = "<!-- version list -->"
 
 [tool.semantic_release.changelog.default_templates]
 changelog_file = "docs/Changelog.md"

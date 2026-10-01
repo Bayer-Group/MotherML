@@ -258,12 +258,16 @@ build_command = "uv lock && git add uv.lock"
 
 [tool.semantic_release.changelog]
 mode = "update"
-insertion_flag = "..\n    All versions below are listed in reverse chronological order"
+insertion_flag = "<!-- version list -->"
 
 [tool.semantic_release.changelog.default_templates]
 changelog_file = "docs/Changelog.md"
 output_format = "md"
 ```
+
+Keep `<!-- version list -->` above the release entries in `docs/Changelog.md`.
+In update mode, PSR leaves a non-empty changelog unchanged if this marker is
+missing. Restoring it enables new entries but does not backfill missed releases.
 
 `build_command` regenerates and stages `uv.lock` after PSR updates the version,
 so the lockfile is included in the release commit. Package building happens in

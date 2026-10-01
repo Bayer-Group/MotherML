@@ -7,17 +7,263 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- version list -->
 
-## v2.0.2 (2026-10-01)
+## v2.0.1 (2026-10-01)
 
 ### Bug Fixes
 
-- Update build command to regenerate and stage uv.lock for release commits
-  ([`d6d527b`](https://github.com/Bayer-Group/MotherML/commit/d6d527b7a2b4a10e59c24a02375562b701c6c2fa))
+- Reintegrate release into workflow.yml
+  ([#93](https://github.com/Bayer-Group/MotherML/pull/93),
+  [`ef72ce0`](https://github.com/Bayer-Group/MotherML/commit/ef72ce0ab4b5acbb79c2fc1262ec9a9fbcc4dffb))
+
+- Update job dependencies in workflow.yml for correct execution order
+  ([#93](https://github.com/Bayer-Group/MotherML/pull/93),
+  [`ef72ce0`](https://github.com/Bayer-Group/MotherML/commit/ef72ce0ab4b5acbb79c2fc1262ec9a9fbcc4dffb))
 
 ### Chores
 
-- **release**: 2.0.2 [skip ci]
-  ([`22a504a`](https://github.com/Bayer-Group/MotherML/commit/22a504a7858b8e4d394353c9e4252380f2b97eed))
+- Fix CI/CD workflows for release and manual PyPI publishing
+  ([#93](https://github.com/Bayer-Group/MotherML/pull/93),
+  [`ef72ce0`](https://github.com/Bayer-Group/MotherML/commit/ef72ce0ab4b5acbb79c2fc1262ec9a9fbcc4dffb))
+
+- Update action versions and set timeouts for workflows
+  ([#93](https://github.com/Bayer-Group/MotherML/pull/93),
+  [`ef72ce0`](https://github.com/Bayer-Group/MotherML/commit/ef72ce0ab4b5acbb79c2fc1262ec9a9fbcc4dffb))
+
+### Continuous Integration
+
+- Enhance workflow validation and release process
+  ([#93](https://github.com/Bayer-Group/MotherML/pull/93),
+  [`ef72ce0`](https://github.com/Bayer-Group/MotherML/commit/ef72ce0ab4b5acbb79c2fc1262ec9a9fbcc4dffb))
+
+---
+
+**Detailed Changes**: [v2.0.0...v2.0.1](https://github.com/Bayer-Group/MotherML/compare/v2.0.0...v2.0.1)
+
+
+## v2.0.0 (2026-09-29)
+
+### Bug Fixes
+
+- **catboost**: Fix loss_function=None handling, set_params rollback, and doc example
+  ([#45](https://github.com/Bayer-Group/MotherML/pull/45),
+  [`5b477ae`](https://github.com/Bayer-Group/MotherML/commit/5b477ae1303d6b7c05b706ac2742e84bfe3d3599))
+
+- **catboost**: Harden ranker loss-function handling and GP regressor tuning
+  ([#45](https://github.com/Bayer-Group/MotherML/pull/45),
+  [`5b477ae`](https://github.com/Bayer-Group/MotherML/commit/5b477ae1303d6b7c05b706ac2742e84bfe3d3599))
+
+- **catboost**: Reject top=/mode=Classic conflicts, fix stale top/max_pairs, fix avg_ndcg_score direction
+  ([#45](https://github.com/Bayer-Group/MotherML/pull/45),
+  [`5b477ae`](https://github.com/Bayer-Group/MotherML/commit/5b477ae1303d6b7c05b706ac2742e84bfe3d3599))
+
+- **catboost,ranking**: Apply mode=NDCG fix-up to top= embedded via set_params
+  ([#45](https://github.com/Bayer-Group/MotherML/pull/45),
+  [`5b477ae`](https://github.com/Bayer-Group/MotherML/commit/5b477ae1303d6b7c05b706ac2742e84bfe3d3599))
+
+- **catboost,ranking**: Compare embedded loss-string params numerically
+  ([#45](https://github.com/Bayer-Group/MotherML/pull/45),
+  [`5b477ae`](https://github.com/Bayer-Group/MotherML/commit/5b477ae1303d6b7c05b706ac2742e84bfe3d3599))
+
+- **catboost,ranking**: Make set_params atomic and validate ranking array shapes
+  ([#45](https://github.com/Bayer-Group/MotherML/pull/45),
+  [`5b477ae`](https://github.com/Bayer-Group/MotherML/commit/5b477ae1303d6b7c05b706ac2742e84bfe3d3599))
+
+- **catboost,ranking**: Require explicit mode for embedded top=, revert avg_ndcg_score shift
+  ([#45](https://github.com/Bayer-Group/MotherML/pull/45),
+  [`5b477ae`](https://github.com/Bayer-Group/MotherML/commit/5b477ae1303d6b7c05b706ac2742e84bfe3d3599))
+
+- **catboost,ranking**: Validate malformed top/max_pairs tokens, fix avg_ndcg_score DataFrame iteration
+  ([#45](https://github.com/Bayer-Group/MotherML/pull/45),
+  [`5b477ae`](https://github.com/Bayer-Group/MotherML/commit/5b477ae1303d6b7c05b706ac2742e84bfe3d3599))
+
+- **catboost,ranking**: Validate top/max_pairs family gaps, dedupe group-indexing
+  ([#45](https://github.com/Bayer-Group/MotherML/pull/45),
+  [`5b477ae`](https://github.com/Bayer-Group/MotherML/commit/5b477ae1303d6b7c05b706ac2742e84bfe3d3599))
+
+- **catboost,ranking,tabpfn**: Harden loss-function validation, atomic set_params, uncertainty wrapper consistency
+  ([#45](https://github.com/Bayer-Group/MotherML/pull/45),
+  [`5b477ae`](https://github.com/Bayer-Group/MotherML/commit/5b477ae1303d6b7c05b706ac2742e84bfe3d3599))
+
+- **ml**: Stop GP unpickling from re-enabling disabled tuning flags
+  ([#45](https://github.com/Bayer-Group/MotherML/pull/45),
+  [`5b477ae`](https://github.com/Bayer-Group/MotherML/commit/5b477ae1303d6b7c05b706ac2742e84bfe3d3599))
+
+- **ranking**: Enable metadata routing in tutorial, document pred normalization
+  ([#45](https://github.com/Bayer-Group/MotherML/pull/45),
+  [`5b477ae`](https://github.com/Bayer-Group/MotherML/commit/5b477ae1303d6b7c05b706ac2742e84bfe3d3599))
+
+- **ranking**: Reject 2-D group_id/group_ids instead of silently flattening
+  ([#45](https://github.com/Bayer-Group/MotherML/pull/45),
+  [`5b477ae`](https://github.com/Bayer-Group/MotherML/commit/5b477ae1303d6b7c05b706ac2742e84bfe3d3599))
+
+- **ranking**: Reject missing values in avg_ndcg_score groups
+  ([#45](https://github.com/Bayer-Group/MotherML/pull/45),
+  [`5b477ae`](https://github.com/Bayer-Group/MotherML/commit/5b477ae1303d6b7c05b706ac2742e84bfe3d3599))
+
+- **ranking**: Reject zero-column ensemble arrays, document larger-is-better convention
+  ([#45](https://github.com/Bayer-Group/MotherML/pull/45),
+  [`5b477ae`](https://github.com/Bayer-Group/MotherML/commit/5b477ae1303d6b7c05b706ac2742e84bfe3d3599))
+
+- **ranking**: Validate k strictly and clean up top-k analysis docs/notebook
+  ([#45](https://github.com/Bayer-Group/MotherML/pull/45),
+  [`5b477ae`](https://github.com/Bayer-Group/MotherML/commit/5b477ae1303d6b7c05b706ac2742e84bfe3d3599))
+
+- **ranking**: Validate missing group IDs in top-k analysis
+  ([#45](https://github.com/Bayer-Group/MotherML/pull/45),
+  [`5b477ae`](https://github.com/Bayer-Group/MotherML/commit/5b477ae1303d6b7c05b706ac2742e84bfe3d3599))
+
+- **tabpfn**: Honor configured device for pre-fitted models
+  ([#45](https://github.com/Bayer-Group/MotherML/pull/45),
+  [`5b477ae`](https://github.com/Bayer-Group/MotherML/commit/5b477ae1303d6b7c05b706ac2742e84bfe3d3599))
+
+- **tabpfn**: Validate pre-fitted model before embedding extraction
+  ([#45](https://github.com/Bayer-Group/MotherML/pull/45),
+  [`5b477ae`](https://github.com/Bayer-Group/MotherML/commit/5b477ae1303d6b7c05b706ac2742e84bfe3d3599))
+
+### Chores
+
+- Fix example notebook formatting and nbqa check
+  ([#45](https://github.com/Bayer-Group/MotherML/pull/45),
+  [`5b477ae`](https://github.com/Bayer-Group/MotherML/commit/5b477ae1303d6b7c05b706ac2742e84bfe3d3599))
+
+- Remove deprecated unit tests for example notebooks
+  ([#45](https://github.com/Bayer-Group/MotherML/pull/45),
+  [`5b477ae`](https://github.com/Bayer-Group/MotherML/commit/5b477ae1303d6b7c05b706ac2742e84bfe3d3599))
+
+- Remove unmaintained polaris-lib dependency and fix example notebooks (still issues)
+  ([#45](https://github.com/Bayer-Group/MotherML/pull/45),
+  [`5b477ae`](https://github.com/Bayer-Group/MotherML/commit/5b477ae1303d6b7c05b706ac2742e84bfe3d3599))
+
+- Speedup env creation for style check
+  ([#45](https://github.com/Bayer-Group/MotherML/pull/45),
+  [`5b477ae`](https://github.com/Bayer-Group/MotherML/commit/5b477ae1303d6b7c05b706ac2742e84bfe3d3599))
+
+- Update actions to latest versions in workflow
+  ([#45](https://github.com/Bayer-Group/MotherML/pull/45),
+  [`5b477ae`](https://github.com/Bayer-Group/MotherML/commit/5b477ae1303d6b7c05b706ac2742e84bfe3d3599))
+
+- Update workflow for Python version and remove test-pypi-publish job
+  ([#45](https://github.com/Bayer-Group/MotherML/pull/45),
+  [`5b477ae`](https://github.com/Bayer-Group/MotherML/commit/5b477ae1303d6b7c05b706ac2742e84bfe3d3599))
+
+- Uv audit
+  ([#45](https://github.com/Bayer-Group/MotherML/pull/45),
+  [`5b477ae`](https://github.com/Bayer-Group/MotherML/commit/5b477ae1303d6b7c05b706ac2742e84bfe3d3599))
+
+- **ranking**: Remove PR status doc, not meant for the repo
+  ([#45](https://github.com/Bayer-Group/MotherML/pull/45),
+  [`5b477ae`](https://github.com/Bayer-Group/MotherML/commit/5b477ae1303d6b7c05b706ac2742e84bfe3d3599))
+
+### Documentation
+
+- Add CI/CD & Release Overview to documentation
+  ([#45](https://github.com/Bayer-Group/MotherML/pull/45),
+  [`5b477ae`](https://github.com/Bayer-Group/MotherML/commit/5b477ae1303d6b7c05b706ac2742e84bfe3d3599))
+
+- **ranking**: Document larger-is-better convention in avg_ndcg_score
+  ([#45](https://github.com/Bayer-Group/MotherML/pull/45),
+  [`5b477ae`](https://github.com/Bayer-Group/MotherML/commit/5b477ae1303d6b7c05b706ac2742e84bfe3d3599))
+
+- **ranking**: Update PR status doc for top=/mode fix, mother_cv note, test fixes
+  ([#45](https://github.com/Bayer-Group/MotherML/pull/45),
+  [`5b477ae`](https://github.com/Bayer-Group/MotherML/commit/5b477ae1303d6b7c05b706ac2742e84bfe3d3599))
+
+- **tabpfn**: Clarify device/precision are not enforced for pre-fitted models
+  ([#45](https://github.com/Bayer-Group/MotherML/pull/45),
+  [`5b477ae`](https://github.com/Bayer-Group/MotherML/commit/5b477ae1303d6b7c05b706ac2742e84bfe3d3599))
+
+### Features
+
+- **ranking**: Add CatBoost ranker tuning and uncertainty workflows
+  ([#45](https://github.com/Bayer-Group/MotherML/pull/45),
+  [`5b477ae`](https://github.com/Bayer-Group/MotherML/commit/5b477ae1303d6b7c05b706ac2742e84bfe3d3599))
+
+- **ranking**: Add functions to convert scores to ranks and score matrices to ranks
+  ([#45](https://github.com/Bayer-Group/MotherML/pull/45),
+  [`5b477ae`](https://github.com/Bayer-Group/MotherML/commit/5b477ae1303d6b7c05b706ac2742e84bfe3d3599))
+
+### Refactoring
+
+- Remove wrong _TransformOnlyValidMols usage
+  ([#45](https://github.com/Bayer-Group/MotherML/pull/45),
+  [`5b477ae`](https://github.com/Bayer-Group/MotherML/commit/5b477ae1303d6b7c05b706ac2742e84bfe3d3599))
+
+- **catboost**: Move ranking utility functions to utils module
+  ([#45](https://github.com/Bayer-Group/MotherML/pull/45),
+  [`5b477ae`](https://github.com/Bayer-Group/MotherML/commit/5b477ae1303d6b7c05b706ac2742e84bfe3d3599))
+
+---
+
+**Detailed Changes**: [v1.2.0...v2.0.0](https://github.com/Bayer-Group/MotherML/compare/v1.2.0...v2.0.0)
+
+**Resolved Issues**: [#25](https://github.com/Bayer-Group/MotherML/issues/25),
+[#33](https://github.com/Bayer-Group/MotherML/issues/33),
+[#57](https://github.com/Bayer-Group/MotherML/issues/57).
+
+
+## v1.2.0 (2026-09-01)
+
+### Bug Fixes
+
+- Potential fix for pull request finding
+  ([#72](https://github.com/Bayer-Group/MotherML/pull/72),
+  [`ab22ecf`](https://github.com/Bayer-Group/MotherML/commit/ab22ecfa997b15d6ca163cdcf56391be08bc5082))
+
+- Remove changelog file reference from semantic release configuration
+  ([#72](https://github.com/Bayer-Group/MotherML/pull/72),
+  [`ab22ecf`](https://github.com/Bayer-Group/MotherML/commit/ab22ecfa997b15d6ca163cdcf56391be08bc5082))
+
+- Update actions to latest versions in workflow and sync package version in uv.lock
+  ([#72](https://github.com/Bayer-Group/MotherML/pull/72),
+  [`ab22ecf`](https://github.com/Bayer-Group/MotherML/commit/ab22ecfa997b15d6ca163cdcf56391be08bc5082))
+
+- Update release preflight script to validate commits against the main branch and remove outdated report file
+  ([#72](https://github.com/Bayer-Group/MotherML/pull/72),
+  [`ab22ecf`](https://github.com/Bayer-Group/MotherML/commit/ab22ecfa997b15d6ca163cdcf56391be08bc5082))
+
+### Chores
+
+- Uv audit
+  ([#72](https://github.com/Bayer-Group/MotherML/pull/72),
+  [`ab22ecf`](https://github.com/Bayer-Group/MotherML/commit/ab22ecfa997b15d6ca163cdcf56391be08bc5082))
+
+### Continuous Integration
+
+- Enhance release workflow with preflight checks and reporting
+  ([#72](https://github.com/Bayer-Group/MotherML/pull/72),
+  [`ab22ecf`](https://github.com/Bayer-Group/MotherML/commit/ab22ecfa997b15d6ca163cdcf56391be08bc5082))
+
+### Documentation
+
+- Add changelog file configuration to pyproject.toml
+  ([#72](https://github.com/Bayer-Group/MotherML/pull/72),
+  [`ab22ecf`](https://github.com/Bayer-Group/MotherML/commit/ab22ecfa997b15d6ca163cdcf56391be08bc5082))
+
+- Add initial configuration for Zensical documentation site
+  ([#72](https://github.com/Bayer-Group/MotherML/pull/72),
+  [`ab22ecf`](https://github.com/Bayer-Group/MotherML/commit/ab22ecfa997b15d6ca163cdcf56391be08bc5082))
+
+- Add markdown extensions and update mkdocstrings configuration
+  ([#72](https://github.com/Bayer-Group/MotherML/pull/72),
+  [`ab22ecf`](https://github.com/Bayer-Group/MotherML/commit/ab22ecfa997b15d6ca163cdcf56391be08bc5082))
+
+- Add missing changelog entries for v1.1.1, v1.1.2, and v1.1.3
+  ([#72](https://github.com/Bayer-Group/MotherML/pull/72),
+  [`ab22ecf`](https://github.com/Bayer-Group/MotherML/commit/ab22ecfa997b15d6ca163cdcf56391be08bc5082))
+
+- Update README to include 'Why Mother?" section
+  ([#72](https://github.com/Bayer-Group/MotherML/pull/72),
+  [`ab22ecf`](https://github.com/Bayer-Group/MotherML/commit/ab22ecfa997b15d6ca163cdcf56391be08bc5082))
+
+### Features
+
+- Add release preflight workflow and reporting script
+  ([#72](https://github.com/Bayer-Group/MotherML/pull/72),
+  [`ab22ecf`](https://github.com/Bayer-Group/MotherML/commit/ab22ecfa997b15d6ca163cdcf56391be08bc5082))
+
+---
+
+**Detailed Changes**: [v1.1.3...v1.2.0](https://github.com/Bayer-Group/MotherML/compare/v1.1.3...v1.2.0)
 
 
 ## v1.1.3 (2026-08-31)
