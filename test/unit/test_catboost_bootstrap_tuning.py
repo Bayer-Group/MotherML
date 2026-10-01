@@ -96,7 +96,7 @@ def test_bootstrap_level_flag_round_trips_through_clone():
 
 def test_gaussian_process_does_not_expose_bootstrap_level_tuning(data):
     X, y = data
-    model = CatboostGaussianProcessRegressorMother(tune_tree_structure_type=False)
+    model = CatboostGaussianProcessRegressorMother()
 
     assert model.tune_bootstrap_level is False
     assert "tune_bootstrap_level" not in model.get_params()
