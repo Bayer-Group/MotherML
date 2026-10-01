@@ -55,25 +55,28 @@ Hooks skip `examples/` and `test/`.
 
 ## CI/CD pipeline
 
-Defined in `.github/workflows/workflow.yml`. Triggers: pull requests to `main`,
-any `push`, and manual `workflow_dispatch`. Jobs run in dependency order and stop
-the pipeline on the first failure:
+CI is defined in `.github/workflows/workflow.yml`; the release logic lives in the
+reusable `.github/workflows/release.yml`, which CI calls only on a push to `main`.
+CI triggers: pull requests to `main`, pushes to `main`, and manual
+`workflow_dispatch`. Jobs run in dependency order and stop the pipeline on the
+first failure:
 
 1. **style** — `check-style` + `check-lint`.
 2. **test** — matrix on Python 3.11 / 3.12 / 3.13 / 3.14: full `coverage` run
    (with `rna`, `report`, `tabpfn`, `tabicl`, `clustering` extras), then
-   `dist-test` against a no-extras install. Runs only on `main` or PRs.
+   `dist-test` against a no-extras install.
 3. **test-slow** — `slow` suite on Python 3.14.
 4. **release-preflight** — see [below](#release-preflight). Read-only token;
    uploads the report artifact and fails on violations.
 5. **comment-preflight** — posts/updates a sticky PR comment with the preflight
    report. Isolated write-token job that never runs PR code; same-repo PRs only.
-6. **release** — on `main` only: `python-semantic-release` computes the version,
-   updates the changelog, builds and checks the wheel. Skipped with
-   `[skip release]` in the commit message.
-7. **test-pypi-publish** — publishes the dev build to Test PyPI on push to `main`.
-8. **publish-pypi** — publishes to PyPI when a release was actually cut.
-9. **build-docs / deploy-docs** — build the site; deploy to GitHub Pages on `main`.
+6. **release** — on push to `main` only, once all tests and preflight pass, CI
+   calls `release.yml`. That workflow runs `python-semantic-release` on the host
+   (computing the version, updating the changelog, relocking `uv.lock`, and
+   pushing the release commit + tag), then builds and checks the wheel and
+   **publishes to PyPI** when a release was actually cut. The release commit is
+   tagged `[skip ci]` so it does not re-trigger this pipeline.
+7. **build-docs / deploy-docs** — build the site; deploy to GitHub Pages on `main`.
 
 ## Code review & PR approval
 
