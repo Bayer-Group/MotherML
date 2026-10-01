@@ -11,6 +11,42 @@ from mother.ml.models.m_tabpfn import (
 )
 
 
+class _PrecisionTrackingModel:
+    """Records use_autocast_ in effect during get_embeddings(), to check that it's
+    forced to False for the call and restored afterward. This mirrors the real
+    TabPFN attribute that get_embeddings() actually reads (fixed once at fit time
+    by determine_precision), which is what _get_embeddings_with_safe_precision
+    must toggle for the workaround to have any effect."""
+
+    def __init__(self, initial_autocast):
+        self.use_autocast_ = initial_autocast
+        self.autocast_during_call = None
+
+    def get_embeddings(self, X):
+        self.autocast_during_call = self.use_autocast_
+        return np.zeros((len(X), 2))
+
+
+def test_transform_forces_autocast_off_for_prefitted_model_and_restores_it():
+    model = _PrecisionTrackingModel(initial_autocast=True)
+    transformer = TabPFNEmbeddingTransformer(model=model, use_kfold=False)
+
+    transformer.transform(pd.DataFrame({"f0": [1.0, 2.0]}))
+
+    assert model.autocast_during_call is False
+    assert model.use_autocast_ is True
+
+
+def test_fit_forces_autocast_off_for_prefitted_model_and_restores_it():
+    model = _PrecisionTrackingModel(initial_autocast=True)
+    transformer = TabPFNEmbeddingTransformer(model=model, use_kfold=False)
+
+    transformer.fit(np.array([[1.0], [2.0]]), np.array([0.0, 1.0]))
+
+    assert model.autocast_during_call is False
+    assert model.use_autocast_ is True
+
+
 def get_data_containers(X, y):
     """
     Convert X and y into different container formats for testing.
