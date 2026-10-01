@@ -101,10 +101,12 @@ def _make_ranker_data(n_samples: int = 100, n_features: int = 5, n_groups: int =
     return X, y, group_ids
 
 
-def _fit_ranker(num_trees: int = 20) -> tuple:
+def _fit_ranker(num_trees: int = 20, **kwargs) -> tuple:
     skl_set_config(enable_metadata_routing=True)
     X, y, groups = _make_ranker_data()
-    model = CatboostRankerMother(target_type="single_target", num_trees=num_trees).set_fit_request(group_id="group_id")
+    model = CatboostRankerMother(target_type="single_target", num_trees=num_trees, **kwargs).set_fit_request(
+        group_id="group_id"
+    )
     model.fit(X, y, group_id=groups, verbose=False)
     return model, X, y, groups
 
@@ -848,6 +850,7 @@ def test_get_params_contains_all_custom_keys():
         "tune_boosting_type",
         "tune_tree_structure_type",
         "tune_loss_function",
+        "tune_bootstrap_level",
         "top",
         "max_pairs",
     ):
@@ -861,6 +864,7 @@ def test_get_params_default_values():
     assert params["target_type"] == "single_target"
     assert not params["tune_pairwise_type"]
     assert not params["tune_boosting_type"]
+    assert not params["tune_bootstrap_level"]
     assert params["tune_tree_structure_type"]
     assert params["tune_loss_function"]
     assert params["top"] == 0
@@ -1037,20 +1041,24 @@ def test_set_params_updates_attributes():
         tune_boosting_type=True,
         tune_loss_function=False,
         tune_pairwise_type=False,
+        tune_bootstrap_level=True,
         top=10,
         max_pairs=100,
     )
     assert model.tune_boosting_type
     assert not model.tune_loss_function
+    assert model.tune_bootstrap_level
+    assert "tune_bootstrap_level" not in model._init_params
     assert model.top == 10
     assert model.max_pairs == 100
 
 
 def test_set_params_reflected_in_get_params():
     model = CatboostRankerMother()
-    model.set_params(tune_loss_function=False, top=5)
+    model.set_params(tune_loss_function=False, tune_bootstrap_level=True, top=5)
     params = model.get_params()
     assert not params["tune_loss_function"]
+    assert params["tune_bootstrap_level"]
     assert params["top"] == 5
 
 
@@ -1451,10 +1459,11 @@ def test_set_params_leaves_state_unchanged_when_parent_set_params_raises():
 
     with patch.object(m_catboost.CatBoostRanker, "set_params", side_effect=ValueError("boom")):
         with pytest.raises(ValueError, match="boom"):
-            model.set_params(top=9, tune_tree_structure_type=True)
+            model.set_params(top=9, tune_tree_structure_type=True, tune_bootstrap_level=True)
 
     assert model.top == 5
     assert model.tune_tree_structure_type is False
+    assert model.tune_bootstrap_level is False
 
 
 def test_sklearn_clone_preserves_params():
@@ -1462,12 +1471,14 @@ def test_sklearn_clone_preserves_params():
     model = CatboostRankerMother(
         tune_boosting_type=True,
         tune_loss_function=False,
+        tune_bootstrap_level=True,
         top=5,
         max_pairs=50,
     )
     cloned = skl_base.clone(model)
     assert cloned.tune_boosting_type == model.tune_boosting_type
     assert cloned.tune_loss_function == model.tune_loss_function
+    assert cloned.tune_bootstrap_level == model.tune_bootstrap_level
     assert cloned.top == model.top
     assert cloned.max_pairs == model.max_pairs
     assert cloned.model_type == "ranking"
@@ -1476,7 +1487,7 @@ def test_sklearn_clone_preserves_params():
 @pytest.mark.slow
 def test_pickle_roundtrip_preserves_params_and_predictions():
     skl_set_config(enable_metadata_routing=True)
-    model, X, _, groups = _fit_ranker()
+    model, X, _, groups = _fit_ranker(tune_bootstrap_level=True)
     mask = groups == 0
     X_group = X[mask]
 
@@ -1490,6 +1501,7 @@ def test_pickle_roundtrip_preserves_params_and_predictions():
     assert restored.tune_boosting_type == model.tune_boosting_type
     assert restored.tune_loss_function == model.tune_loss_function
     assert restored.tune_tree_structure_type == model.tune_tree_structure_type
+    assert restored.tune_bootstrap_level == model.tune_bootstrap_level
     assert restored.get_params()["posterior_sampling"] == model.get_params()["posterior_sampling"]
 
     pred_after = restored.predict(X_group)
