@@ -141,24 +141,34 @@ def hdbscan_clustering(
     Dict[int, List[int]]
         A dictionary of cluster numbers as keys and values as lists of molecule indices.
     """
-    try:
-        import hdbscan
+    from sklearn.cluster import HDBSCAN
 
-    except ImportError as import_error:
-        from mother.errors import ExtrasDependencyImportError
+    if isinstance(fingerprints, tuple):
+        fingerprints = list(fingerprints)
 
-        raise ExtrasDependencyImportError("clustering", import_error)
-
-    if isinstance(fingerprints, np.ndarray):
-        fingerprints = [np_to_bv(fv) for fv in fingerprints]
+    if len(fingerprints) == 0:
+        module_logger.warning("No valid fingerprints provided for clustering")
+        return {}
 
     module_logger.info("Applying HDBSCAN clustering to the dataset")
 
-    clusters: Dict[int, List[int]] = collections.defaultdict(list)
-    clusterer: hdbscan.HDBSCAN = hdbscan.HDBSCAN(min_samples=1, metric="jaccard", min_cluster_size=min_cluster_size)
-    cluster_labels: np.ndarray = clusterer.fit_predict(np.array(fingerprints))
+    # sklearn.cluster.HDBSCAN expects a 2D numeric feature matrix.
+    # If the input is already a numpy array (n_samples × n_bits), use it directly.
+    # If it is a list of RDKit ExplicitBitVect objects, convert to a 2D uint8 matrix.
+    if isinstance(fingerprints, np.ndarray):
+        X = fingerprints
+    else:
+        nbits = fingerprints[0].GetNumBits()
+        X = np.zeros((len(fingerprints), nbits), dtype=np.uint8)
+        for i, fp in enumerate(fingerprints):
+            DataStructs.ConvertToNumpyArray(fp, X[i])
 
-    module_logger.info(f"HDBSCAN clustering grouped data into {len(set(cluster_labels))} groups")
+    clusters: Dict[int, List[int]] = collections.defaultdict(list)
+    clusterer: HDBSCAN = HDBSCAN(min_samples=1, metric="jaccard", min_cluster_size=min_cluster_size)
+    cluster_labels: np.ndarray = clusterer.fit_predict(X)
+
+    n_clusters = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
+    module_logger.info(f"HDBSCAN clustering grouped data into {n_clusters} groups")
 
     for idx, best_idx in enumerate(cluster_labels):
         clusters[best_idx].append(idx)

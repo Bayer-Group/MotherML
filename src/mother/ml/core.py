@@ -322,6 +322,30 @@ class ColumnTransformerWithHyperparameterRooting(skl_comp.ColumnTransformer, _Sk
 
     iterative_steps: str = "transformers"
 
+    @staticmethod
+    def _coerce_column_names(X):
+        """Ensure DataFrame column names are strings.
+
+        sklearn ≥1.8 does not store ``feature_names_in_`` when columns are not
+        strings, and ``get_feature_names_out()`` then generates ``x0/x1/…``
+        placeholder names.  feature_engine transformers store the original
+        (integer) column names in their own ``feature_names_in_``, causing a
+        mismatch.  Converting once at the ColumnTransformer boundary keeps both
+        layers in sync without affecting callers.
+        """
+        if isinstance(X, pd.DataFrame) and not all(isinstance(c, str) for c in X.columns):
+            return X.rename(columns=str)
+        return X
+
+    def fit(self, X, y=None, **params):
+        return super().fit(self._coerce_column_names(X), y, **params)
+
+    def fit_transform(self, X, y=None, **params):
+        return super().fit_transform(self._coerce_column_names(X), y, **params)
+
+    def transform(self, X):
+        return super().transform(self._coerce_column_names(X))
+
 
 class FeatureUnionWithHyperparameterRooting(skl_pipe.FeatureUnion, _SklComposeWithHyperparameterRooting):
     iterative_steps: str = "transformer_list"

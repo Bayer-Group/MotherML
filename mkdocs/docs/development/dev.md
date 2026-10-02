@@ -147,9 +147,18 @@ pytest test --durations=0 --html=pytest_report.html --self-contained-html -n aut
 
 ```python title="Parsing Files"
 import json
+from pathlib import Path
 
-with open("durations.json", "r") as json_file:
+durations_path = Path("durations.json")
+if durations_path.exists():
+  with durations_path.open("r", encoding="utf-8") as json_file:
     data = json.load(json_file)
+else:
+  # Example fallback so the snippet can run as-is.
+  data = [
+    {"nodeid": "test/unit/test_core.py::test_fit", "duration": 0.12},
+    {"nodeid": "test/unit/test_ml.py::test_predict", "duration": 0.08},
+  ]
 
 test_durations = {item["nodeid"]: item["duration"] for item in data}
 for test_name, duration in test_durations.items():

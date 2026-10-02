@@ -1,6 +1,6 @@
 # Using mother in your ML project
 
-Here, I want to give an overview on how mother can be used in a project scope. As mentioned earlier, multiple examples can be found in the [examples folder](../../../examples/notebooks). The beauty of the current mother implementation is, that every step can be performed individually (in case you have the appropriate input for the step).
+Here, I want to give an overview on how mother can be used in a project scope. As mentioned earlier, multiple examples can be found in the [examples folder](https://github.com/Bayer-Group/MotherML/tree/main/examples/notebooks). The beauty of the current mother implementation is, that every step can be performed individually (in case you have the appropriate input for the step).
 To achieve that, the code of each step is put into separate submodules. Examples for the most important submodules will be given below. A comprehensive overview can be found in the examples.
 
 To faciliatate configuration of the ML project a `MotherSettings` class is created. In the following usage of that settings class (that is based on a simple yaml file) is shown. Project specific configuration files can be loaded as well. The example below shows the python code in the 'Source' tab and the result(print) in the 'Result' tab.
