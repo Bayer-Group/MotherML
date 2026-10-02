@@ -1,6 +1,6 @@
 # Mother Tutorial Notebooks
 
-Welcome to the comprehensive tutorial collection for the Mother machine learning framework! 
+Welcome to the comprehensive tutorial collection for the Mother machine learning framework!
 These notebooks provide hands-on guidance for molecular property prediction, cheminformatics, and advanced ML techniques.
 
 ## 🎯 Learning Path
@@ -70,7 +70,7 @@ Dive into sophisticated methods and specialized algorithms:
 | `02_boruta_feature_selection.ipynb` | Boruta algorithm for feature importance | 🔴 Advanced | 30 min |
 | `03_rna_preprocessing.ipynb` | RNA data preprocessing | 🔴 Advanced | 25 min |
 
-### 05_advanced/ 
+### 05_advanced/
 **Cutting-edge techniques and specialized algorithms**
 
 | Notebook | Description | Difficulty | Duration |
@@ -79,5 +79,7 @@ Dive into sophisticated methods and specialized algorithms:
 | `02_tabpfn_integration.ipynb` | TabPFN for small datasets | 🔴 Advanced | 25 min |
 | `03_uncertainty_prediction_tabpfn.ipynb` | Uncertainty quantification with TabPFN | 🔴 Advanced | 35 min |
 | `04_ranking_model.ipynb` | Learning-to-Rank using CatboostRanker | 🔴 Advanced | 5 min* |
+| `05_tabicl_embedding_transformer.ipynb` | TabICL embeddings for molecular data | 🔴 Advanced | 30 min |
+| `06_custom_model_tuner.ipynb` | Custom hyperparameter tuning for a neural network | 🔴 Advanced | 40 min |
 
 **w/o the last optimization section. > 1h to run the optimization section*

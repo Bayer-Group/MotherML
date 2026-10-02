@@ -203,7 +203,7 @@ class TestCatboostClassifierModels(unittest.TestCase):
         default_params = model.default_parameters()
 
         self.assertAlmostEqual(default_params["learning_rate"], 0.03)
-        self.assertEqual(default_params["bootstrap_type"], "Bayesian")
+        self.assertEqual(default_params["bootstrap_type"], "MVS")
         self.assertEqual(default_params["random_strength"], 1)
         self.assertEqual(default_params["grow_policy"], "SymmetricTree")
         self.assertEqual(default_params["boosting_type"], "Plain")

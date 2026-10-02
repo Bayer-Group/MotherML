@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Validate executable Python code fences in docs markdown files.
 
-This script scans mkdocs/docs/**/*.md for fenced blocks with the `python` language,
+This script scans docs/**/*.md for fenced blocks with the `python` language,
 executes them sequentially per file, and fails if any block raises an exception.
 
 Execution happens in isolated namespaces per file so examples can build on previous
@@ -91,8 +91,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run all Python fenced code blocks in docs markdown.")
     parser.add_argument(
         "--docs-root",
-        default="mkdocs/docs",
-        help="Path to docs root containing markdown files (default: mkdocs/docs)",
+        default="docs",
+        help="Path to docs root containing markdown files (default: docs)",
     )
     parser.add_argument(
         "--verbose",

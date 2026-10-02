@@ -46,7 +46,6 @@ from typing import (
 
 import numpy as np
 import pandas as pd
-import torch
 from optuna.trial import Trial
 from six import iteritems
 from sklearn.base import BaseEstimator, TransformerMixin, clone
@@ -60,9 +59,16 @@ from sklearn.model_selection import (
 )
 from sklearn.utils import check_array
 from sklearn.utils.validation import check_is_fitted
-from tabpfn import TabPFNClassifier, TabPFNRegressor
-from tabpfn.constants import ModelVersion
-from tabpfn.regressor import FullOutputDict
+
+from mother.errors import ExtrasDependencyImportError
+
+try:
+    import torch
+    from tabpfn import TabPFNClassifier, TabPFNRegressor
+    from tabpfn.constants import ModelVersion
+    from tabpfn.regressor import FullOutputDict
+except ImportError as import_error:
+    raise ExtrasDependencyImportError("tabpfn", import_error) from import_error
 
 from mother.ml.core import AbstractMotherPipeline
 from mother.ml.models import utils
@@ -457,7 +463,8 @@ class TabPFNEmbeddingTransformer(BaseEstimator, TransformerMixin):
     task : {'classification', 'regression'}, default='classification'
         The type of task to perform. This is ignored when 'model' is given.
     device : str, default='cpu'
-        Device to run the TabPFN model on ('cpu' or 'cuda').
+        Device to run the TabPFN model on ('cpu' or 'cuda'). Only applied when Mother fits
+        a new model; ignored when a pre-fitted `model` is supplied (see `model` below).
     n_folds : int, default=5
         Number of folds for cross-validation when generating training embeddings.
     use_kfold : bool, default=True
@@ -474,6 +481,12 @@ class TabPFNEmbeddingTransformer(BaseEstimator, TransformerMixin):
     model : TabPFNClassifierMother or TabPFNRegressorMother, default=None
         A pre-fitted TabPFN model instance. If provided, this model will be used instead
         of fitting a new one, and the k-fold scheme will be skipped for training data.
+        The model's existing device placement is used as-is; `device` is not applied to
+        it, so make sure the model is already on the device you want before passing it
+        in. Its ``use_autocast_`` flag is temporarily forced to ``False`` for the duration
+        of each ``get_embeddings()`` call (some torch/tabpfn builds can't convert
+        bfloat16-autocast output to numpy on CPU) and restored to its original value
+        immediately afterward, so the model itself is left unchanged.
     ignore_pretraining_limits : bool, default=True
         When True, bypasses TabPFN's restriction on the number of features (default 500).
         Set to False to enforce the pretraining limits.
@@ -529,6 +542,29 @@ class TabPFNEmbeddingTransformer(BaseEstimator, TransformerMixin):
         random.seed(self.random_state)
         torch.manual_seed(self.random_state)
         np.random.seed(self.random_state)
+
+    @staticmethod
+    def _get_embeddings_with_safe_precision(
+        model: Union[TabPFNClassifierMother, TabPFNRegressorMother], X_array: np.ndarray
+    ) -> np.ndarray:
+        # `use_autocast_` only exists once `determine_precision` has run at fit time, so
+        # an unfitted model would otherwise fail with a confusing AttributeError deep
+        # inside `get_embeddings`.
+        assert hasattr(model, "use_autocast_"), (
+            "Model must be fitted (missing `use_autocast_`) before extracting embeddings."
+        )
+
+        # `get_embeddings` reads `model.use_autocast_`, which `determine_precision` fixes
+        # once at fit time -- mutating `model.inference_precision` afterward (the previous
+        # approach here) has no effect on an already-fitted model. Some torch/tabpfn builds
+        # can't convert bfloat16-autocast output to numpy on CPU (TypeError: Got unsupported
+        # ScalarType BFloat16), so force autocast off for the call only, then restore it.
+        original_autocast = model.use_autocast_
+        model.use_autocast_ = False
+        try:
+            return model.get_embeddings(X_array)
+        finally:
+            model.use_autocast_ = original_autocast
 
     def _get_best_embeddings(
         self,
@@ -605,16 +641,16 @@ class TabPFNEmbeddingTransformer(BaseEstimator, TransformerMixin):
 
         if is_dataframe:
             self.input_features_ = X.columns.tolist()
-            X_array: np.ndarray = X.values
+            X_array: np.ndarray = X.to_numpy(dtype=np.float32)
         else:
             self.input_features_ = None
-            X_array: np.ndarray = X
+            X_array = np.asarray(X, dtype=np.float32)
 
         if y is None:
             raise ValueError("TabPFN requires target values for fitting when no prefitted_model is provided.")
 
         # Convert y to numpy array if it's a pandas Series
-        y_array: np.ndarray = y.values if isinstance(y, pd.Series) else y
+        y_array: np.ndarray = y.to_numpy() if isinstance(y, pd.Series) else np.asarray(y)
 
         # Convert groups to numpy array if it's a pandas Series
         if groups is not None and isinstance(groups, pd.Series):
@@ -627,7 +663,8 @@ class TabPFNEmbeddingTransformer(BaseEstimator, TransformerMixin):
             module_logger.info(
                 "A pre-fitted model has been given. The new data will not be used for fitting the model."
             )
-            self.train_embeddings_ = self.model.get_embeddings(X_array)
+            assert self.model is not None
+            self.train_embeddings_ = self._get_embeddings_with_safe_precision(self.model, X_array)
             self._embedding_dim = self.train_embeddings_.shape[1]
         else:
             # Otherwise, follow the original fitting process
@@ -676,7 +713,7 @@ class TabPFNEmbeddingTransformer(BaseEstimator, TransformerMixin):
                     fold_model: Union[TabPFNClassifierMother, TabPFNRegressorMother] = model_class(
                         device=self.device,
                         ignore_pretraining_limits=self.ignore_pretraining_limits,
-                        **self.kwargs,
+                        **{**self.kwargs, "inference_precision": torch.float32},
                     )
                     fold_model.fit(X_array[train_idx], y_array[train_idx])
 
@@ -697,7 +734,7 @@ class TabPFNEmbeddingTransformer(BaseEstimator, TransformerMixin):
                 self.model = model_class(
                     device=self.device,
                     ignore_pretraining_limits=self.ignore_pretraining_limits,
-                    **self.kwargs,
+                    **{**self.kwargs, "inference_precision": torch.float32},
                 )
                 self.model.fit(X_array, y_array)
 
@@ -706,7 +743,7 @@ class TabPFNEmbeddingTransformer(BaseEstimator, TransformerMixin):
                 self.model = model_class(
                     device=self.device,
                     ignore_pretraining_limits=self.ignore_pretraining_limits,
-                    **self.kwargs,
+                    **{**self.kwargs, "inference_precision": torch.float32},
                 )
                 self.model.fit(X_array, y_array)
 
@@ -733,7 +770,11 @@ class TabPFNEmbeddingTransformer(BaseEstimator, TransformerMixin):
         self._embedding_dim = self.train_embeddings_.shape[1]
         return self
 
-    def transform(self, X: pd.DataFrame, only_best_embeddings: bool = False) -> pd.DataFrame:
+    def transform(
+        self,
+        X: Union[np.ndarray, pd.DataFrame],
+        only_best_embeddings: bool = False,
+    ) -> pd.DataFrame:
         """
         Transform new data into TabPFN embeddings using the fitted model.
 
@@ -762,12 +803,12 @@ class TabPFNEmbeddingTransformer(BaseEstimator, TransformerMixin):
                 missing_features: set = set(self.input_features_) - set(X.columns)
                 raise ValueError(f"Features {missing_features} used for training are missing")
             # Use the same column order as during training
-            X_array: np.ndarray = X[self.input_features_].values
+            X_array: np.ndarray = X[self.input_features_].to_numpy(dtype=np.float32)
         else:
-            X_array: np.ndarray = X.values
+            X_array = np.asarray(X, dtype=np.float32)
 
         # Get embeddings for new data using the main model
-        embeddings = self.model.get_embeddings(X_array)
+        embeddings = self._get_embeddings_with_safe_precision(self.model, X_array)
         # collapse the additional column caused by estimators (avg)
         if len(embeddings.shape) == 3:
             if only_best_embeddings:

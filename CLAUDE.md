@@ -20,7 +20,7 @@ Uses `uv` + `poe` (poethepoet). Run tasks with `uv run poe <task>`.
 - **Style (check)**: `uv run poe check-style` = `check-sort-imports` (isort, black profile) + `check-format` (ruff format). Apply with `uv run poe style`.
 - **Static analysis**: `uv run poe check-static-analysis` = `check-lint` (ruff, E+F) + `check-types` (mypy on `src`, strict: `disallow_untyped_defs`).
 - **Lint autofix**: `uv run poe lint`.
-- **Docs**: `uv run poe docs` (build) / `uv run poe serve-docs` (mkdocs serve from `mkdocs/`).
+- **Docs**: `uv run poe docs` (build) / `uv run poe serve-docs` (zensical serve; config `zensical.toml` at repo root, content in `docs/`).
 - **Pre-commit**: `uv run poe install-hook` then `uv run poe check-hook`.
 
 Line length: ruff 120, pylint 100. Note: `CONTRIBUTING.md` references some task names (`poe test`, `test-acceptance`, `check-docs`) that do not exist in `pyproject.toml` — use the verified names above.
