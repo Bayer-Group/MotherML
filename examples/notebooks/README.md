@@ -1,6 +1,6 @@
 # Mother Tutorial Notebooks
 
-Welcome to the comprehensive tutorial collection for the Mother machine learning framework! 
+Welcome to the comprehensive tutorial collection for the Mother machine learning framework!
 These notebooks provide hands-on guidance for molecular property prediction, cheminformatics, and advanced ML techniques.
 
 ## 🎯 Learning Path
@@ -70,7 +70,7 @@ Dive into sophisticated methods and specialized algorithms:
 | `02_boruta_feature_selection.ipynb` | Boruta algorithm for feature importance | 🔴 Advanced | 30 min |
 | `03_rna_preprocessing.ipynb` | RNA data preprocessing | 🔴 Advanced | 25 min |
 
-### 05_advanced/ 
+### 05_advanced/
 **Cutting-edge techniques and specialized algorithms**
 
 | Notebook | Description | Difficulty | Duration |

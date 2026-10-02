@@ -12,7 +12,6 @@ from sklearn.utils.validation import check_is_fitted
 
 from mother import chem
 from mother.cv import cv_methods
-from mother.feature_generation.core import _TransformOnlyValidMols
 from mother.feature_generation.fp_gen import FingerprintFactory
 
 module_logger: logging.Logger = logging.getLogger(__name__)
@@ -65,7 +64,12 @@ class _InstantiateFingerprintGenerator(BaseEstimator):
         """
 
         self.generator = FingerprintFactory(
-            "MorganFP", {"radius": self.radius, "fpSize": self.fp_size, "includeChirality": self.include_chirality}
+            "MorganFP",
+            {
+                "radius": self.radius,
+                "fpSize": self.fp_size,
+                "includeChirality": self.include_chirality,
+            },
         ).get_fingerprint_generator()
 
         return self
@@ -101,7 +105,7 @@ class DefaultGrouping(BaseEstimator, TransformerMixin):
         self.is_fitted = True
         return self
 
-    def transform(self, X: Iterable[Any]) -> npt.NDArray[np.float64]:
+    def transform(self, X: Iterable[Any]) -> npt.NDArray[Any]:
         check_is_fitted(self, "is_fitted")
         try:
             X_np: npt.NDArray[np.float64] = np.asarray(X, dtype=np.float64)
@@ -162,13 +166,16 @@ class TimeSeriesGrouping(DefaultGrouping):
 class TanimotoGroupingFromMols(
     _InstantiateFingerprintGenerator,
     DefaultGrouping,
-    _TransformOnlyValidMols,
 ):
     """Clustering, based on Tanimoto similarity. Will be calculated on user-specified
     features (Usually morgan fingerprints)"""
 
     def __init__(
-        self, similarity_threshold: float = 0.8, radius: int = 2, fp_size: int = 2048, include_chirality: bool = True
+        self,
+        similarity_threshold: float = 0.8,
+        radius: int = 2,
+        fp_size: int = 2048,
+        include_chirality: bool = True,
     ) -> None:
         """
         Parameters:
@@ -204,7 +211,7 @@ class TanimotoGroupingFromMols(
         return y
 
 
-class HdbscanGroupingFromMols(_InstantiateFingerprintGenerator, DefaultGrouping, _TransformOnlyValidMols):
+class HdbscanGroupingFromMols(_InstantiateFingerprintGenerator, DefaultGrouping):
     """A class to perform HDBSCAN clustering on a dataset of chemical compounds"""
 
     def __init__(
@@ -276,7 +283,7 @@ class HdbscanGroupingFromMols(_InstantiateFingerprintGenerator, DefaultGrouping,
         return self.molecules
 
 
-class KMedoidsGroupingFromMols(_InstantiateFingerprintGenerator, DefaultGrouping, _TransformOnlyValidMols):
+class KMedoidsGroupingFromMols(_InstantiateFingerprintGenerator, DefaultGrouping):
     """Apply K-medoids (PAM) on molecular fingerprints"""
 
     def __init__(

@@ -1,10 +1,17 @@
-name: Workflow for model testing and release
+name: CI
 
 on:
   workflow_dispatch:
   pull_request:
     branches: [main]
   push:
+    branches: [main]
+
+# Cancel superseded runs on the same ref (but never cancel a push to main,
+# so release-bearing commits always complete their pipeline).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -14,70 +21,69 @@ env:
 
 jobs:
   style:
+    name: Style & Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout 🛎
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup uv environment 📚
-        id: setup-uv-env
         uses: ./.github/actions/setup-uv-env
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          install-args: "--extra report --extra rna --extra tabpfn"
+          install-args: "--only-group dev"
 
       # - name: Run type checks #needs a lot of type fixing
-      #   run: |
-      #     uv run poe check-types
+      #   run: uv run poe check-types
       - name: Run style checks
-        run: |
-          uv run poe check-style
+        run: uv run poe check-style
 
       - name: Run linter
-        run: |
-          uv run poe check-lint
+        run: uv run poe check-lint
+
   test:
-    needs: style
+    name: Test 🧪 using 🐍 ${{ matrix.python-version }}
+    needs: release-preflight
     runs-on: ubuntu-latest
-    if:
-      ${{ success() && (github.ref == 'refs/heads/main' || github.event_name ==
-      'pull_request') }}
+    timeout-minutes: 60
     strategy:
       matrix:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
-      # When set to true, GitHub cancels all in-progress jobs if any matrix job fails.
       fail-fast: true
-    name: Test 🧪 using 🐍
     steps:
       - name: Checkout 🛎
-        uses: actions/checkout@v7
-        # needed for report dependencies
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: Prepare environment
         run: |
           sudo apt-get update
           sudo apt-get install -y libfontconfig1 libxrender1 libxtst6
 
       - name: Setup uv environment 📚
-        id: setup-uv-env
         uses: ./.github/actions/setup-uv-env
         with:
           python-version: ${{ matrix.python-version }}
-          install-args:
-            "--extra rna --extra report --extra tabpfn --extra clustering
-            --group test_duration"
+          install-args: "--extra rna --extra report --extra tabpfn --extra tabicl --extra clustering --group test_duration"
+
+      - name: Cache HuggingFace and Torch models 🗂️
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/huggingface/hub
+            ~/.cache/torch
+          key: models-${{ runner.os }}-${{ hashFiles('**/pyproject.toml') }}
+          restore-keys: |
+            models-${{ runner.os }}-
 
       - name: Download TabPFN checkpoint
-        run: |
-          uv run python scripts/prepareTabpfn.py
+        run: uv run python scripts/prepareTabpfn.py
 
-      #----------------------------------------------
-      #              run test suite
-      #----------------------------------------------
       - name: Test and generate code coverage report
-        run: |
-          uv run poe coverage
+        run: uv run poe coverage
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload coverage report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage-py${{ matrix.python-version }}
           path: ./coverage.xml
@@ -88,154 +94,251 @@ jobs:
           uv run poe dist-test
 
   test-slow:
+    name: Test Slow 🐢 using 🐍 3.14
     needs: test
     runs-on: ubuntu-latest
-    if:
-      ${{ success() && (github.ref == 'refs/heads/main' || github.event_name ==
-      'pull_request') }}
-    name: Test Slow 🐢 using 🐍 3.14
+    timeout-minutes: 90
     steps:
       - name: Checkout 🛎
-        uses: actions/checkout@v7
-        # needed for report dependencies
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: Prepare environment
         run: |
           sudo apt-get update
           sudo apt-get install -y libfontconfig1 libxrender1 libxtst6
 
       - name: Setup uv environment 📚
-        id: setup-uv-env
         uses: ./.github/actions/setup-uv-env
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          install-args:
-            "--extra rna --extra report --extra tabpfn --extra clustering
-            --group test_duration"
+          install-args: "--extra rna --extra report --extra tabpfn --extra tabicl --extra clustering --group test_duration"
+
+      - name: Cache HuggingFace and Torch models 🗂️
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/huggingface/hub
+            ~/.cache/torch
+          key: models-${{ runner.os }}-${{ hashFiles('**/pyproject.toml') }}
+          restore-keys: |
+            models-${{ runner.os }}-
 
       - name: Download TabPFN checkpoint
-        run: |
-          uv run python scripts/prepareTabpfn.py
+        run: uv run python scripts/prepareTabpfn.py
 
-      #----------------------------------------------
-      #              run slow test suite
-      #----------------------------------------------
       - name: Run slow tests
+        run: uv run poe test-slow
+
+  release-preflight:
+    name: Release Preflight
+    needs: style
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Least privilege: this job checks out and runs untrusted PR code
+    # (scripts/release_preflight.py), so it must never hold a write-scoped token.
+    # Posting the report comment is handled by the separate comment-preflight
+    # job below, which never executes PR code.
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout 🛎
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Run release preflight report
+        id: preflight
         run: |
-          uv run poe test-slow
+          set +e
+          python3 scripts/release_preflight.py --strict --output release-preflight-report.md
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Upload preflight artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-preflight-report
+          path: release-preflight-report.md
+          if-no-files-found: error
+
+      - name: Fail on preflight violations
+        if: steps.preflight.outputs.exit_code != '0'
+        run: |
+          echo "Release preflight failed with exit code ${{ steps.preflight.outputs.exit_code }}."
+          exit 1
+
+  comment-preflight:
+    name: Comment Preflight Report
+    needs: release-preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Isolated commenting job: it does NOT check out or execute any PR code, it
+    # only downloads the report artifact and posts it. This is the only job that
+    # holds a write-scoped token, and it is gated to same-repo PRs (fork PRs
+    # receive a read-only token from GitHub regardless). always() lets the
+    # comment post even when the preflight check fails upstream.
+    if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Download preflight artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        continue-on-error: true
+        with:
+          name: release-preflight-report
+
+      - name: Comment preflight report on PR
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            const path = 'release-preflight-report.md';
+            const marker = '<!-- release-preflight-report -->';
+            const report = fs.existsSync(path)
+              ? fs.readFileSync(path, 'utf8')
+              : 'Preflight report file was not generated.';
+            const body = `${marker}\n## Release Preflight\n\n\
+            _Automated check that complements semantic-release changelog generation._\n\n\
+            \`\`\`markdown\n${report}\n\`\`\``;
+
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+              per_page: 100,
+            });
+
+            const existing = comments.find(
+              (c) => c.user?.type === 'Bot' && c.body?.includes(marker),
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number,
+                body,
+              });
+            }
 
   release:
-    name: Create Release package
-    needs: test-slow
-    if: success() && github.ref == 'refs/heads/main' &&
-      !contains(github.event.head_commit.message, '[skip release]')
+    name: Release & Publish
+    needs: [test-slow, release-preflight]
+    # Only release from pushes to main, and never from semantic-release's own
+    # release commit (which is what previously caused the workflow to loop).
+    if: >-
+      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      !contains(github.event.head_commit.message, 'Automatically generated by python-semantic-release')
+    permissions:
+      contents: write
+      id-token: write
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     concurrency: release
     environment: release
     outputs:
       released: ${{ steps.release.outputs.released }}
       version: ${{ steps.release.outputs.version }}
-    permissions:
-      id-token: write
-      contents: write
+      tag: ${{ steps.release.outputs.tag }}
     steps:
       - name: Checkout 🛎
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-          persist-credentials: false # Make sure to not use the GITHUB_TOKEN for checkout and thus enable updating the version with the PAT
-      - name: Set python version 🐍
-        run: echo "PYTHON_VERSION=3.11" >> $GITHUB_ENV
+          # Do not persist the ambient GITHUB_TOKEN; semantic-release pushes the
+          # release commit and tag with the PAT below, which is allowed to push
+          # to the protected main branch.
+          persist-credentials: false
 
-      - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
+      - name: Setup uv environment 📚
+        uses: ./.github/actions/setup-uv-env
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      # Run semantic-release from the host environment (not its Docker action)
+      # so build_command's `uv lock` executes against the uv install created
+      # above. This is what fixes the previous "uv.lock asset not found" failure:
+      # the lock is regenerated in-place before semantic-release stages it into
+      # the release commit and uploads it as a release asset.
       - name: Python Semantic Release
-        uses: python-semantic-release/python-semantic-release@v10.2.0
         id: release
-        with:
-          github_token: ${{ secrets.PAT_RELEASE_PIPELINE }}
-
-      #----------------------------------------------
-      #              run publish
-      #----------------------------------------------
-      - name: Build package
-        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PAT_RELEASE_PIPELINE }}
         run: |
-          uv build
+          previous_tag="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+          uv run semantic-release version
+          current_tag="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+          if [[ -n "$current_tag" && "$current_tag" != "$previous_tag" ]]; then
+            echo "released=true" >> "$GITHUB_OUTPUT"
+            echo "tag=$current_tag" >> "$GITHUB_OUTPUT"
+            echo "version=${current_tag#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "released=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build package
+        if: steps.release.outputs.released == 'true'
+        run: uv build
 
       - name: Check dist
+        if: steps.release.outputs.released == 'true'
         run: uv tool run twine check --strict dist/*
 
       - name: Upload distribution artifacts
-        uses: actions/upload-artifact@v7
+        if: steps.release.outputs.released == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: Packages
           path: dist/
           if-no-files-found: error
 
-  test-pypi-publish:
-    name: Publish dev package to test.pypi.org
-    runs-on: ubuntu-latest
-    needs: release
-    if: ${{ (github.repository == 'bayer-group/motherml' && github.event_name == 'push' && github.ref == 'refs/heads/main') }}
-
-    environment:
-      name: test-pypi
-      url: https://test.pypi.org/p/mother-ml
-
-    permissions:
-      id-token: write
-
-    steps:
-      - uses: actions/download-artifact@v8
-        with:
-          name: Packages
-          path: dist
-
-      - name: Upload package to Test PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          repository-url: https://test.pypi.org/legacy/
-          skip-existing: true
-          packages-dir: dist/
-
   publish-pypi:
     name: Publish to PyPI
     needs: release
-    if: needs.release.outputs.released == 'true'
+    if: needs.release.outputs.released == 'true' && github.repository == 'Bayer-Group/MotherML'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     environment:
       name: pypi
       url: https://pypi.org/project/mother-ml/
-    runs-on: ubuntu-latest
     permissions:
       id-token: write
     steps:
       - name: Download distribution artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: Packages
           path: dist/
 
       - name: Publish package distributions to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: dist/
 
-  build-mkdocs:
-    name: Build MkDocs
+  build-docs:
+    name: Build Docs
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
       - name: Checkout 🛎
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
       - name: Configure GitHub Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
       - name: Install dependencies
         run: |
@@ -243,26 +346,25 @@ jobs:
           sudo apt-get install -y libfontconfig1 libxrender1 libxtst6
 
       - name: Setup uv environment 📚
-        id: setup-uv-env
         uses: ./.github/actions/setup-uv-env
         with:
           python-version: "3.11"
           install-args: "--group docs"
 
       - name: Build docs
-        working-directory: mkdocs
-        run: uv run mkdocs build
+        run: uv run zensical build
 
       - name: Upload GitHub Pages artifact
-        uses: actions/upload-pages-artifact@v4
+        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4.0.0
         with:
-          path: mkdocs/site/
+          path: site/
 
-  deploy-mkdocs:
+  deploy-docs:
     name: Publish Docs
-    needs: build-mkdocs
+    needs: build-docs
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       pages: write
       id-token: write
@@ -272,4 +374,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5

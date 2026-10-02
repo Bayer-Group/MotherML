@@ -47,7 +47,9 @@ def test_get_groups_tanimoto_grouping(settings: MotherSettings) -> None:
     assert len(result[result.columns[0]].value_counts()) == len(mol_data)
 
 
-def test_get_feature_selection_pipeline_no_feature_selection(settings: MotherSettings) -> None:
+def test_get_feature_selection_pipeline_no_feature_selection(
+    settings: MotherSettings,
+) -> None:
     settings.model.feature_selection_flags = []
     settings.pipeline.remainder = "passthrough"
     settings.pipeline.verbose_feature_names_out = False
@@ -60,7 +62,9 @@ def test_get_feature_selection_pipeline_no_feature_selection(settings: MotherSet
     pdt.assert_frame_equal(data, result)
 
 
-def test_get_feature_selection_pipeline_impute_categorical(settings: MotherSettings) -> None:
+def test_get_feature_selection_pipeline_impute_categorical(
+    settings: MotherSettings,
+) -> None:
     settings.model.feature_selection_flags = ["IMPUTE_CATEGORICAL"]
     settings.model.categorical_features = ["A"]
     settings.pipeline.remainder = "passthrough"
@@ -76,7 +80,9 @@ def test_get_feature_selection_pipeline_impute_categorical(settings: MotherSetti
     assert any("categorical_encoder" in step for step in transformer.named_transformers_)
 
 
-def test_get_feature_selection_pipeline_drop_duplicates(settings: MotherSettings) -> None:
+def test_get_feature_selection_pipeline_drop_duplicates(
+    settings: MotherSettings,
+) -> None:
     settings.model.feature_selection_flags = ["DROP_DUPLICATES"]
     settings.model.categorical_features = []
     settings.pipeline.remainder = "passthrough"
@@ -109,7 +115,9 @@ def test_get_feature_selection_pipeline_drop_constant(settings: MotherSettings) 
     assert "remaining_feature" in result.columns
 
 
-def test_get_feature_selection_pipeline_categorical_features_mismatch(settings: MotherSettings) -> None:
+def test_get_feature_selection_pipeline_categorical_features_mismatch(
+    settings: MotherSettings,
+) -> None:
     settings.model.feature_selection_flags = ["DROP_CONSTANT"]
     settings.pipeline.remainder = "passthrough"
     settings.model.categorical_features = ["A"]
@@ -117,7 +125,8 @@ def test_get_feature_selection_pipeline_categorical_features_mismatch(settings: 
     data: pd.DataFrame = pd.DataFrame({"A": ["cat", "dog"], "B": [3, 4], "C": ["foo", "bar"]})
 
     with pytest.raises(
-        ValueError, match="Categorical features are not matching the provided categorical features list"
+        ValueError,
+        match="Categorical features are not matching the provided categorical features list",
     ):
         get_feature_selection_pipeline(settings=settings, data=data)
 
@@ -154,6 +163,10 @@ def correlation_type_fixture(request):
         ("randomforest", "regression", {"n_estimators": 100}),
         ("randomforest", "classification_multiclass", {"n_estimators": 100}),
         ("randomforest", "classification_binary", {"n_estimators": 100}),
+        ("tabicl", "regression", {"n_estimators": 6}),
+        # ("tabicl", "classification", {"outlier_threshold": 3.0}),
+        ("tabpfn", "regression", {"n_estimators": 4}),
+        # ("tabpfn", "classification", {"softmax_temperature": 0.2}),
     ],
 )
 def test_get_model(
@@ -188,7 +201,10 @@ def test_get_model_raises_invalid_parameters(settings: MotherSettings) -> None:
 
 
 def test_get_feature_selection_pipeline_drop_correlated(
-    settings: MotherSettings, pearson_correlation_callable, correlation_type_fixture, caplog
+    settings: MotherSettings,
+    pearson_correlation_callable,
+    correlation_type_fixture,
+    caplog,
 ) -> None:
     caplog.set_level(logging.INFO)
 
@@ -262,7 +278,12 @@ def test_report_feature_selection_logs_info(caplog, settings: MotherSettings):
         transformers=[
             (
                 "num",
-                Pipeline(steps=[("imputer", SimpleImputer(strategy="mean")), ("scaler", StandardScaler())]),
+                Pipeline(
+                    steps=[
+                        ("imputer", SimpleImputer(strategy="mean")),
+                        ("scaler", StandardScaler()),
+                    ]
+                ),
                 ["A", "B"],
             )
         ]
@@ -284,7 +305,13 @@ def test_report_feature_selection_with_correlated_features(caplog, settings: Mot
     data = pd.DataFrame({"A": [1, 2, 3, 4], "B": [1, 2, 3, 4], "C": [9, 10, 11, 12]})
 
     transformer = ColumnTransformer(
-        transformers=[("correlation_selector", SmartCorrelatedSelection(threshold=0.9), ["A", "B"])]
+        transformers=[
+            (
+                "correlation_selector",
+                SmartCorrelatedSelection(threshold=0.9),
+                ["A", "B"],
+            )
+        ]
     )
 
     transformer.fit(data)
@@ -521,7 +548,9 @@ def test_get_feature_generation_pipeline_with_maccs(settings: MotherSettings) ->
     assert pipeline.transformer_list[0][0] == "Maccs"
 
 
-def test_get_feature_generation_pipeline_with_descriptors(settings: MotherSettings) -> None:
+def test_get_feature_generation_pipeline_with_descriptors(
+    settings: MotherSettings,
+) -> None:
     """Test get_feature_generation_pipeline with chemical descriptors"""
     from mother.feature_generation.config import ChemicalDescriptorsParams
 
@@ -536,7 +565,9 @@ def test_get_feature_generation_pipeline_with_descriptors(settings: MotherSettin
     assert pipeline.transformer_list[0][0] == "Desc"
 
 
-def test_get_feature_generation_pipeline_with_multiple_fingerprints(settings: MotherSettings) -> None:
+def test_get_feature_generation_pipeline_with_multiple_fingerprints(
+    settings: MotherSettings,
+) -> None:
     """Test get_feature_generation_pipeline with multiple fingerprint types"""
     settings.feature_generation.maccs = True
     settings.feature_generation.chemical_descriptors = None
