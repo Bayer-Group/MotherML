@@ -11,6 +11,7 @@ At the moment, the built-in algorithm groups are:
 - `randomforest`
 - `lasso`
 - `tabpfn`
+- `tabicl`
 
 You can always verify what is available in your environment:
 
@@ -29,6 +30,7 @@ print(ml.get_supported_models())
 | `randomforest` | `RandomForestRegressorMother`, `RandomForestClassifierMother` |
 | `lasso` | `LassoRegressorMother`, `LassoClassifierBinaryMother`, `LassoClassifierMulticlassMother` |
 | `tabpfn` | `TabPFNRegressorMother`, `TabPFNClassifierMother` |
+| `tabicl` | `TabICLRegressorMother`, `TabICLClassifierMother` , `TabICLEmbeddingTransformer` (utility extracting TabICL embeddings for dowstream models)|
 
 ### Easy usage patterns
 
