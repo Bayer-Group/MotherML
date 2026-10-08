@@ -17,8 +17,17 @@ from mother.ml.models.m_catboost import (
     CatboostRegressorMother,
 )
 
+# NODE ("node") and the MLP/Flow heads ("mlp", "flow") depend on non-standard
+# optional dependencies (skorch, torch, zuko) and are neural-network based. They
+# are covered separately in the dedicated neural suites (test_node_unit.py,
+# test_node_uncertainty.py). Exclude them from the
+# generic algorithm sweep so these core tests remain runnable (e.g. in dist-test)
+# without the optional "node" extra installed.
+_OPTIONAL_DEP_ALGORITHMS = {"node", "mlp", "flow"}
+STANDARD_ALGORITHMS = [a for a in ml.get_available_algorithms() if a not in _OPTIONAL_DEP_ALGORITHMS]
 
-@pytest.fixture(params=ml.get_available_algorithms())
+
+@pytest.fixture(params=STANDARD_ALGORITHMS)
 def all_classification_algorithms(request):
     algorithm = request.param
     model = CatboostClassifierMother(target_type="single_target")
@@ -44,7 +53,7 @@ def all_classification_algorithms(request):
     return model
 
 
-@pytest.fixture(params=ml.get_available_algorithms())
+@pytest.fixture(params=STANDARD_ALGORITHMS)
 def all_regression_algorithms(request):
     algorithm = request.param
     model = CatboostRegressorMother(target_type="single_target")
@@ -145,7 +154,7 @@ def test_ml_config(ml_config) -> None:
     "algorithm, model_type",
     list(
         itertools.product(
-            ml.get_available_algorithms(),
+            STANDARD_ALGORITHMS,
             ["classification_binary", "classification_multiclass", "regression", "ranking"],
         )
     ),
