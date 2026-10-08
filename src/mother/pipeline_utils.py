@@ -791,7 +791,9 @@ def mother_cv(
             )
         else:
             module_logger.debug("Start estimator training in CV")
-            val_estimator = estimator.fit(X=X.iloc[train_idx], y=mother_utils.convert_input(y.iloc[train_idx]))
+            val_estimator = sklearn.base.clone(estimator).fit(
+                X=X.iloc[train_idx], y=mother_utils.convert_input(y.iloc[train_idx])
+            )
 
         if return_estimators:
             fold_estimators.append(val_estimator)
