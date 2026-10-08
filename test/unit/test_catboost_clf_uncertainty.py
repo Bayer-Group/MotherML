@@ -186,16 +186,23 @@ class TestCatboostClassifierModels(unittest.TestCase):
         model = CatboostClassifierMother()
 
         # Test set_params
-        model.set_params(target_type="multi_target", tune_boosting_type=True, model_type="classification_multiclass")
+        model.set_params(
+            target_type="multi_target",
+            tune_boosting_type=True,
+            model_type="classification_multiclass",
+            tune_bootstrap_level=True,
+        )
         self.assertEqual(model.target_type, "multi_target")
         self.assertTrue(model.tune_boosting_type)
         self.assertEqual(model.model_type, "classification_multiclass")
+        self.assertTrue(model.tune_bootstrap_level)
 
         # Test get_params
         params = model.get_params()
         self.assertEqual(params["target_type"], "multi_target")
         self.assertTrue(params["tune_boosting_type"])
         self.assertEqual(params["model_type"], "classification_multiclass")
+        self.assertTrue(params["tune_bootstrap_level"])
 
     def test_CatboostClassifier_default_parameters(self) -> None:
         """Test default parameters."""
