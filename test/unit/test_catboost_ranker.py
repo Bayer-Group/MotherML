@@ -531,7 +531,7 @@ def test_predict_uncertainty_combined_new_parameters_ranker_calls_mother_cv(use_
     cv = KFold(n_splits=2, shuffle=True, random_state=42)
     estimator = DummyRankEstimator()
 
-    result = mother_cv(
+    result, estimator_dict = mother_cv(
         estimator,
         cv=cv,
         X=X,
@@ -542,16 +542,21 @@ def test_predict_uncertainty_combined_new_parameters_ranker_calls_mother_cv(use_
         normalize_by_group_size=True,
         return_quantiles=True,
         uncertainty_for_opt=False,
+        return_estimators=True,
     )
 
-    assert len(estimator.kwarg_calls) == cv.get_n_splits()
-    for call in estimator.kwarg_calls:
-        assert call["n_ensembles"] == 4
-        assert call["n_threads"] == 2
-        assert call["use_ranks"] is use_ranks
-        assert call["normalize_by_group_size"] is True
-        assert call["return_quantiles"] is True
-        assert call["uncertainty_for_opt"] is False
+    cv_estimators = estimator_dict["estimators"]
+    assert len(cv_estimators) == cv.get_n_splits()
+    for est in cv_estimators:
+        assert isinstance(est, DummyRankEstimator)
+        assert len(est.kwarg_calls) == 1
+        for call in est.kwarg_calls:
+            assert call["n_ensembles"] == 4
+            assert call["n_threads"] == 2
+            assert call["use_ranks"] is use_ranks
+            assert call["normalize_by_group_size"] is True
+            assert call["return_quantiles"] is True
+            assert call["uncertainty_for_opt"] is False
 
     expected_prefixed_cols = {
         "pred_target",
