@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- version list -->
 
+## v2.0.3 (2026-10-12)
+
+### Bug Fixes
+
+- **ml**: Bugfix in mother_cv when tuning is disabled
+  ([#102](https://github.com/Bayer-Group/MotherML/pull/102),
+  [`e3a7ced`](https://github.com/Bayer-Group/MotherML/commit/e3a7ced74cd7c2e47010783d687849232c9d4200))
+
+- **ml**: Return distinct estimators with mother_cv if tuning is disabled
+  ([#102](https://github.com/Bayer-Group/MotherML/pull/102),
+  [`e3a7ced`](https://github.com/Bayer-Group/MotherML/commit/e3a7ced74cd7c2e47010783d687849232c9d4200))
+
+- **test**: Adapt unit test to changes in mother_cv
+  ([#102](https://github.com/Bayer-Group/MotherML/pull/102),
+  [`e3a7ced`](https://github.com/Bayer-Group/MotherML/commit/e3a7ced74cd7c2e47010783d687849232c9d4200))
+
+
 ## v2.0.2 (2026-10-05)
 
 ### Bug Fixes
