@@ -268,8 +268,8 @@ jobs:
       # Run semantic-release from the host environment (not its Docker action)
       # so build_command's `uv lock` executes against the uv install created
       # above. This is what fixes the previous "uv.lock asset not found" failure:
-      # the lock is regenerated in-place before semantic-release stages it into
-      # the release commit and uploads it as a release asset.
+      # the build command regenerates and stages the lock for the release commit
+      # without uploading it as a release asset.
       - name: Python Semantic Release
         id: release
         env:
