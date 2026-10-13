@@ -27,7 +27,7 @@ Full setup lives in [General Development](dev.md).
 | `lint` | ruff with autofix | — |
 | `check-types` | mypy on `src` (strict) | No — currently commented out in CI |
 | `check-static-analysis` | `check-lint` + `check-types` | Lint only |
-| `test-unit` | Parallel unit tests, then `serial`-marked tests with `-n 0` | Yes (as `coverage`) |
+| `test-unit` | Parallel unit tests, then `serial`-marked tests with `-n 0` | Partly (`coverage` excludes serial tests) |
 | `test-slow` | `slow`-marked tests | Yes |
 | `coverage` | Unit tests + XML coverage / xunit report | Yes |
 | `docs` | Build the docs site (zensical) | Yes |
@@ -55,28 +55,44 @@ Hooks skip `examples/` and `test/`.
 
 ## CI/CD pipeline
 
-CI is defined in `.github/workflows/workflow.yml`; the release logic lives in the
-reusable `.github/workflows/release.yml`, which CI calls only on a push to `main`.
-CI triggers: pull requests to `main`, pushes to `main`, and manual
-`workflow_dispatch`. Jobs run in dependency order and stop the pipeline on the
-first failure:
+All CI and release jobs are defined in `.github/workflows/workflow.yml`. The
+separate `release.yml` workflow has been removed. CI runs on pull requests to
+`main`, pushes to `main`, and manual `workflow_dispatch`. A manual dispatch runs
+checks but does **not** trigger a release or PyPI publication.
 
-1. **style** — `check-style` + `check-lint`.
-2. **test** — matrix on Python 3.11 / 3.12 / 3.13 / 3.14: full `coverage` run
-   (with `rna`, `report`, `tabpfn`, `tabicl`, `clustering` extras), then
-   `dist-test` against a no-extras install.
-3. **test-slow** — `slow` suite on Python 3.14.
-4. **release-preflight** — see [below](#release-preflight). Read-only token;
-   uploads the report artifact and fails on violations.
-5. **comment-preflight** — posts/updates a sticky PR comment with the preflight
-   report. Isolated write-token job that never runs PR code; same-repo PRs only.
-6. **release** — on push to `main` only, once all tests and preflight pass, CI
-   calls `release.yml`. That workflow runs `python-semantic-release` on the host
-   (computing the version, updating the changelog, relocking `uv.lock`, and
-   pushing the release commit + tag), then builds and checks the wheel and
-   **publishes to PyPI** when a release was actually cut. The release commit is
-   tagged `[skip ci]` so it does not re-trigger this pipeline.
-7. **build-docs / deploy-docs** — build the site; deploy to GitHub Pages on `main`.
+The release path runs in this dependency order; a failure blocks its dependent
+jobs, not independent branches of the workflow:
+
+1. **style**: `check-style` + `check-lint`.
+2. **release-preflight**: after `style`, runs the [preflight audit](#release-preflight)
+   with a read-only token, uploads the report artifact, and fails on violations.
+3. **test**: after preflight, runs the Python 3.11 / 3.12 / 3.13 / 3.14 matrix
+   with `rna`, `report`, `tabpfn`, `tabicl`, and `clustering` extras. Each job runs
+   `coverage` (non-slow, non-serial tests), then `dist-test` after a no-extras sync.
+4. **test-slow**: after the test matrix passes, runs the slow suite on Python 3.14.
+5. **release**: requires `test-slow` and preflight, and runs only on pushes to
+   `main` that are not semantic-release's own release commits. It runs PSR on the
+   host, updates the version and changelog, regenerates and stages `uv.lock`,
+   pushes the release commit and tag, and creates the GitHub release. If a new
+   tag was created, it builds distributions with `uv build`, checks them with
+   `twine check --strict`, and uploads the `Packages` Actions artifact.
+6. **publish-pypi**: after `release`, downloads `Packages` and publishes using
+   PyPI Trusted Publishing (OIDC) in the `pypi` environment. It runs only when
+   `release` reports a new tag and the repository is `Bayer-Group/MotherML`.
+
+Two other branches run separately from the release path:
+
+- **comment-preflight**: after preflight, posts or updates a sticky report comment
+  on same-repository PRs, even when preflight fails. It has an isolated write
+  token and never executes PR code. Fork PRs do not receive this comment.
+- **build-docs / deploy-docs**: the docs build has no test or release dependency.
+  Deployment depends only on a successful docs build and a non-PR run on `main`,
+  including a manual dispatch on `main`.
+
+Superseded PR runs are cancelled; pushes to `main` are not. Releases are serialized
+with the `release` concurrency group. The generated release commit contains
+`[skip ci]`, and the release job also checks for PSR's generated-commit message
+to prevent a release loop.
 
 ## Code review & PR approval
 
