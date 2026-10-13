@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- version list -->
 
+## v2.0.4 (2026-10-13)
+
+### Bug Fixes
+
+- Derive model registry algorithm names via prefix removal
+  ([#91](https://github.com/Bayer-Group/MotherML/pull/91),
+  [`dc9c1d8`](https://github.com/Bayer-Group/MotherML/commit/dc9c1d8258afd86ceaa54c6e91c786200321a1f5))
+
+### Code Style
+
+- Apply isort and ruff formatting ([#91](https://github.com/Bayer-Group/MotherML/pull/91),
+  [`dc9c1d8`](https://github.com/Bayer-Group/MotherML/commit/dc9c1d8258afd86ceaa54c6e91c786200321a1f5))
+
+
 ## v2.0.3 (2026-10-12)
 
 ### Bug Fixes
