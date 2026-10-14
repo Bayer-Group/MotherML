@@ -1,10 +1,11 @@
 import logging
+from copy import deepcopy
 
 import numpy as np
 import pandas as pd
 from optuna.trial import Trial
 from scipy.special import rel_entr
-from sklearn.base import BaseEstimator
+from sklearn.base import BaseEstimator, ClassifierMixin, MetaEstimatorMixin
 from sklearn.exceptions import NotFittedError
 from sklearn.utils.validation import check_is_fitted
 
@@ -13,15 +14,16 @@ from mother.ml.core import AbstractMotherPipeline
 module_logger: logging.Logger = logging.getLogger(__name__)
 
 
-class CVEnsembleClassifierMother(AbstractMotherPipeline, BaseEstimator):
+class CVEnsembleClassifierMother(AbstractMotherPipeline, MetaEstimatorMixin, ClassifierMixin, BaseEstimator):
     """
-    Ensemble classifier that combines predictions from multiple pre-fitted estimators. As it inherits from
-    `BaseEstimator`, it follows the scikit-learn estimator interface.
+    Ensemble classifier that combines predictions from multiple fixed pre-fitted estimators. As it inherits from
+    `BaseEstimator`, it follows the scikit-learn estimator interface. Ensembles are meta-estimators and can
+    be recognized as such by scikit-learn utilities.
 
     Note:
         - Only single-target predictions are supported.
-        - Assumes that estimators are pre-fitted and can provide predicted probabilities and uncertainties with the
-          `predict_uncertainty` method.
+        - Assumes that estimators are pre-fitted, so usage with MotherTuning or similar is not intended.
+        - Can provide predicted probabilities and uncertainties with the `predict_uncertainty` method.
 
     Attributes:
         estimators (list): List of pre-fitted estimators to be used in the ensemble. Each estimator must have a
@@ -38,23 +40,20 @@ class CVEnsembleClassifierMother(AbstractMotherPipeline, BaseEstimator):
     """
 
     def __init__(self, estimators: list):
-        self.classes_ = self._validate_estimators(estimators)
         self.estimators = estimators
+        self._validate_estimators(estimators)
 
     @staticmethod
-    def _validate_estimators(estimators: list) -> tuple[np.ndarray, list[list[int]]]:
+    def _validate_estimators(estimators: list):
         """
         Validate the provided estimators for the ensemble.
 
         Args:
             estimators (list): List of pre-fitted estimators to be used in the ensemble.
 
-        Returns:
-            np.ndarray: Array of class labels shared by all estimators (one-dimensional and distinct).
-
         Raises:
             ValueError: If the estimators list has fewer than two members, if any estimator is not fitted, if any
-            estimator lacks the required attributes, or if class labels are inconsistent across estimators.
+            estimator lacks the required attributes.
         """
         if len(estimators) < 2:
             raise ValueError("At least two estimators must be provided as ensemble members.")
@@ -62,16 +61,19 @@ class CVEnsembleClassifierMother(AbstractMotherPipeline, BaseEstimator):
         # Validate each estimator and collect class labels
         classes = None
         for i, estimator in enumerate(estimators):
+            # Validate that each member estimator is fitted
             try:
                 check_is_fitted(estimator)
             except NotFittedError as e:
                 raise ValueError(f"Estimator {i} is not fitted.") from e
 
+            # Validate that each member estimator has required attributes
             if not hasattr(estimator, "classes_"):
                 raise ValueError(f"Estimator {i} must have a 'classes_' attribute.")
             if not callable(getattr(estimator, "predict_uncertainty", None)):
                 raise ValueError(f"Estimator {i} must have a 'predict_uncertainty' method.")
 
+            # Validate that member classes are one-dimensional, non-empty, and unique
             member_classes = np.asarray(estimator.classes_)
             if (
                 member_classes.ndim != 1
@@ -79,12 +81,24 @@ class CVEnsembleClassifierMother(AbstractMotherPipeline, BaseEstimator):
                 or len(np.unique(member_classes)) != len(member_classes)
             ):
                 raise ValueError(f"Estimator {i} must have distinct one-dimensional class labels (classes_).")
-            if classes is None:
+            if i == 0:
                 classes = member_classes
             if not (member_classes == classes).all():
                 raise ValueError("All estimators must have the same class labels.")
 
-        return classes
+    def _set_fitted_attributes(self):
+        """
+        Set the fitted attributes for the ensemble based on its member estimators.
+
+        Raises:
+            ValueError: If any estimator has invalid class labels or if class labels are inconsistent across estimators.
+        """
+        if hasattr(self, "classes_") and self.classes_ is not None:
+            return
+
+        # After validating member estimators and their class labels, set the ensemble's classes_
+        self._validate_estimators(self.estimators)
+        self.classes_ = np.asarray(self.estimators[0].classes_)
 
     def get_hyperparameter_space(self, X, y, trial: Trial, prefix: str = "") -> dict:
         """
@@ -102,6 +116,25 @@ class CVEnsembleClassifierMother(AbstractMotherPipeline, BaseEstimator):
         """
         # no tunable hyperparameters for the ensemble itself
         return {}
+
+    def __sklearn_clone__(self):
+        """
+        Return an independent frozen ensemble, preserving fitted ensemble estimators.
+        Overrides the default sklearn clone behavior.
+        """
+        return deepcopy(self)
+
+    def __sklearn_tags__(self):
+        """
+        Returns the scikit-learn estimator tags for the ensemble.
+        Advertised only real ensemble capabilities.
+        """
+        tags = super().__sklearn_tags__()
+
+        # Does not support multi-output targets
+        tags.target_tags.multi_output = False
+
+        return tags
 
     def set_params(self, **params):
         """
@@ -131,7 +164,15 @@ class CVEnsembleClassifierMother(AbstractMotherPipeline, BaseEstimator):
         params = {"estimators": self.estimators}
 
         if deep:
-            params.update({**{f"estimator_{i}": est.get_params(deep=deep) for i, est in enumerate(self.estimators)}})
+            params.update(
+                {
+                    **{
+                        f"estimator_{i}__{key}": value
+                        for i, est in enumerate(self.estimators)
+                        for key, value in est.get_params(deep=deep).items()
+                    }
+                }
+            )
 
         return params
 
@@ -243,7 +284,12 @@ class CVEnsembleClassifierMother(AbstractMotherPipeline, BaseEstimator):
         """
         probas = []
         knowledge_uncertainties = []
+
+        # Set fitted attribute "classes_"
+        self._set_fitted_attributes()
+
         proba_columns = [f"proba_{i}" for i in range(len(self.classes_))]
+
         for i, estimator in enumerate(self.estimators):
             prediction = estimator.predict_uncertainty(X)
             member_probas = prediction.loc[:, proba_columns].to_numpy(dtype=float)

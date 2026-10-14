@@ -1,8 +1,10 @@
 import numpy as np
 import pandas as pd
 import pytest
+import sklearn.base as sk_base
 from scipy.special import rel_entr
 from sklearn.base import BaseEstimator
+from sklearn.pipeline import Pipeline
 
 from mother.ml.core import AbstractMotherPipeline
 from mother.ml.ensembles.cvEnsemble import CVEnsembleClassifierMother
@@ -23,7 +25,10 @@ class _FakeClassifier(AbstractMotherPipeline, BaseEstimator):
         return self
 
     def get_params(self, deep=True):
-        return {}
+        return {
+            "param_1_key": "param_1_value",
+            "param_2_key": "param_2_value",
+        }
 
     def set_params(self, **params):
         return self
@@ -180,7 +185,6 @@ class TestEnsembleClassifierInitialization:
     def test_initialization(self, binary_ensemble):
         assert binary_ensemble is not None
         assert len(binary_ensemble.estimators) == 2
-        np.testing.assert_array_equal(binary_ensemble.classes_, np.array([0, 1]))
 
     def test_single_estimator_raises(self, binary_probas, knowledge_uncertainties):
         with pytest.raises(ValueError, match=r"At least two estimators"):
@@ -224,6 +228,49 @@ class TestEnsembleClassifierInitialization:
             )
 
 
+class TestSklearnCompatibility:
+    def test_cloning_preserves_fitted_state(self, binary_ensemble, X):
+        clone = sk_base.clone(binary_ensemble)
+        assert clone is not binary_ensemble
+        assert clone.estimators is not binary_ensemble.estimators
+        for original, cloned in zip(binary_ensemble.estimators, clone.estimators):
+            assert cloned is not original
+            assert original.get_params() == cloned.get_params()
+            np.testing.assert_array_equal(cloned.classes_, original.classes_)
+
+        expected_proba = binary_ensemble.predict_proba(X)
+        expected_pred = binary_ensemble.predict(X)
+        np.testing.assert_array_equal(clone.predict_proba(X), expected_proba)
+        np.testing.assert_array_equal(clone.predict(X), expected_pred)
+
+    def test_classifer_recognition(self, binary_ensemble):
+        assert sk_base.is_classifier(binary_ensemble)
+
+    def test_only_single_output(self, binary_ensemble):
+        tags = sk_base.get_tags(binary_ensemble)
+        assert tags.target_tags.multi_output is False
+
+    @pytest.mark.parametrize(
+        "method_name",
+        [
+            "predict",
+            "predict_proba",
+            "predict_uncertainty",
+        ],
+    )
+    def test_fitted_state(self, binary_ensemble, X, method_name):
+        assert not hasattr(binary_ensemble, "classes_")
+        getattr(binary_ensemble, method_name)(X)
+        assert hasattr(binary_ensemble, "classes_")
+        np.testing.assert_array_equal(binary_ensemble.classes_, np.array([0, 1]))
+        np.testing.assert_array_equal(binary_ensemble.classes_, binary_ensemble.estimators[0].classes_)
+
+    def test_pipeline_use(self, binary_ensemble):
+        pipeline = Pipeline([("model", binary_ensemble)])
+        assert sk_base.is_classifier(pipeline)
+        pipeline.fit(np.array([[0], [1], [2]]), np.array([0, 1, 1]))
+
+
 class TestEnsembleClassifierParameters:
     def test_get_params_shallow(self, binary_ensemble):
         params = binary_ensemble.get_params(deep=False)
@@ -232,8 +279,9 @@ class TestEnsembleClassifierParameters:
 
     def test_get_params_deep(self, binary_ensemble):
         params = binary_ensemble.get_params(deep=True)
-        assert set(params) == {"estimators", "estimator_0", "estimator_1"}
-        assert params["estimator_0"].keys() == binary_ensemble.estimators[0].get_params().keys()
+        first_estimator_keys = binary_ensemble.estimators[0].get_params().keys()
+        assert len(first_estimator_keys) > 0
+        assert set(params) >= {"estimators", "estimator_0__param_1_key", "estimator_0__param_2_key"}
 
     def test_set_params_is_noop(self, binary_ensemble):
         estimators_before = list(binary_ensemble.estimators)
