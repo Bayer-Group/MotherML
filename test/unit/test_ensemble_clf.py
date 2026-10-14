@@ -304,13 +304,13 @@ class TestEnsembleClassifierParameters:
 
 class TestEnsembleClassifierPredictions:
     def test_predict_probas_shape(self, binary_ensemble, binary_probas, X):
-        probas, _ = binary_ensemble._predict_probas_and_uncertainties(X)
+        probas = binary_ensemble._predict_probas_and_uncertainties(X)
         assert probas.shape == (2, len(X), 2)
         np.testing.assert_allclose(probas[0], binary_probas[0])
         np.testing.assert_allclose(probas[1], binary_probas[1])
 
     def test_predict_uncertainties_shape(self, binary_ensemble, knowledge_uncertainties, X):
-        _, uncertainties = binary_ensemble._predict_probas_and_uncertainties(X)
+        _, uncertainties = binary_ensemble._predict_probas_and_uncertainties(X, uncertainty_type="knowledge")
         assert uncertainties.shape == (2, len(X))  # (n_estimators, n_samples)
         np.testing.assert_allclose(uncertainties[0], knowledge_uncertainties[0])
         np.testing.assert_allclose(uncertainties[1], knowledge_uncertainties[1])
@@ -412,7 +412,7 @@ class TestEnsembleClassifierPredictions:
         result = ensemble.predict_uncertainty(X)
         expected = np.argmax(np.mean(np.stack([first, second, third], axis=0), axis=0), axis=1)
 
-        assert ensemble._predict_probas_and_uncertainties(X)[0].shape == (3, len(X), 2)
+        assert ensemble._predict_probas_and_uncertainties(X).shape == (3, len(X), 2)
         np.testing.assert_array_equal(result["pred"].to_numpy(), expected)
 
 

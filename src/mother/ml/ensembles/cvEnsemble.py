@@ -1,5 +1,6 @@
 import logging
 from copy import deepcopy
+from typing import Literal, TypeAlias, overload
 
 import numpy as np
 import pandas as pd
@@ -12,6 +13,8 @@ from sklearn.utils.validation import check_is_fitted
 from mother.ml.core import AbstractMotherPipeline
 
 module_logger: logging.Logger = logging.getLogger(__name__)
+
+UncertaintyType: TypeAlias = Literal["knowledge", "data", "total"]
 
 
 class CVEnsembleClassifierMother(AbstractMotherPipeline, MetaEstimatorMixin, ClassifierMixin, BaseEstimator):
@@ -44,7 +47,7 @@ class CVEnsembleClassifierMother(AbstractMotherPipeline, MetaEstimatorMixin, Cla
         self._validate_estimators(estimators)
 
     @staticmethod
-    def _validate_estimators(estimators: list):
+    def _validate_estimators(estimators: list) -> None:
         """
         Validate the provided estimators for the ensemble.
 
@@ -86,7 +89,7 @@ class CVEnsembleClassifierMother(AbstractMotherPipeline, MetaEstimatorMixin, Cla
             if not (member_classes == classes).all():
                 raise ValueError("All estimators must have the same class labels.")
 
-    def _set_fitted_attributes(self):
+    def _set_fitted_attributes(self) -> None:
         """
         Set the fitted attributes for the ensemble based on its member estimators.
 
@@ -151,7 +154,7 @@ class CVEnsembleClassifierMother(AbstractMotherPipeline, MetaEstimatorMixin, Cla
             module_logger.warning(f"Setting parameters is not allowed for {self.__class__.__name__}")
         return self
 
-    def get_params(self, deep=True) -> dict:
+    def get_params(self, deep: bool = True) -> dict:
         """
         Retrieves the parameters of the ensemble.
 
@@ -270,20 +273,44 @@ class CVEnsembleClassifierMother(AbstractMotherPipeline, MetaEstimatorMixin, Cla
         else:
             raise ValueError(f"Unknown uncertainty estimation method for ensemble model: {method}")
 
-    def _predict_probas_and_uncertainties(self, X: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    @overload
+    def _predict_probas_and_uncertainties(
+        self,
+        X: pd.DataFrame,
+        uncertainty_type: None = None,
+    ) -> np.ndarray: ...
+
+    @overload
+    def _predict_probas_and_uncertainties(
+        self,
+        X: pd.DataFrame,
+        uncertainty_type: UncertaintyType,
+    ) -> tuple[np.ndarray, np.ndarray]: ...
+
+    def _predict_probas_and_uncertainties(
+        self,
+        X: pd.DataFrame,
+        uncertainty_type: UncertaintyType | None = None,
+    ) -> tuple[np.ndarray, np.ndarray] | np.ndarray:
         """
-        Predict probabilities for the input data X and knowledge uncertainties for all estimators in the ensemble.
+        Predict probabilities for the input data X and uncertainties for all estimators in the ensemble.
 
         Args:
             X (pd.DataFrame): DataFrame containing features.
+            uncertainty_type (str, optional): Type of uncertainty to predict.
+            Options are "knowledge", "data", or "total".
+                Defaults to None, which means no uncertainties are returned.
 
         Returns:
             tuple[np.ndarray, np.ndarray]: Tuple containing:
                 - Array of predicted probabilities, shape (n_estimators, n_samples, n_classes).
-                - Array of predicted knowledge uncertainties, shape (n_estimators, n_samples).
+                - Array of predicted uncertainties, shape (n_estimators, n_samples).
+
+            np.ndarray: Array of predicted probabilities, shape (n_estimators, n_samples, n_classes),
+                if uncertainty_type is None (default).
         """
         probas = []
-        knowledge_uncertainties = []
+        uncertainties = []
 
         # Set fitted attribute "classes_"
         self._set_fitted_attributes()
@@ -301,19 +328,25 @@ class CVEnsembleClassifierMother(AbstractMotherPipeline, MetaEstimatorMixin, Cla
                 raise ValueError(f"Estimator {i} returned invalid class probabilities.")
             probas.append(member_probas)
 
-            knowledge_uncertainty_column = prediction.filter(like="knowledge_uncertainty", axis=1).columns
-            if len(knowledge_uncertainty_column) != 1:
-                raise ValueError(f"Estimator {i} must return exactly one knowledge uncertainty column.")
+            if uncertainty_type is None:
+                continue
+            elif uncertainty_type in ["knowledge", "data", "total"]:
+                uncertainty_column = prediction.filter(like=f"{uncertainty_type}_uncertainty", axis=1).columns
+                if len(uncertainty_column) != 1:
+                    raise ValueError(f"Estimator {i} must return exactly one {uncertainty_type} uncertainty column.")
 
-            member_knowledge_uncertainties = prediction[knowledge_uncertainty_column[0]].to_numpy(dtype=float)
-            if not np.isfinite(member_knowledge_uncertainties).all() or np.any(member_knowledge_uncertainties < 0):
-                raise ValueError(f"Estimator {i} returned invalid knowledge uncertainties.")
-            knowledge_uncertainties.append(member_knowledge_uncertainties)
+                member_uncertainties = prediction[uncertainty_column[0]].to_numpy(dtype=float)
+                if not np.isfinite(member_uncertainties).all() or np.any(member_uncertainties < 0):
+                    raise ValueError(f"Estimator {i} returned invalid {uncertainty_type} uncertainties.")
+                uncertainties.append(member_uncertainties)
 
         probas = np.stack(probas, axis=0)
-        knowledge_uncertainties = np.stack(knowledge_uncertainties, axis=0)
 
-        return probas, knowledge_uncertainties
+        if uncertainties:
+            uncertainties = np.stack(uncertainties, axis=0)
+            return probas, uncertainties
+
+        return probas
 
     def _convert_class_index_to_label(self, class_indices: np.ndarray) -> np.ndarray:
         """
@@ -338,7 +371,7 @@ class CVEnsembleClassifierMother(AbstractMotherPipeline, MetaEstimatorMixin, Cla
         Returns:
             np.ndarray: Array of predicted class labels, shape (n_samples,).
         """
-        estimator_probas, _ = self._predict_probas_and_uncertainties(X)
+        estimator_probas = self._predict_probas_and_uncertainties(X)
         ensemble_probas = self._aggregate_predictions(estimator_probas, strategy=aggregation_strategy)
         pred_label_index = np.argmax(ensemble_probas, axis=1)
         predictions = self._convert_class_index_to_label(pred_label_index)
@@ -355,7 +388,7 @@ class CVEnsembleClassifierMother(AbstractMotherPipeline, MetaEstimatorMixin, Cla
         Returns:
             np.ndarray: Array of predicted class probabilities, shape (n_samples, n_classes).
         """
-        estimator_probas, _ = self._predict_probas_and_uncertainties(X)
+        estimator_probas = self._predict_probas_and_uncertainties(X)
         return self._aggregate_predictions(estimator_probas, strategy=aggregation_strategy)
 
     def predict_uncertainty(
@@ -382,7 +415,9 @@ class CVEnsembleClassifierMother(AbstractMotherPipeline, MetaEstimatorMixin, Cla
         """
 
         # 1. predict probabilities
-        estimator_probas, estimator_knowledge_uncertainties = self._predict_probas_and_uncertainties(X)
+        estimator_probas, estimator_knowledge_uncertainties = self._predict_probas_and_uncertainties(
+            X, uncertainty_type="knowledge"
+        )
         ensemble_probas = self._aggregate_predictions(estimator_probas, strategy=aggregation_strategy)
         ensemble_pred = self._convert_class_index_to_label(np.argmax(ensemble_probas, axis=1))
 
@@ -397,15 +432,16 @@ class CVEnsembleClassifierMother(AbstractMotherPipeline, MetaEstimatorMixin, Cla
                 index=X.index if isinstance(X, pd.DataFrame) else None,
             )
 
-        pred_res = pd.concat(
-            [
-                pd.DataFrame(ensemble_pred, columns=["pred"]),
-                pd.DataFrame(ensemble_probas, columns=[f"proba_{i}" for i in range(ensemble_probas.shape[1])]),
-                pd.DataFrame(knowledge_uncertainty, columns=["knowledge_uncertainty"]),
-                pd.DataFrame(None, columns=["data_uncertainty"]),
-                pd.DataFrame(None, columns=["total_uncertainty"]),
-            ],  # add total / data uncertainties later
-            axis=1,
+        pred_res = pd.DataFrame(
+            {
+                "pred": ensemble_pred,
+                **{f"proba_{i}": ensemble_probas[:, i] for i in range(ensemble_probas.shape[1])},
+                "mean_predictions": None,  # intentionally unset for classifier
+                "knowledge_uncertainty": knowledge_uncertainty,
+                "data_uncertainty": None,
+                "total_uncertainty": None,
+            },
+            index=X.index,
         )
 
         return pred_res
