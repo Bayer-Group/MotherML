@@ -250,17 +250,7 @@ class TestSklearnCompatibility:
         tags = sk_base.get_tags(binary_ensemble)
         assert tags.target_tags.multi_output is False
 
-    @pytest.mark.parametrize(
-        "method_name",
-        [
-            "predict",
-            "predict_proba",
-            "predict_uncertainty",
-        ],
-    )
-    def test_fitted_state(self, binary_ensemble, X, method_name):
-        assert not hasattr(binary_ensemble, "classes_")
-        getattr(binary_ensemble, method_name)(X)
+    def test_fitted_state(self, binary_ensemble):
         assert hasattr(binary_ensemble, "classes_")
         np.testing.assert_array_equal(binary_ensemble.classes_, np.array([0, 1]))
         np.testing.assert_array_equal(binary_ensemble.classes_, binary_ensemble.estimators[0].classes_)

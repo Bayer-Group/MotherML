@@ -25,7 +25,7 @@ class CVEnsembleClassifierMother(AbstractMotherPipeline, MetaEstimatorMixin, Cla
 
     Note:
         - Only single-target predictions are supported.
-        - Assumes that estimators are pre-fitted, so usage with MotherTuning or similar is not intended.
+        - Assumes that member estimators are pre-fitted, so usage with MotherTuning or similar is not intended.
         - Can provide predicted probabilities and uncertainties with the `predict_uncertainty` method.
 
     Attributes:
@@ -45,6 +45,9 @@ class CVEnsembleClassifierMother(AbstractMotherPipeline, MetaEstimatorMixin, Cla
     def __init__(self, estimators: list):
         self.estimators = estimators
         self._validate_estimators(estimators)
+
+        # Set fitted attribute "classes_" since member estimators are already fitted and fit() is a no-op
+        self._set_fitted_attributes()
 
     @staticmethod
     def _validate_estimators(estimators: list) -> None:
@@ -181,7 +184,8 @@ class CVEnsembleClassifierMother(AbstractMotherPipeline, MetaEstimatorMixin, Cla
 
     def fit(self, X, y, **fit_params):
         """
-        Fits the ensemble. Since the ensemble members are pre-fitted, this method does not perform any refitting.
+        No operation is performed. Since the ensemble members are pre-fitted, this method does not perform any
+        refitting.
 
         Args:
             X (np.ndarray): Feature matrix.
@@ -311,9 +315,6 @@ class CVEnsembleClassifierMother(AbstractMotherPipeline, MetaEstimatorMixin, Cla
         """
         probas = []
         uncertainties = []
-
-        # Set fitted attribute "classes_"
-        self._set_fitted_attributes()
 
         proba_columns = [f"proba_{i}" for i in range(len(self.classes_))]
 
