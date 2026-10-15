@@ -439,3 +439,15 @@ def test_kmedoids_grouping_pickle_clone(test_cases):
 #     assert len(groups) == len(list(mols))
 #     assert isinstance(groups, pd.DataFrame)
 #     return groups
+
+
+class TestMurckoScaffoldGrouping:
+    @pytest.mark.parametrize("scaffold", ["NoScaffold", "Murcko", "GenericMurcko"])
+    def test_transform_returns_groups(self, test_cases, scaffold):
+        grouping = cv_module.MurckoScaffoldGroupingFromMols(scaffold=scaffold)
+        grouping.fit(test_cases)
+        groups = grouping.transform(test_cases)
+
+        assert groups.shape == (len(test_cases), 1)
+        assert not np.isnan(groups).any()
+        assert len(set(groups.flatten().tolist())) >= 1
