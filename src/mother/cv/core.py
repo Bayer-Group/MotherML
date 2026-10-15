@@ -211,6 +211,37 @@ class TanimotoGroupingFromMols(
         return y
 
 
+class MurckoScaffoldGroupingFromMols(DefaultGrouping):
+    """Group molecules by their Murcko (or Generic Murcko) scaffold.
+
+    Molecules sharing the same scaffold receive the same group id, which makes
+    this grouping well suited for scaffold-aware cross validation.
+    """
+
+    def __init__(self, scaffold: Literal["Murcko", "GenericMurcko", "NoScaffold"] = "Murcko") -> None:
+        super().__init__()
+        self.scaffold = scaffold
+        self.name = "murcko-scaffold-group"
+
+    def transform(self, valid_compounds: Iterable[Any], **kwargs: Any) -> npt.NDArray[np.float64]:
+        check_is_fitted(self, "is_fitted")
+
+        scaffolds = cv_methods.murcko_scaffold_reduction(valid_compounds, scaffold=self.scaffold)
+
+        groups = np.full((len(scaffolds), 1), np.nan, dtype=np.float64)
+        scaffold_to_id = {}
+        for index, scaffold_mol in enumerate(scaffolds):
+            try:
+                scaffold_smiles = Chem.MolToSmiles(scaffold_mol)
+            except Exception:
+                scaffold_smiles = str(scaffold_mol)
+            if scaffold_smiles not in scaffold_to_id:
+                scaffold_to_id[scaffold_smiles] = len(scaffold_to_id)
+            groups[index, 0] = scaffold_to_id[scaffold_smiles]
+
+        return groups
+
+
 class HdbscanGroupingFromMols(_InstantiateFingerprintGenerator, DefaultGrouping):
     """A class to perform HDBSCAN clustering on a dataset of chemical compounds"""
 
