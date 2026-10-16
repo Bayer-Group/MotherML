@@ -681,21 +681,8 @@ class NODEModel(nn.Module):
             # Linear head (tree dropout applied before head)
             return LinearHead(head_input_dim, head_output_dim)
         elif head_type == "mlp":
-            # MLP head with adaptive architecture
             mlp_hidden_dims = getattr(self.hparams, "mlp_hidden_dims", None)
             mlp_dropout = getattr(self.hparams, "mlp_dropout", 0)
-
-            # If None, create adaptive funnel architecture derived from first hidden layer
-            # First layer size adapts to NODE output, subsequent layers form a funnel
-            # Architecture: [first_hidden, first_hidden//2, first_hidden//4]
-            if mlp_hidden_dims is None:
-                first_hidden = max(128, head_input_dim // 4)  # 25% of NODE output
-                mlp_hidden_dims = [
-                    first_hidden,  # First hidden layer (tunable)
-                    first_hidden // 2,  # Second layer: 50% of first
-                    first_hidden // 4,  # Third layer: 25% of first
-                ]
-
             return MLPHead(head_input_dim, head_output_dim, mlp_hidden_dims, dropout=mlp_dropout, norm="none")
         elif head_type == "flow":
             # Flow head for probabilistic regression (tree dropout applied before head)

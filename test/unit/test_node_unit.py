@@ -449,6 +449,39 @@ def test_input_dropout_masks_each_layer_independently(input_only, retained_layer
         torch.testing.assert_close(layer.inputs[-1][:, :3], features)
 
 
+@pytest.mark.parametrize(
+    "num_trees, head_kwargs, expected_hidden",
+    [
+        (4, {}, [128, 64, 32]),
+        (4, {"mlp_hidden_dims": None}, [128, 64, 32]),
+        (256, {}, [256, 128, 64]),
+        (4, {"mlp_hidden_dims": []}, []),
+        (4, {"mlp_hidden_dims": [12, 6]}, [12, 6]),
+    ],
+)
+def test_complete_node_mlp_head_hidden_dimensions(num_trees, head_kwargs, expected_hidden):
+    model = CompletePyTorchTabularNODE(
+        input_dim=3,
+        output_dim=1,
+        num_trees=num_trees,
+        depth=2,
+        head_type="mlp",
+        **head_kwargs,
+    )
+    linear_layers = [layer for layer in model.head.mlp if isinstance(layer, nn.Linear)]
+    dimensions = [num_trees * 4] + expected_hidden + [1]
+    assert [(layer.in_features, layer.out_features) for layer in linear_layers] == list(
+        zip(dimensions[:-1], dimensions[1:])
+    )
+    outputs = model(torch.randn(256, 3))
+    assert outputs.shape == (256, 1)
+    assert torch.isfinite(outputs).all()
+    outputs.square().mean().backward()
+    for layer in linear_layers:
+        assert layer.weight.grad is not None
+        assert torch.isfinite(layer.weight.grad).all()
+
+
 @pytest.mark.parametrize("head_only", [False, True])
 def test_full_node_tree_dropout_is_applied_once(head_only, monkeypatch):
     model = CompletePyTorchTabularNODE(

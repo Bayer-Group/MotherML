@@ -20,13 +20,13 @@ except ModuleNotFoundError:  # pragma: no cover - optional dependency
 
 
 class MLPHead(nn.Module):
-    """MLP readout head used by NODE."""
+    """NODE readout: ``None`` hidden dimensions select an automatic funnel; ``[]`` selects a linear layer."""
 
     def __init__(
         self,
         input_dim: int,
         output_dim: int,
-        hidden_dims: List[int],
+        hidden_dims: Optional[List[int]],
         dropout: float = 0.1,
         activation: str = "ReLU",
         norm: str = "batch",
@@ -34,6 +34,9 @@ class MLPHead(nn.Module):
         """Build a stack of Linear/Norm/activation/Dropout blocks from `input_dim` to `output_dim`."""
         super().__init__()
         validate_dropout_rates(mlp_dropout=dropout)
+        if hidden_dims is None:
+            first_hidden = max(128, input_dim // 4)
+            hidden_dims = [first_hidden, first_hidden // 2, first_hidden // 4]
 
         def _make_activation() -> nn.Module:
             """Instantiate the configured activation module by name."""
