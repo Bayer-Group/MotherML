@@ -368,7 +368,7 @@ serve-docs = { cmd = "zensical serve", help = "Serve project html documentation"
 sort-imports = { cmd = "isort . --sg=old --profile black", help = "apply import sort ordering" }
 style = ["sort-imports", "format"]
 test-unit = { shell = "pytest test -m 'not slow and not serial' -n auto && pytest test -m 'serial and not slow' -n 0" }
-test-slow = { shell = "pytest test -m 'slow' -n auto" }
+test-slow = { shell = "pytest test -m 'slow and serial' -n 0 && pytest test -m 'slow and not serial' -n auto" }
 
 
 [tool.uv.build-backend]

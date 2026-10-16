@@ -10,7 +10,61 @@ from mother.feature_generation.fp_gen import FingerprintFactory
 from mother.feature_generation.fp_gnn_gen import (
     CheMeleonFingerprintFactory,
     CheMeleonFingerprintTransformer,
+    _CheMeleonEmbedder,
 )
+
+
+class _FakeBatchMolGraph:
+    def __init__(self, size):
+        self.size = size
+
+    def to(self, device):
+        return None
+
+
+class _FakeMoleculeDatapoint:
+    @classmethod
+    def from_smi(cls, smiles):
+        return smiles
+
+
+class _FakeMoleculeDataset(list):
+    pass
+
+
+class _FakeMessagePassing:
+    output_dim = 2
+
+    def __init__(self, **kwargs):
+        pass
+
+    def load_state_dict(self, state_dict):
+        pass
+
+
+class _FakeMPNN:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def to(self, device):
+        return self
+
+    def eval(self):
+        return self
+
+    def fingerprint(self, batch_graph, V_d, X_d):
+        import torch
+
+        return torch.ones((batch_graph.size, 2))
+
+
+class _FakeRegressionFFN:
+    def __init__(self, input_dim):
+        pass
+
+
+def _fake_collate_batch(datapoints):
+    return _FakeBatchMolGraph(len(datapoints)), None, None
 
 
 def test_initialization() -> None:
@@ -138,6 +192,41 @@ def test_chemeleon_rejects_malformed_embedder_output(shape, message) -> None:
 
     with pytest.raises(ValueError, match=message):
         transformer.fit_transform(molecules)
+
+
+def test_default_chemeleon_embedder_transformer_is_pickleable(monkeypatch) -> None:
+    import pickle
+    import sys
+    import types
+
+    torch = pytest.importorskip("torch")
+    chemprop = types.ModuleType("chemprop")
+    models = types.ModuleType("chemprop.models")
+    models.MPNN = _FakeMPNN
+    nn = types.ModuleType("chemprop.nn")
+    nn.BondMessagePassing = _FakeMessagePassing
+    nn.MeanAggregation = type("MeanAggregation", (), {})
+    nn.RegressionFFN = _FakeRegressionFFN
+    data = types.ModuleType("chemprop.data")
+    data.MoleculeDatapoint = _FakeMoleculeDatapoint
+    data.MoleculeDataset = _FakeMoleculeDataset
+    data.collate_batch = _fake_collate_batch
+    chemprop.models = models
+    chemprop.nn = nn
+    chemprop.data = data
+    monkeypatch.setitem(sys.modules, "chemprop", chemprop)
+    monkeypatch.setitem(sys.modules, "chemprop.models", models)
+    monkeypatch.setitem(sys.modules, "chemprop.nn", nn)
+    monkeypatch.setitem(sys.modules, "chemprop.data", data)
+    monkeypatch.setattr(torch, "load", lambda *args, **kwargs: {"hyper_parameters": {}, "state_dict": {}})
+
+    molecule = Chem.MolFromSmiles("CCO")
+    transformer = CheMeleonFingerprintTransformer(output_dim=2, checkpoint_path="fake.pt").fit([molecule])
+
+    restored = pickle.loads(pickle.dumps(transformer))
+
+    assert isinstance(restored.embedder_, _CheMeleonEmbedder)
+    np.testing.assert_array_equal(restored.transform([molecule]), [[1.0, 1.0]])
 
 
 @pytest.mark.parametrize("return_separate_columns", [True, False])

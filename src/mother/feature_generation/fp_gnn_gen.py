@@ -4,7 +4,7 @@ import shutil
 import tempfile
 import urllib.request
 from pathlib import Path
-from typing import Callable, Iterable, List, Optional, Sequence
+from typing import Any, Callable, Iterable, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -72,6 +72,43 @@ def _check_chemprop() -> None:
         raise ExtrasDependencyImportError("chemprop", import_error) from import_error
 
 
+class _CheMeleonEmbedder:
+    """Pickleable callable wrapper around a loaded Chemprop encoder."""
+
+    def __init__(self, model: Any, output_dim: int, device: str) -> None:
+        """Store the model and inference settings without capturing local state."""
+        self.model = model
+        self.output_dim = output_dim
+        self.device = device
+
+    def __call__(self, smiles_batch: Sequence[str]) -> np.ndarray:
+        """Run a batch of SMILES through the loaded CheMeleon MPNN."""
+        import torch
+        from chemprop.data import MoleculeDatapoint, MoleculeDataset, collate_batch
+
+        dataset = MoleculeDataset([MoleculeDatapoint.from_smi(smi) for smi in smiles_batch])
+        batch = collate_batch([dataset[i] for i in range(len(dataset))])
+        bmg, V_d, X_d, *_ = batch
+
+        # BatchMolGraph.to mutates in-place and returns None.
+        bmg.to(self.device)
+        if V_d is not None:
+            V_d = V_d.to(self.device)
+        if X_d is not None:
+            X_d = X_d.to(self.device)
+
+        with torch.no_grad():
+            fps = self.model.fingerprint(bmg, V_d, X_d)
+        arr = np.asarray(fps.detach().cpu().numpy(), dtype=np.float32)
+        if arr.ndim != 2:
+            raise ValueError("CheMeleon embedder must return a 2D array.")
+        if arr.shape[1] != self.output_dim:
+            raise ValueError(
+                f"Expected embedding size {self.output_dim} but embedder returned {arr.shape[1]} features."
+            )
+        return arr
+
+
 def _default_chemeleon_embedder(
     checkpoint_path: Optional[str] = None,
     output_dim: int = 2048,
@@ -82,11 +119,6 @@ def _default_chemeleon_embedder(
     import torch
     from chemprop import models as cp_models  # type: ignore
     from chemprop import nn as cnn  # type: ignore
-    from chemprop.data import (  # type: ignore
-        MoleculeDatapoint,
-        MoleculeDataset,
-        collate_batch,
-    )
 
     if checkpoint_path is None:
         checkpoint_path = str(get_default_chemeleon_checkpoint())
@@ -104,29 +136,7 @@ def _default_chemeleon_embedder(
     ffn = cnn.RegressionFFN(input_dim=mp.output_dim)
     model = cp_models.MPNN(mp, agg, ffn, batch_norm=False).to(device).eval()
 
-    def _embed(smiles_batch: Sequence[str]) -> np.ndarray:
-        """Run a batch of SMILES through the loaded CheMeleon MPNN and return their fingerprints."""
-        dataset = MoleculeDataset([MoleculeDatapoint.from_smi(smi) for smi in smiles_batch])
-        batch = collate_batch([dataset[i] for i in range(len(dataset))])
-        bmg, V_d, X_d, *_ = batch
-
-        # BatchMolGraph.to mutates in-place and returns None.
-        bmg.to(device)
-        if V_d is not None:
-            V_d = V_d.to(device)
-        if X_d is not None:
-            X_d = X_d.to(device)
-
-        with torch.no_grad():
-            fps = model.fingerprint(bmg, V_d, X_d)
-        arr = np.asarray(fps.detach().cpu().numpy(), dtype=np.float32)
-        if arr.ndim != 2:
-            raise ValueError("CheMeleon embedder must return a 2D array.")
-        if arr.shape[1] != output_dim:
-            raise ValueError(f"Expected embedding size {output_dim} but embedder returned {arr.shape[1]} features.")
-        return arr
-
-    return _embed
+    return _CheMeleonEmbedder(model, output_dim, device)
 
 
 class CheMeleonFingerprintTransformer(BaseEstimator, TransformerMixin):
@@ -197,7 +207,7 @@ class CheMeleonFingerprintTransformer(BaseEstimator, TransformerMixin):
         if not valid_smiles:
             return self._format_output(out, X)
 
-        rows = []
+        valid_indices = np.flatnonzero(valid_mask)
         for start in range(0, len(valid_smiles), self.batch_size):
             batch = valid_smiles[start : start + self.batch_size]
             batch_embeddings = np.asarray(self.embedder_(batch), dtype=np.float32)
@@ -207,9 +217,8 @@ class CheMeleonFingerprintTransformer(BaseEstimator, TransformerMixin):
                 raise ValueError(f"Expected embedding size {self.output_dim} but received {batch_embeddings.shape[1]}.")
             if batch_embeddings.shape[0] != len(batch):
                 raise ValueError(f"Expected {len(batch)} embedding rows but received {batch_embeddings.shape[0]}.")
-            rows.append(batch_embeddings)
-
-        out[valid_mask, :] = np.vstack(rows)
+            batch_indices = valid_indices[start : start + len(batch)]
+            out[batch_indices, :] = batch_embeddings
         return self._format_output(out, X)
 
     def _format_output(self, embeddings: np.ndarray, X: Iterable) -> np.ndarray | pd.DataFrame:

@@ -764,6 +764,9 @@ class ODST(ModuleWithInit):
                     )
                 )
 
+            self._is_initialized_tensor.fill_(1)
+            self._is_initialized_bool = True
+
     def __repr__(self) -> str:
         """Return a compact string summarising the tree ensemble's shape hyperparameters."""
         return (

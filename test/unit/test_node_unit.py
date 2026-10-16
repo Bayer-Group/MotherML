@@ -197,9 +197,36 @@ def test_odst_tree_chunk_size_bounds_initialization(monkeypatch, tree_chunk_size
     assert selection_shapes == [(5, width, 3) for width in expected_widths]
 
 
+def test_odst_manual_initialization_is_preserved_by_forward():
+    module = ODST(3, 7, depth=2, tree_chunk_size=3, random_state=0)
+    initialization_data = torch.full((256, 3), 4.0)
+    shifted_data = torch.full((32, 3), -7.0)
+
+    module.initialize(initialization_data)
+    initialized_thresholds = module.feature_thresholds.clone()
+    initialized_temperatures = module.log_temperatures.clone()
+
+    assert module._is_initialized_tensor.item() == 1
+    assert module._is_initialized_bool is True
+    with torch.no_grad():
+        module(shifted_data)
+
+    torch.testing.assert_close(module.feature_thresholds, initialized_thresholds)
+    torch.testing.assert_close(module.log_temperatures, initialized_temperatures)
+
+
 @pytest.mark.parametrize("estimator_class", [NODERegressor, NODEClassifier])
 def test_node_tree_chunk_size_defaults_to_256(estimator_class):
     assert estimator_class().get_params()["tree_chunk_size"] == 256
+
+
+@pytest.mark.parametrize(
+    ("parameter", "value"),
+    [("choice_function", "entmax"), ("bin_function", "entmoid")],
+)
+def test_node_rejects_unsupported_activation_function(parameter, value):
+    with pytest.raises(ValueError, match=f"Unsupported {parameter}"):
+        NODEClassifier(**{parameter: value})
 
 
 @pytest.mark.parametrize("estimator_class", [NODERegressor, NODEClassifier])
@@ -819,6 +846,28 @@ def test_fast_pickle_compatibility():
     assert pickle_ok and clone_ok, f"Both pickle and clone should work. Pickle: {pickle_ok}, Clone: {clone_ok}"
 
 
+@pytest.mark.parametrize("labels", [np.array([1, 2] * 8), np.array(["cat", "dog"] * 8)])
+def test_node_classifier_encodes_and_decodes_single_label_targets(labels):
+    rng = np.random.default_rng(42)
+    X = rng.standard_normal((len(labels), 3)).astype(np.float32)
+    classifier = NODEClassifier(
+        num_trees=8,
+        depth=2,
+        max_epochs=1,
+        batch_size=len(labels),
+        device="cpu",
+        verbose=0,
+        tune_head=False,
+    ).fit(X, labels)
+
+    np.testing.assert_array_equal(classifier.classes_, np.unique(labels))
+    predictions = classifier.predict(X)
+    assert set(predictions).issubset(set(labels))
+    assert classifier.predict_proba(X).shape == (len(labels), len(np.unique(labels)))
+    uncertainty = classifier.predict_uncertainty(X, num_samples=2)
+    assert set(uncertainty["pred"]).issubset(set(labels))
+
+
 def test_fast_dimension_changes():
     """Fast test that InputShapeSetter handles dimension changes"""
     print("\n🚀 Fast Dimension Change Test")
@@ -1402,24 +1451,7 @@ def test_fast_mlp_head_comprehensive():
     print("\n🎉 MLP head comprehensive test completed!")
 
     # Assertions for test validation
-    assert len(working_configs) > 0, "At least some MLP configurations should work"
-
-    # Test that all activation functions work in at least some configurations
-    working_activations = {results[config]["activation"] for config in working_configs}
-    assert len(working_activations) >= 2, f"At least 2 activation functions should work, got {working_activations}"
-
-    # Test that different hidden layer configurations work
-    working_hidden_configs = {str(results[config]["hidden_dims"]) for config in working_configs}
-    assert len(working_hidden_configs) >= 2, (
-        f"At least 2 hidden configurations should work, got {len(working_hidden_configs)}"
-    )
-
-    # Test that we have a reasonable success rate
-    success_rate = len(working_configs) / total_tests
-    assert success_rate >= 0.5, f"Success rate should be >= 50%, got {success_rate * 100:.1f}%"
-
-    # Test passed - assert instead of return for pytest compatibility
-    assert len(working_configs) >= total_tests * 0.8, f"Expected >80% success rate, got {success_rate * 100:.1f}%"
+    assert not failed_configs, f"All {total_tests} supported MLP configurations must pass: {failed_configs}"
 
 
 def test_fast_function_combinations():
@@ -1497,24 +1529,12 @@ def test_fast_function_combinations():
     if failed_combinations:
         print(f"   Failed: {', '.join(failed_combinations)}")
 
-    # Test that basic combinations work
-    assert len(working_combinations) >= 3, f"At least 3 combinations should work, got {len(working_combinations)}"
+    assert not failed_combinations, f"All supported function combinations must pass: {failed_combinations}"
 
     # Specifically test that entmax15+entmoid15 works (default)
     assert "entmax15+entmoid15" in working_combinations, "Default combination entmax15+entmoid15 should work"
 
-    # Test that both choice functions work with both bin functions
-    assert len(working_combinations) >= 3, f"At least 3 combinations should work, got {len(working_combinations)}"
-
-    # Test that alternative combinations work
-    alternative_combos = ["sparsemax+sparsemoid", "entmax15+sparsemoid", "sparsemax+entmoid15"]
-    working_alternatives = [combo for combo in alternative_combos if combo in working_combinations]
-    print(f"   Alternative combinations working: {working_alternatives}")
-
     print("🎉 Function combinations test completed!")
-
-    # Assert success if at least half the combinations work
-    assert len(working_combinations) >= 2, f"At least 2 combinations should work, got {len(working_combinations)}"
 
 
 def test_predict_uncertainty():

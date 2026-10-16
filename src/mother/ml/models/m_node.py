@@ -133,6 +133,32 @@ from mother.ml.models.node_utils import (
     validate_tree_chunk_size,
 )
 
+
+def _resolve_node_activation_functions(
+    choice_function: str, bin_function: str
+) -> Tuple[Callable[[Tensor, int], Tensor], Callable[[Tensor], Tensor]]:
+    """Return configured NODE activation functions or reject unsupported names."""
+    choice_functions: Dict[str, Callable[[Tensor, int], Tensor]] = {
+        "entmax15": entmax15,
+        "sparsemax": sparsemax,
+    }
+    bin_functions: Dict[str, Callable[[Tensor], Tensor]] = {
+        "entmoid15": entmoid15,
+        "sparsemoid": sparsemoid,
+    }
+    try:
+        choice_func = choice_functions[choice_function]
+    except KeyError as error:
+        supported = ", ".join(repr(name) for name in choice_functions)
+        raise ValueError(f"Unsupported choice_function {choice_function!r}. Expected one of: {supported}.") from error
+    try:
+        bin_func = bin_functions[bin_function]
+    except KeyError as error:
+        supported = ", ".join(repr(name) for name in bin_functions)
+        raise ValueError(f"Unsupported bin_function {bin_function!r}. Expected one of: {supported}.") from error
+    return choice_func, bin_func
+
+
 # Setup module logger
 module_logger = logging.getLogger(__name__)
 
@@ -510,16 +536,9 @@ class NODEBackbone(nn.Module):
 
         self.hparams.node_input_dim = (self.hparams.continuous_dim or 0) + (self.hparams.embedded_cat_dim or 0)
 
-        # Map function names to actual functions
-        if self.hparams.choice_function == "sparsemax":
-            choice_func = sparsemax
-        else:
-            choice_func = entmax15
-
-        if self.hparams.bin_function == "sparsemoid":
-            bin_func = sparsemoid
-        else:
-            bin_func = entmoid15
+        choice_func, bin_func = _resolve_node_activation_functions(
+            self.hparams.choice_function, self.hparams.bin_function
+        )
 
         self.dense_block = DenseODSTBlock(
             input_dim=self.hparams.node_input_dim,
@@ -855,18 +874,7 @@ class CompletePyTorchTabularNODE(nn.Module):
 
     def _build_modules(self) -> None:
         """Build the dense block, embedding layer, and head when input_dim is known."""
-        # Map string names to functions
-        choice_func: Callable[[Tensor, int], Tensor]
-        if self.choice_function == "sparsemax":
-            choice_func = sparsemax
-        else:
-            choice_func = entmax15
-
-        bin_func: Callable[[Tensor], Tensor]
-        if self.bin_function == "sparsemoid":
-            bin_func = sparsemoid
-        else:
-            bin_func = entmoid15
+        choice_func, bin_func = _resolve_node_activation_functions(self.choice_function, self.bin_function)
 
         # Dense ODST Block
         self.dense_block = DenseODSTBlock(
@@ -999,6 +1007,7 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
     categorical_columns_: List[str]
     continuous_columns_: List[str]
     label_encoders_: dict
+    target_encoder_: Optional[LabelEncoder]
     categorical_embedding_dims_: List[tuple]
     feature_names_: List[str]
     target_type_: str
@@ -1045,6 +1054,7 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         estimator from ``get_params()`` → ``__init__(**params)``.
         """
         validate_tree_chunk_size(tree_chunk_size)
+        _resolve_node_activation_functions(choice_function, bin_function)
         validate_dropout_rates(
             input_dropout=input_dropout,
             tree_dropout=tree_dropout,
@@ -3211,6 +3221,7 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
         - Binary classification (CrossEntropyLoss)
         - Multiclass classification (CrossEntropyLoss)
         - Multi-label binary (BCEWithLogitsLoss)
+        - Single-label targets are encoded internally and predictions preserve the original labels
         - Head types: subset, linear, mlp (flow is regression-only)
 
     Key Features:
@@ -3441,6 +3452,8 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
         if isinstance(y, (pd.DataFrame, pd.Series)):
             y = y.values
 
+        self.target_encoder_ = None
+
         # Multi-label: shape (n, k) with k > 1 → float32 for BCEWithLogitsLoss
         if hasattr(y, "shape") and len(y.shape) > 1 and y.shape[1] > 1:
             y = np.asarray(y, dtype=np.float32)
@@ -3453,10 +3466,25 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
             if self._user_provided_criterion and criterion_class in (nn.BCELoss, nn.BCEWithLogitsLoss):
                 y = np.asarray(y, dtype=np.float32)
             else:
-                # Default to int64 for CrossEntropyLoss and most classification losses
-                y = np.asarray(y, dtype=np.int64)
+                self.target_encoder_ = LabelEncoder()
+                y = self.target_encoder_.fit_transform(y)
 
         return super().fit(X, y, **fit_params)  # type: ignore
+
+    @property
+    def classes_(self) -> npt.NDArray[Any]:
+        """Expose original labels for single-label classification."""
+        encoder = getattr(self, "target_encoder_", None)
+        if encoder is not None:
+            return encoder.classes_
+        return super().classes_
+
+    def _decode_class_labels(self, predictions: npt.NDArray[Any]) -> npt.NDArray[Any]:
+        """Map CrossEntropy class indices back to their original target labels."""
+        encoder = self.target_encoder_
+        if encoder is None:
+            return predictions
+        return encoder.inverse_transform(np.asarray(predictions, dtype=np.int64))
 
     def predict(self, X: Union[pd.DataFrame, npt.NDArray[np.float32]]) -> npt.NDArray[Any]:
         """Enhanced predict method with DataFrame support and multi-label handling."""
@@ -3469,7 +3497,7 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
             return (probas > 0.5).astype(int)
         else:
             # Standard multiclass classification
-            return super().predict(X)
+            return self._decode_class_labels(super().predict(X))
 
     def predict_proba(self, X: Union[pd.DataFrame, npt.NDArray[np.float32]]) -> npt.NDArray[np.float32]:
         """Enhanced predict_proba method with DataFrame support and multi-label handling."""
@@ -3602,6 +3630,7 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
             per_pass_entropy = entropy(per_pass_bernoulli, axis=-1).sum(axis=-1)
         else:
             pred = mean_probs.argmax(axis=1)
+            pred = self._decode_class_labels(pred)
             mean_predictions = mean_probs[:, 1] if mean_probs.shape[1] == 2 else mean_probs.max(axis=1)
             total_uncertainty = entropy(mean_probs, axis=1)
             per_pass_entropy = entropy(probabilities, axis=2)
