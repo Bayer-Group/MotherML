@@ -1,4 +1,5 @@
 import numpy as np
+import optuna
 import pandas as pd
 import pytest
 from optuna.samplers import RandomSampler
@@ -206,6 +207,114 @@ def test_tune_mother_model_classification_with_catboost(
     else:
         assert base_model.target_type == target_type
         assert probabilities.shape[1] == n_classes, f"Multiclass probabilities should have {n_classes} columns."
+
+
+class TestGetCallbacks:
+    def test_early_stopping_enabled_returns_callback_when_torch_available(self, monkeypatch):
+        """get_callbacks should return terminator callback when enabled and torch is available."""
+        monkeypatch.setattr("mother.optimization.core.torch_available", True)
+        tuner = MotherTuner(
+            scorer=make_scorer(mean_squared_error, greater_is_better=False),
+            early_stopping_optuna=True,
+        )
+
+        callbacks = tuner.get_callbacks()
+
+        assert callbacks is not None
+        assert len(callbacks) == 1
+
+    def test_early_stopping_disabled_returns_none(self):
+        tuner = MotherTuner(
+            scorer=make_scorer(mean_squared_error, greater_is_better=False),
+            early_stopping_optuna=False,
+        )
+
+        callbacks = tuner.get_callbacks()
+
+        assert callbacks is None
+
+    def test_early_stopping_enabled_torch_missing_returns_none_with_warning(self, monkeypatch, caplog):
+        monkeypatch.setattr("mother.optimization.core.torch_available", False)
+        tuner = MotherTuner(
+            scorer=make_scorer(mean_squared_error, greater_is_better=False),
+            early_stopping_optuna=True,
+        )
+
+        with caplog.at_level("WARNING"):
+            callbacks = tuner.get_callbacks()
+
+        assert callbacks is None
+        assert "Torch not installed" in caplog.text
+
+
+class TestDefaultSamplerSelection:
+    def test_gp_sampler_when_torch_available(self, monkeypatch):
+        """GPSampler should be selected when torch is available."""
+        pytest.importorskip("torch")
+        pytest.importorskip("scipy")
+        monkeypatch.setattr("mother.optimization.core.torch_available", True)
+        tuner = MotherTuner(
+            scorer=make_scorer(mean_squared_error, greater_is_better=False),
+        )
+        assert isinstance(tuner.sampler, optuna.samplers.GPSampler)
+        assert isinstance(tuner.sampler._independent_sampler, optuna.samplers.TPESampler)
+
+    def test_tpe_sampler_when_torch_unavailable(self, monkeypatch):
+        """TPESampler should be selected when torch is not available."""
+        monkeypatch.setattr("mother.optimization.core.torch_available", False)
+        tuner = MotherTuner(
+            scorer=make_scorer(mean_squared_error, greater_is_better=False),
+        )
+        assert isinstance(tuner.sampler, optuna.samplers.TPESampler)
+
+    def test_tpe_sampler_fallback_when_gp_sampler_init_fails(self, monkeypatch):
+        """If GPSampler init fails, MotherTuner should fall back to TPESampler."""
+
+        def _raise_gp_init_error(*args, **kwargs):
+            raise RuntimeError("gp init failed")
+
+        monkeypatch.setattr("mother.optimization.core.torch_available", True)
+        monkeypatch.setattr("optuna.samplers.GPSampler", _raise_gp_init_error)
+
+        tuner = MotherTuner(
+            scorer=make_scorer(mean_squared_error, greater_is_better=False),
+        )
+        assert isinstance(tuner.sampler, optuna.samplers.TPESampler)
+
+    def test_gp_sampler_warns_for_dynamic_search_space(self, caplog):
+        """GPSampler should warn that dynamic search spaces fall back to independent sampling."""
+        pytest.importorskip("torch")
+        pytest.importorskip("scipy")
+
+        sampler = optuna.samplers.GPSampler(
+            seed=0,
+            n_startup_trials=1,
+            warn_independent_sampling=True,
+        )
+        study = optuna.create_study(direction="minimize", sampler=sampler)
+
+        def objective(trial):
+            # Alternate parameter names across trials to force a dynamic search space.
+            x = trial.suggest_float("x", 0.0, 1.0)
+            if trial.number % 2 == 0:
+                trial.suggest_float("even_only", 0.0, 1.0)
+            else:
+                trial.suggest_float("odd_only", 0.0, 1.0)
+            return x
+
+        with caplog.at_level("WARNING", logger="optuna.samplers._gp.sampler"):
+            study.optimize(objective, n_trials=6)
+
+        assert "dynamic search space is not supported by GPSampler" in caplog.text
+
+    def test_custom_sampler_used_directly(self):
+        """A user-provided sampler should be used as-is."""
+        custom = RandomSampler(seed=0)
+        tuner = MotherTuner(
+            scorer=make_scorer(mean_squared_error, greater_is_better=False),
+            sampler=custom,
+        )
+        assert tuner.sampler is custom
 
 
 @pytest.mark.slow
