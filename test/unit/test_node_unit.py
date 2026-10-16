@@ -3323,6 +3323,36 @@ def test_flow_device_walker_preserves_parameters():
     assert result.device.type == "cpu"
 
 
+@pytest.mark.parametrize(
+    "device",
+    ["meta", pytest.param("cuda", marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="No CUDA"))],
+)
+def test_flow_device_walker_moves_every_shared_tensor_reference(device):
+    from types import SimpleNamespace
+
+    from mother.ml.models.node_head_utils import FlowHead
+
+    shared = torch.ones(2)
+    parameter = nn.Parameter(torch.ones(2))
+    graph = SimpleNamespace(
+        loc=shared, scale=shared, mapping={"value": shared}, sequence=[shared], pair=(shared,), parameter=parameter
+    )
+    graph.cycle = graph
+    graph.mapping["cycle"] = graph.mapping
+
+    result = FlowHead._move_nested_tensors_to_device(graph, torch.device(device))
+
+    assert result is graph
+    assert result.cycle is graph
+    assert result.mapping["cycle"] is result.mapping
+    assert result.parameter is parameter
+    assert result.parameter.device.type == "cpu"
+    for tensor in (result.loc, result.scale, result.mapping["value"], result.sequence[0], result.pair[0]):
+        assert tensor.device.type == device
+        if device != "meta":
+            torch.testing.assert_close(tensor.cpu(), shared)
+
+
 def test_activation_functions():
     """Test different activation functions (entmoid15, sparsemoid) - technical correctness only"""
     print("\n🚀 Activation Functions Test")

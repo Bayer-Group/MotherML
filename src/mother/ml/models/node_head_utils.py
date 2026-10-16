@@ -99,14 +99,6 @@ class FlowHead(nn.Module):
     @staticmethod
     def _move_nested_tensors_to_device(obj: Any, device: torch.device, visited: Optional[set[int]] = None) -> Any:
         """Recursively move any tensors found inside `obj` (dict/list/tuple/object graph) to `device` in place."""
-        if visited is None:
-            visited = set()
-
-        oid = id(obj)
-        if oid in visited:
-            return obj
-        visited.add(oid)
-
         if isinstance(obj, nn.Parameter):
             return obj
 
@@ -114,6 +106,14 @@ class FlowHead(nn.Module):
             if obj.device != device:
                 return obj.to(device)
             return obj
+
+        if visited is None:
+            visited = set()
+
+        oid = id(obj)
+        if oid in visited:
+            return obj
+        visited.add(oid)
 
         if isinstance(obj, dict):
             for k, v in list(obj.items()):
