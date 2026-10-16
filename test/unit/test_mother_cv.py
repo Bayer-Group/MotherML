@@ -665,3 +665,42 @@ def test_mother_cv_return_estimators_as_tuple(
     assert len(estimators["estimators"]) == cv.get_n_splits()
     assert estimators["prediction_prefix"] == "pred_"
     assert estimators["target_columns"] == ["target"]
+
+
+def test_mother_cv_without_tuner_returns_independent_fold_estimators(
+    regression_pipeline,
+    synthetic_data_regression,
+    cv,
+    tmp_path,
+    monkeypatch,
+):
+    X, y, _ = synthetic_data_regression
+    monkeypatch.chdir(tmp_path)
+
+    result = mother_cv(
+        regression_pipeline,
+        cv=cv,
+        X=X,
+        y=y,
+        return_estimators=True,
+    )
+
+    cv_table, estimators = result
+
+    assert isinstance(cv_table, pd.DataFrame)
+    assert isinstance(estimators, dict)
+    assert "estimators" in estimators
+    assert "prediction_prefix" in estimators
+    assert "target_columns" in estimators
+    assert isinstance(estimators["estimators"], list)
+    assert len(estimators["estimators"]) == cv.get_n_splits()
+    assert estimators["prediction_prefix"] == "pred_"
+    assert estimators["target_columns"] == ["target"]
+
+    # Ensure that each fold estimator is independent
+    for i in range(1, len(estimators["estimators"])):
+        assert estimators["estimators"][i] is not estimators["estimators"][i - 1]
+
+    # Ensure that the input estimator is never returned as a member
+    for fold_estimator in estimators["estimators"]:
+        assert fold_estimator is not regression_pipeline
