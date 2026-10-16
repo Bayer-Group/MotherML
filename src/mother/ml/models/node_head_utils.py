@@ -107,6 +107,9 @@ class FlowHead(nn.Module):
                 return obj.to(device)
             return obj
 
+        if isinstance(obj, torch.Size):
+            return obj
+
         if visited is None:
             visited = set()
 

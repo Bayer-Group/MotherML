@@ -1,3 +1,6 @@
+import hashlib
+import io
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -6,6 +9,7 @@ from rdkit.Chem import rdFingerprintGenerator as rdFG
 from sklearn.base import clone
 from sklearn.exceptions import NotFittedError
 
+from mother.feature_generation import fp_gnn_gen
 from mother.feature_generation.fp_gen import FingerprintFactory
 from mother.feature_generation.fp_gnn_gen import (
     CheMeleonFingerprintFactory,
@@ -65,6 +69,91 @@ class _FakeRegressionFFN:
 
 def _fake_collate_batch(datapoints):
     return _FakeBatchMolGraph(len(datapoints)), None, None
+
+
+@pytest.fixture
+def checkpoint_cache(tmp_path, monkeypatch):
+    contents = b"offline checkpoint fixture"
+    cache_path = tmp_path / "cache" / "chemeleon_mp.pt"
+    monkeypatch.setattr(fp_gnn_gen, "_CHEMELEON_CACHE_PATH", cache_path)
+    monkeypatch.setattr(fp_gnn_gen, "_CHEMELEON_SHA256", hashlib.sha256(contents).hexdigest())
+    return cache_path, contents
+
+
+def test_chemeleon_checkpoint_reuses_verified_cache(checkpoint_cache, monkeypatch):
+    cache_path, contents = checkpoint_cache
+    cache_path.parent.mkdir()
+    cache_path.write_bytes(contents)
+
+    def unexpected_download(*args, **kwargs):
+        pytest.fail("A verified cache must not trigger a download.")
+
+    monkeypatch.setattr(fp_gnn_gen.urllib.request, "urlopen", unexpected_download)
+    assert fp_gnn_gen.get_default_chemeleon_checkpoint() == cache_path
+    assert cache_path.read_bytes() == contents
+    assert list(cache_path.parent.iterdir()) == [cache_path]
+
+
+@pytest.mark.parametrize("corrupt_cache", [False, True])
+def test_chemeleon_checkpoint_downloads_verified_replacement(checkpoint_cache, monkeypatch, corrupt_cache, caplog):
+    cache_path, contents = checkpoint_cache
+    if corrupt_cache:
+        cache_path.parent.mkdir()
+        cache_path.write_bytes(b"corrupt cache")
+    calls = []
+
+    def download(url, timeout):
+        calls.append((url, timeout))
+        return io.BytesIO(contents)
+
+    monkeypatch.setattr(fp_gnn_gen.urllib.request, "urlopen", download)
+    assert fp_gnn_gen.get_default_chemeleon_checkpoint() == cache_path
+    assert calls == [(fp_gnn_gen._CHEMELEON_ZENODO_URL, 60)]
+    assert cache_path.read_bytes() == contents
+    assert list(cache_path.parent.iterdir()) == [cache_path]
+    if corrupt_cache:
+        assert "failed SHA256 verification; replacing it" in caplog.text
+
+
+@pytest.mark.parametrize("corrupt_cache", [False, True])
+def test_chemeleon_checkpoint_rejects_bad_download_and_cleans_temp(checkpoint_cache, monkeypatch, corrupt_cache):
+    cache_path, _ = checkpoint_cache
+    if corrupt_cache:
+        cache_path.parent.mkdir()
+        cache_path.write_bytes(b"existing corrupt cache")
+    monkeypatch.setattr(fp_gnn_gen.urllib.request, "urlopen", lambda *args, **kwargs: io.BytesIO(b"bad download"))
+
+    with pytest.raises(RuntimeError, match="Downloaded CheMeleon checkpoint failed SHA256 verification"):
+        fp_gnn_gen.get_default_chemeleon_checkpoint()
+
+    assert list(cache_path.parent.glob("*.tmp")) == []
+    if corrupt_cache:
+        assert cache_path.read_bytes() == b"existing corrupt cache"
+    else:
+        assert not cache_path.exists()
+
+
+@pytest.mark.parametrize("failure_stage", ["connection", "stream"])
+def test_chemeleon_checkpoint_cleans_temp_on_download_failure(checkpoint_cache, monkeypatch, failure_stage):
+    cache_path, _ = checkpoint_cache
+
+    class FailingResponse(io.BytesIO):
+        def read(self, size=-1):
+            if self.tell():
+                raise OSError("interrupted download")
+            return super().read(size)
+
+    def download(*args, **kwargs):
+        if failure_stage == "connection":
+            raise OSError("connection failed")
+        return FailingResponse(b"partial download")
+
+    monkeypatch.setattr(fp_gnn_gen.urllib.request, "urlopen", download)
+    with pytest.raises(OSError, match="connection failed|interrupted download"):
+        fp_gnn_gen.get_default_chemeleon_checkpoint()
+
+    assert list(cache_path.parent.iterdir()) == []
+    assert not cache_path.exists()
 
 
 def test_initialization() -> None:

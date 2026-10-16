@@ -3312,6 +3312,29 @@ def test_node_initialization_respects_numpy_and_torch_seeds():
         torch.testing.assert_close(values, states[1][name], rtol=0, atol=0)
 
 
+@pytest.mark.parametrize("device", ["cpu", "meta"])
+def test_flow_device_walker_preserves_distribution_shapes(device):
+    from mother.ml.models.node_head_utils import FlowHead
+
+    distribution = torch.distributions.Independent(torch.distributions.Normal(torch.zeros(3, 2), torch.ones(3, 2)), 1)
+    batch_shape = distribution.batch_shape
+    event_shape = distribution.event_shape
+
+    FlowHead._move_nested_tensors_to_device(distribution, torch.device(device))
+
+    assert distribution.batch_shape is batch_shape
+    assert distribution.event_shape is event_shape
+    assert distribution.batch_shape.numel() == 3
+    assert distribution.event_shape.numel() == 2
+    assert isinstance(distribution.base_dist.batch_shape, torch.Size)
+    assert isinstance(distribution.base_dist.event_shape, torch.Size)
+    assert distribution.base_dist.loc.device.type == device
+    if device == "cpu":
+        samples = distribution.sample((4,))
+        assert samples.shape == (4, 3, 2)
+        assert torch.isfinite(distribution.log_prob(samples)).all()
+
+
 def test_flow_device_walker_preserves_parameters():
     from mother.ml.models.node_head_utils import FlowHead
 
