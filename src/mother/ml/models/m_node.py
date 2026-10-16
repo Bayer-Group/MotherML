@@ -35,7 +35,7 @@ Flow Head (NodeFlow Architecture):
     conditional normalizing flows for probabilistic regression. This provides:
     - Flexible uncertainty quantification
     - Flexible conditional density estimation
-    - Multiple flow architectures (GMM, NICE, RealNVP, NAF, UNAF, NSF, BPF) via Zuko library
+    - Multiple flow architectures (GMM, NICE, NAF, UNAF, NSF, BPF) via Zuko library
 
 Usage Examples:
 
@@ -758,10 +758,11 @@ class CompletePyTorchTabularNODE(nn.Module):
         tree_dropout_only_head: If True, apply tree dropout only before the head;
             if False, apply it to every ODST layer output.
         flow_type: Normalizing flow architecture
-            (``"GMM"``, ``"NICE"``, ``"RealNVP"``, ``"NAF"``,
+            (``"GMM"``, ``"NICE"``, ``"NAF"``,
             ``"UNAF"``, ``"NSF"``, ``"BPF"``).
+            ``"NICE"`` uses Zuko's default affine coupling transformations.
         flow_transforms: Number of flow transformation layers
-            (NICE, RealNVP, NAF, UNAF).
+            (NICE, NAF, UNAF).
         flow_bins: Number of spline bins for NSF.
         flow_degree: Polynomial degree for BPF (default 16).
         flow_signal: Hidden signal dimension for NAF/UNAF (default 16).
@@ -794,7 +795,7 @@ class CompletePyTorchTabularNODE(nn.Module):
         tree_dropout: float = 0.0,  # drop entire trees (regularization)
         tree_dropout_only_head: bool = True,
         flow_type: str = "NSF",  # Flow architecture; only for head_type="flow"
-        flow_transforms: int = 3,  # Transform layers (NICE, RealNVP, NAF, UNAF)
+        flow_transforms: int = 3,  # Transform layers (NICE, NAF, UNAF)
         flow_bins: int = 8,  # Spline bins (NSF)
         flow_degree: int = 16,  # Polynomial degree (BPF)
         flow_signal: int = 16,  # Hidden signal dim (NAF, UNAF)
@@ -2011,7 +2012,7 @@ class NODERegressor(BaseNODEEstimator):
         mlp_hidden_dims: Optional[List[int]] = None,  # MLP hidden layer sizes; default [128, 64, 32]
         mlp_activation: str = "ReLU",  # "ReLU", "GELU", or "LeakyReLU" (if head_type="mlp")
         flow_type: str = "NSF",  # Flow architecture (if head_type="flow")
-        flow_transforms: int = 3,  # Transform layers (NICE, RealNVP, NAF, UNAF)
+        flow_transforms: int = 3,  # Transform layers (NICE, NAF, UNAF)
         flow_bins: int = 8,  # Spline bins (NSF)
         flow_degree: int = 16,  # Polynomial degree (BPF)
         flow_signal: int = 16,  # Hidden signal dim (NAF, UNAF)
@@ -3149,13 +3150,13 @@ class NODERegressor(BaseNODEEstimator):
         """
         suggested_params[prefix + "flow_type"] = trial.suggest_categorical(
             prefix + "flow_type",
-            ("GMM", "NICE", "RealNVP", "NAF", "UNAF", "NSF", "BPF"),
+            FlowHead.SUPPORTED_FLOW_TYPES,
         )
 
         selected_flow_type = suggested_params[prefix + "flow_type"]
 
         # Coupling / autoregressive flow transforms
-        if selected_flow_type in ("NICE", "RealNVP", "NAF", "UNAF"):
+        if selected_flow_type in ("NICE", "NAF", "UNAF"):
             suggested_params[prefix + "flow_transforms"] = trial.suggest_int(prefix + "flow_transforms", 2, 5)
 
         # Hidden signal dimension (NAF / UNAF)

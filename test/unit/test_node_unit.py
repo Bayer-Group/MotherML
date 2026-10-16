@@ -2823,6 +2823,38 @@ def test_fast_flow_head_regression():
     print("✓ Flow head test passed!")
 
 
+def test_flow_rejects_removed_realnvp_option():
+    from mother.ml.models.node_head_utils import FlowHead
+
+    with pytest.raises(ValueError, match="Unsupported flow_type: RealNVP"):
+        FlowHead(input_dim=3, output_dim=1, flow_type="RealNVP")
+    with pytest.raises(ValueError, match="Unsupported flow_type: RealNVP"):
+        NODERegressor(head_type="flow", flow_type="RealNVP", num_trees=4, depth=2, device="cpu").initialize()
+
+
+def test_flow_search_uses_supported_types_only():
+    from optuna.trial import FixedTrial
+
+    from mother.ml.models.node_head_utils import FlowHead
+
+    model = NODERegressor(head_type="flow")
+    for flow_type in FlowHead.SUPPORTED_FLOW_TYPES:
+        trial = FixedTrial(
+            {
+                "flow_type": flow_type,
+                "flow_transforms": 3,
+                "flow_signal": 16,
+                "flow_components": 8,
+                "flow_bins": 8,
+                "flow_degree": 16,
+            }
+        )
+        parameters = model._suggest_flow_params(trial, {}, "")
+        assert parameters["flow_type"] == flow_type
+        assert trial.distributions["flow_type"].choices == FlowHead.SUPPORTED_FLOW_TYPES
+        assert "RealNVP" not in trial.distributions["flow_type"].choices
+
+
 def test_flow_types():
     """Test different normalizing flow architectures (NSF, NICE)"""
     print("\n🚀 Flow Type Architecture Test")

@@ -94,7 +94,7 @@ class MLPHead(nn.Module):
 class FlowHead(nn.Module):
     """Conditional flow readout head used by NODE."""
 
-    SUPPORTED_FLOW_TYPES = ("GMM", "NICE", "RealNVP", "NAF", "UNAF", "NSF", "BPF")
+    SUPPORTED_FLOW_TYPES = ("GMM", "NICE", "NAF", "UNAF", "NSF", "BPF")
 
     @staticmethod
     def _move_nested_tensors_to_device(obj: Any, device: torch.device, visited: Optional[set[int]] = None) -> Any:
@@ -214,8 +214,6 @@ class FlowHead(nn.Module):
             self.net = zuko.flows.GMM(features=output_dim, context=context_dim, components=flow_components)
         elif flow_type == "NICE":
             self.net = zuko.flows.NICE(features=output_dim, context=context_dim, transforms=flow_transforms)
-        elif flow_type == "RealNVP":
-            self.net = zuko.flows.RealNVP(features=output_dim, context=context_dim, transforms=flow_transforms)
         elif flow_type == "NAF":
             self.net = zuko.flows.NAF(
                 features=output_dim, context=context_dim, transforms=flow_transforms, signal=flow_signal
