@@ -1,6 +1,7 @@
 import logging
 import typing
 
+import numpy as np
 import pandas as pd
 import pandas.testing as pdt
 import pytest
@@ -8,6 +9,7 @@ import sklearn.feature_selection as skl_feature_sel
 from feature_engine.selection import DropConstantFeatures, SmartCorrelatedSelection
 from rdkit import Chem
 from scipy.stats import pearsonr
+from sklearn.base import clone
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.model_selection import GroupKFold
@@ -198,6 +200,114 @@ def test_get_model_raises_invalid_parameters(settings: MotherSettings) -> None:
     settings.model.parameters = {"invalid_param": "value"}
     with pytest.raises(ValueError, match="Invalid parameters for"):
         get_model(settings)
+
+
+@pytest.mark.parametrize("as_dict", [False, True])
+@pytest.mark.parametrize("model_type", ["regression", "classification_binary", "classification_multiclass", "ranking"])
+def test_get_model_native_feature_declarations(settings, as_dict, model_type):
+    settings.model.model_type = model_type
+    settings.model.categorical_features = ["category"]
+    settings.model.text_features = ["description"]
+    settings.model.embedding_features = ["embedding"]
+    settings.model.parameters = {"iterations": 2, "verbose": False, "thread_count": 1}
+    original = settings.model.model_dump()
+
+    model = get_model(original if as_dict else settings)
+    cloned = clone(model)
+
+    for parameter, expected in (
+        ("cat_features", ["category"]),
+        ("text_features", ["description"]),
+        ("embedding_features", ["embedding"]),
+    ):
+        assert model.get_params()[parameter] == expected
+        assert cloned.get_params()[parameter] == expected
+    assert settings.model.model_dump() == original
+
+
+@pytest.mark.parametrize(
+    "setting, parameter",
+    [
+        ("categorical_features", "cat_features"),
+        ("text_features", "text_features"),
+        ("embedding_features", "embedding_features"),
+    ],
+)
+def test_get_model_native_feature_parameter_compatibility(settings, setting, parameter):
+    settings.model.categorical_features = []
+    settings.model.parameters = {parameter: ["native"]}
+    assert get_model(settings).get_params()[parameter] == ["native"]
+    setattr(settings.model, setting, ["native"])
+    assert get_model(settings).get_params()[parameter] == ["native"]
+    settings.model.parameters[parameter] = ["other"]
+    assert get_model(settings).get_params()[parameter] == ["other"]
+
+
+@pytest.fixture
+def native_feature_data():
+    rng = np.random.default_rng(42)
+    data = pd.DataFrame(
+        {
+            "numeric": rng.normal(size=120),
+            "constant": np.ones(120),
+            "category": ["red", "blue", "green"] * 40,
+            "description": ["red apple sweet fruit", "blue berry fresh fruit", "green pear ripe fruit"] * 40,
+            "embedding": list(rng.normal(size=(120, 4))),
+        }
+    )
+    return data, data["numeric"].to_numpy() + np.tile([0, 1, 2], 40)
+
+
+@pytest.mark.parametrize("provide_data", [False, True])
+@pytest.mark.parametrize("classification", [False, True])
+def test_native_feature_selection_and_catboost_fit(settings, native_feature_data, provide_data, classification):
+    data, targets = native_feature_data
+    if classification:
+        settings.model.model_type = "classification_binary"
+        targets = (targets > np.median(targets)).astype(int)
+    settings.model.categorical_features = ["category"]
+    settings.model.text_features = ["description"]
+    settings.model.embedding_features = ["embedding"]
+    settings.model.feature_selection_flags = ["DROP_CONSTANT", "DROP_DUPLICATES"]
+    settings.model.parameters = {
+        "iterations": 3,
+        "max_depth": 2,
+        "verbose": False,
+        "thread_count": 1,
+        "allow_writing_files": False,
+        "feature_calcers": ["BoW"],
+    }
+    settings.pipeline.remainder = "passthrough"
+    settings.pipeline.verbose_feature_names_out = False
+    selector = get_feature_selection_pipeline(settings, data=data if provide_data else None).set_output(
+        transform="pandas"
+    )
+    selected = selector.fit_transform(data, targets)
+
+    assert "constant" not in selected
+    pdt.assert_frame_equal(
+        selected[["category", "description", "embedding"]], data[["category", "description", "embedding"]]
+    )
+    assert list(selector.named_transformers_["feature_selector"].feature_names_in_) == ["numeric", "constant"]
+    pipeline = Pipeline([("features", clone(selector)), ("model", get_model(settings))])
+    pipeline.fit(data, targets)
+    predictions = pipeline.predict(data.iloc[:5])
+    assert predictions.shape == (5,)
+    assert np.isfinite(predictions).all()
+
+
+def test_native_features_with_categorical_imputation(settings, native_feature_data):
+    data, targets = native_feature_data
+    data["category"] = data["category"].astype(str)
+    data.loc[0, "category"] = None
+    settings.model.categorical_features = ["category"]
+    settings.model.text_features = ["description"]
+    settings.model.embedding_features = ["embedding"]
+    settings.model.feature_selection_flags = ["IMPUTE_CATEGORICAL", "DROP_CONSTANT"]
+    selector = get_feature_selection_pipeline(settings, data=data).set_output(transform="pandas")
+    selected = selector.fit_transform(data, targets)
+    assert selected["category"].notna().all()
+    pdt.assert_frame_equal(selected[["description", "embedding"]], data[["description", "embedding"]])
 
 
 def test_get_feature_selection_pipeline_drop_correlated(

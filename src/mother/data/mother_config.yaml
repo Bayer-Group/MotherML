@@ -47,6 +47,8 @@ tuning:
 
 model:
   categorical_features: ["cat_col"]
+  text_features: ["text_col"]
+  embedding_features: ["embedding_col"]
   model_type: "regression"
   target_type: "single_target"
   feature_selection_type: "catboost"

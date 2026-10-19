@@ -63,6 +63,22 @@ class TestPreprocessingSettings:
 
 
 class TestModelConfig:
+    def test_native_feature_yaml_roundtrip(self, settings, tmp_path):
+        settings.model.categorical_features = ["category"]
+        settings.model.text_features = ["description"]
+        settings.model.embedding_features = ["embedding"]
+        path = tmp_path / "native_features.yaml"
+        settings.dump_to_yaml(path)
+        restored = MotherSettings.load_from_yaml(path)
+        assert restored.model == settings.model
+        assert restored.model.text_features == ["description"]
+        assert restored.model.embedding_features == ["embedding"]
+
+    @pytest.mark.parametrize("field", ["text_features", "embedding_features"])
+    def test_native_features_validate_column_names(self, settings, field):
+        with pytest.raises(ValidationError):
+            setattr(settings.model, field, [123])
+
     def test_generic(self):
         ml_settings: ml_conf.ModelConfig = ml_conf.ModelConfig(
             target_type="single_target",
@@ -73,6 +89,9 @@ class TestModelConfig:
             parameters={"iterations": 100},
         )
         assert ml_settings is not None
+        assert ml_settings.categorical_features == []
+        assert ml_settings.text_features == []
+        assert ml_settings.embedding_features == []
 
     def test_catboost_model(self, catboost_settings) -> None:
         ml_settings: ml_conf.ModelConfig = ml_conf.ModelConfig(**catboost_settings)
@@ -105,6 +124,9 @@ class TestMotherSettings:
     def test_generic(self, settings: MotherSettings) -> None:
         assert isinstance(settings.feature_generation, fg_conf.FeatureGenerationConfig)
         assert isinstance(settings.preprocessing, prep_conv.PreprocessingConfig)
+        assert settings.model.categorical_features == ["cat_col"]
+        assert settings.model.text_features == ["text_col"]
+        assert settings.model.embedding_features == ["embedding_col"]
 
     def test_dump_to_yaml(self, tmp_path) -> None:
         # Create a sample MotherSettings object

@@ -329,6 +329,11 @@ def get_feature_selection_pipeline(
     cv: Optional[skl_model_sel.BaseCrossValidator] = None,
     **kwargs,
 ) -> ml.ColumnTransformerWithHyperparameterRooting:
+    """Build numeric feature selection, leaving declared native features to the remainder.
+
+    Use ``remainder="passthrough"`` and pandas output with original column names
+    to retain categorical, text, and embedding columns for native CatBoost input.
+    """
     model_settings: Dict = settings if isinstance(settings, dict) else settings.model.model_dump()
     pipeline_settings: Dict = (
         settings.pipeline.model_dump() if isinstance(settings, MotherSettings) else pipeline_settings
@@ -346,11 +351,19 @@ def get_feature_selection_pipeline(
     numeric_columns_list: Sequence[Tuple[str, Union[TransformerMixin, ml.PipelineWithHyperparameterRooting]]] = []
 
     if data is not None:
-        module_logger.info("Determine categorical and numerical features. Categorical features are skipped")
-        numerical_ix: List[str] = mother_utils.get_numeric_columns(data=data)
+        module_logger.info("Determine numerical features. Categorical, text, and embedding features are skipped")
+        numerical_ix = mother_utils.get_numeric_columns(data=data)
         categorical_ix: List[str] = mother_utils.get_categorical_column_names(data=data)
-        if set(categorical_ix).difference(set(model_settings["categorical_features"])):
-            raise ValueError("Categorical features are not matching the provided categorical features list")
+        declared_features = (
+            model_settings.get("categorical_features", [])
+            + model_settings.get("text_features", [])
+            + model_settings.get("embedding_features", [])
+        )
+        if set(categorical_ix).difference(declared_features):
+            raise ValueError(
+                "Categorical features are not matching the provided categorical features list; "
+                "declare text and embedding columns in text_features and embedding_features"
+            )
         module_logger.debug("Numerical features: %s", numerical_ix)
 
     from mother.ml import config as feature_config
@@ -518,6 +531,9 @@ def get_model(settings: Union[MotherSettings, Dict]) -> ml.AbstractMotherPipelin
 
     Args:
         settings (MotherSettings): Configuration settings for the model, including algorithm type and parameters.
+            CatBoost uses ``categorical_features``, ``text_features``, and
+            ``embedding_features`` as native feature declarations. Explicit
+            CatBoost declarations in ``parameters`` take precedence.
 
     Returns:
         ml.AbstractMotherPipeline: An instance of a machine learning model pipeline.
@@ -539,7 +555,15 @@ def get_model(settings: Union[MotherSettings, Dict]) -> ml.AbstractMotherPipelin
             algorithm=model_settings["algorithm"],
             model_type=model_settings["model_type"],
         )
-        estimator = model_class(target_type=model_settings["target_type"], **model_settings["parameters"])
+        parameters = dict(model_settings["parameters"])
+        for setting, parameter in (
+            ("categorical_features", "cat_features"),
+            ("text_features", "text_features"),
+            ("embedding_features", "embedding_features"),
+        ):
+            if model_settings.get(setting) and parameters.get(parameter) is None:
+                parameters[parameter] = model_settings[setting]
+        estimator = model_class(target_type=model_settings["target_type"], **parameters)
     else:
         try:
             estimator = ml.get_model_class_by_algorithm_and_type(
