@@ -348,6 +348,11 @@ class ModuleWithInit(nn.Module):
         """Initialize module tensors using first batch of data."""
         raise NotImplementedError("Please implement initialize() in subclass")
 
+    def _load_from_state_dict(self, *args: Any, **kwargs: Any) -> None:
+        """Invalidate the initialization cache when restoring module state."""
+        super()._load_from_state_dict(*args, **kwargs)
+        self._is_initialized_bool = None
+
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         """Run `initialize()` on the first call only, then forward normally on every call."""
         if self._is_initialized_bool is None:

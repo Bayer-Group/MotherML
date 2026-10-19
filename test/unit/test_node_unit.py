@@ -215,6 +215,45 @@ def test_odst_manual_initialization_is_preserved_by_forward():
     torch.testing.assert_close(module.log_temperatures, initialized_temperatures)
 
 
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("checkpoint_initialized", [False, True])
+@pytest.mark.parametrize("assign", [False, True])
+def test_odst_state_loading_invalidates_initialization_cache(monkeypatch, nested, checkpoint_initialized, assign):
+    module = ODST(3, 7, depth=2, random_state=0)
+    model = nn.Sequential(module) if nested else module
+    if checkpoint_initialized:
+        module.initialize(torch.full((256, 3), 4.0))
+    checkpoint = {name: value.clone() for name, value in model.state_dict().items()}
+    checkpoint_thresholds = module.feature_thresholds.detach().clone()
+    checkpoint_temperatures = module.log_temperatures.detach().clone()
+    module.initialize(torch.full((256, 3), -7.0))
+    assert module._is_initialized_bool is True
+
+    model.load_state_dict(checkpoint, assign=assign)
+    assert module._is_initialized_bool is None
+    assert module._is_initialized_tensor.item() == int(checkpoint_initialized)
+    initialization_calls = []
+    original_initialize = module.initialize
+
+    def record_initialize(*args, **kwargs):
+        initialization_calls.append(True)
+        return original_initialize(*args, **kwargs)
+
+    monkeypatch.setattr(module, "initialize", record_initialize)
+    with torch.no_grad():
+        output = model(torch.randn(256, 3))
+        repeated_output = model(torch.randn(256, 3))
+
+    assert torch.isfinite(output).all()
+    assert torch.isfinite(repeated_output).all()
+    assert len(initialization_calls) == int(not checkpoint_initialized)
+    assert module._is_initialized_bool is True
+    assert module._is_initialized_tensor.item() == 1
+    if checkpoint_initialized:
+        torch.testing.assert_close(module.feature_thresholds, checkpoint_thresholds)
+        torch.testing.assert_close(module.log_temperatures, checkpoint_temperatures)
+
+
 @pytest.mark.parametrize("estimator_class", [NODERegressor, NODEClassifier])
 def test_node_tree_chunk_size_defaults_to_256(estimator_class):
     assert estimator_class().get_params()["tree_chunk_size"] == 256

@@ -1959,6 +1959,30 @@ class NODERegressor(BaseNODEEstimator):
           using only the internal training partition. Predictions, samples and
           quantiles are returned in the units supplied to ``fit``.
 
+    Target scaling:
+        ``scale_targets`` (bool, default ``True``) standardizes each flow target
+        independently. It does not scale input features or affect non-flow heads.
+        Start with scaling enabled, especially for targets far from zero/unit
+        scale, but compare ``True`` and ``False`` on the same validation splits:
+        scaling can improve optimization without improving every metric.
+        A small three-seed sklearn benchmark found substantial NSF improvements
+        on Diabetes and Friedman #1, but worse sampled-mode RMSE on a California
+        Housing subset despite better predictive-mean RMSE and held-out likelihood.
+        NICE showed smaller point-error improvements on all three datasets.
+
+        Select the setting for your actual prediction objective: ``predict()``
+        estimates the mode, whereas uncertainty APIs expose predictive means.
+        Also evaluate held-out likelihood and interval coverage; scaling does not
+        guarantee calibration or useful acquisition rankings. BALD and BALSA-EMD
+        both support scaling, but their scores have different units and are not
+        interchangeable.
+
+        Set ``scale_targets=False`` to train on supplied targets without internal
+        standardization, or when managing target transforms externally. Use a new
+        estimator or a fresh ``fit`` with ``warm_start=False`` after changing the
+        setting. Do not toggle it on an already fitted model and continue with a
+        warm start or ``partial_fit``: those retain the original scaler.
+
     Example:
         >>> reg = NODERegressor(num_trees=2048, depth=6, max_epochs=100)
         >>> reg.fit(X_train, y_train)
@@ -1986,6 +2010,10 @@ class NODERegressor(BaseNODEEstimator):
         >>> reg_prob = NODERegressor(head_type="flow", max_epochs=100)
         >>> reg_prob.fit(X_train, y_train)
         >>> predictions = reg_prob.predict(X_test)  # Mode, in original target units
+
+        >>> # Compare target scaling using separate fits on the same validation split:
+        >>> reg_scaled = NODERegressor(head_type="flow", scale_targets=True)
+        >>> reg_unscaled = NODERegressor(head_type="flow", scale_targets=False)
 
         >>> # Batch-size tuning with only an upper bound:
         >>> # starts at batch_size=128 and can try 256, 512, 1024
@@ -2343,6 +2371,10 @@ class NODERegressor(BaseNODEEstimator):
         ``scale_targets=False`` disables flow standardization. Non-flow heads
         are unchanged. A fresh fit relearns scaling; warm starts and
         ``partial_fit`` retain the original scaler to preserve the learned units.
+        Compare scaling settings on held-out validation data using separate
+        estimators or fresh fits with ``warm_start=False``, not by toggling a
+        fitted estimator before continued training. Scaling may improve density
+        fit without improving the sampled-mode predictions returned by ``predict``.
         """
         X = self._prepare_fit_X(X)
         y = np.asarray(y, dtype=np.float32)
