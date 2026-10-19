@@ -229,125 +229,102 @@ class CVEnsembleClassifierMother(AbstractMotherPipeline, MetaEstimatorMixin, Cla
         else:
             raise ValueError(f"Unknown aggregation strategy: {strategy}")
 
-    def _estimate_knowledge_uncertainty(
-        self, probas: np.ndarray, uncertainties: np.ndarray = None, method: str = "variance"
-    ) -> np.ndarray:
-        """
-        Estimates uncertainty from predicted probabilities of multiple estimators using the specified method.
-
-        Args:
-            probas (np.ndarray): Predicted probabilities from multiple estimators,
-              shape (n_estimators, n_samples, n_classes).
-            uncertainties (np.ndarray, optional): Predicted knowledge uncertainties from multiple estimators,
-              shape (n_estimators, n_samples).
-            method (str): Method for uncertainty estimation. Current options are:
-                - "variance": Computes the variance of predicted probabilities across estimators.
-                - "disagreement": Computes disagreement among estimators using Kullback-Leibler divergence
-                  (see Lakshminarayanan et al., 2017).
-                - "member_average": Computes the average knowledge uncertainty estimated by ensemble members
-                individually.
-
-        Returns:
-            np.ndarray: Estimated knowledge uncertainty for each sample, shape (n_samples,).
-        """
-
-        if method == "variance":
-            return np.var(probas, axis=0).mean(
-                axis=1
-            )  # Variance across estimators for each sample -> shape (n_samples,)
-        elif method == "disagreement":
-            n_estimators, n_samples, _ = probas.shape
-
-            # Compute prediction of ensemble per sample (by averaging member predictions)
-            ensemble_probs = np.mean(probas, axis=0)  # shape: (n_samples, n_classes)
-
-            # Compute KL divergence for each member's prediction against ensemble prediction
-            kl_divs = np.zeros((n_estimators, n_samples))
-
-            for e in range(n_estimators):
-                kl_divs[e] = np.sum(rel_entr(probas[e], ensemble_probs), axis=1)  # shape: (n_samples,)
-
-            # Sum up KL divergences across members to get disagreement per sample
-            disagreement_score = np.sum(kl_divs, axis=0)  # shape: (n_samples,)
-
-            return disagreement_score
-        elif method == "member_average":
-            member_average = np.mean(uncertainties, axis=0)  # shape (n_samples,)
-            return member_average
-        else:
-            raise ValueError(f"Unknown uncertainty estimation method for ensemble model: {method}")
-
     @overload
     def _predict_probas_and_uncertainties(
         self,
         X: pd.DataFrame,
-        uncertainty_type: None = None,
+        predict_uncertainty: None | bool = False,
     ) -> np.ndarray: ...
 
     @overload
     def _predict_probas_and_uncertainties(
         self,
         X: pd.DataFrame,
-        uncertainty_type: UncertaintyType,
-    ) -> tuple[np.ndarray, np.ndarray]: ...
+        predict_uncertainty: bool = True,
+    ) -> tuple[np.ndarray, np.ndarray, list[str]]: ...
 
     def _predict_probas_and_uncertainties(
         self,
         X: pd.DataFrame,
-        uncertainty_type: UncertaintyType | None = None,
-    ) -> tuple[np.ndarray, np.ndarray] | np.ndarray:
+        predict_uncertainty: bool | None = None,
+        **kwargs,
+    ) -> np.ndarray | tuple[np.ndarray, np.ndarray, list[str]]:
         """
         Predict probabilities for the input data X and uncertainties for all estimators in the ensemble.
 
         Args:
             X (pd.DataFrame): DataFrame containing features.
-            uncertainty_type (str, optional): Type of uncertainty to predict.
-            Options are "knowledge", "data", or "total".
-                Defaults to None, which means no uncertainties are returned.
+            predict_uncertainty (bool, optional): Whether to predict uncertainties.
+                Defaults to False, which means no uncertainties are returned.
 
         Returns:
-            tuple[np.ndarray, np.ndarray]: Tuple containing:
-                - Array of predicted probabilities, shape (n_estimators, n_samples, n_classes).
-                - Array of predicted uncertainties, shape (n_estimators, n_samples).
-
             np.ndarray: Array of predicted probabilities, shape (n_estimators, n_samples, n_classes),
                 if uncertainty_type is None (default).
+
+            tuple[np.ndarray, np.ndarray, list[str]]: Tuple of array, if predict_uncertainty is True, containing:
+                - Array of predicted probabilities, shape (n_estimators, n_samples, n_classes).
+                - Array of predicted uncertainties, shape (n_estimators, n_samples, n_uncertainty_types).
+                - List of available uncertainty types.
         """
         probas = []
         uncertainties = []
 
+        if predict_uncertainty:
+            uncertainty_types = ["data", "knowledge", "total"]
+        else:
+            uncertainty_types = []
+
         proba_columns = [f"proba_{i}" for i in range(len(self.classes_))]
 
         for i, estimator in enumerate(self.estimators):
-            prediction = estimator.predict_uncertainty(X)
+            if not uncertainty_types:
+                prediction = estimator.predict_proba(X)
+            else:
+                prediction = estimator.predict_uncertainty(X, **kwargs)
             member_probas = prediction.loc[:, proba_columns].to_numpy(dtype=float)
+
             if (
                 not np.isfinite(member_probas).all()
                 or np.any((member_probas < 0) | (member_probas > 1))
                 or not np.allclose(np.sum(member_probas, axis=1), 1)
             ):
                 raise ValueError(f"Estimator {i} returned invalid class probabilities.")
+
             probas.append(member_probas)
 
-            if uncertainty_type is None:
-                continue
-            elif uncertainty_type in ["knowledge", "data", "total"]:
+            member_uncertainties = []
+            available_types = []
+            for uncertainty_type in uncertainty_types:
                 uncertainty_column = prediction.filter(like=f"{uncertainty_type}_uncertainty", axis=1).columns
                 if len(uncertainty_column) != 1:
-                    raise ValueError(f"Estimator {i} must return exactly one {uncertainty_type} uncertainty column.")
+                    continue
 
-                member_uncertainties = prediction[uncertainty_column[0]].to_numpy(dtype=float)
-                if not np.isfinite(member_uncertainties).all() or np.any(member_uncertainties < 0):
-                    raise ValueError(f"Estimator {i} returned invalid {uncertainty_type} uncertainties.")
-                uncertainties.append(member_uncertainties)
+                member_uncertainty = prediction[uncertainty_column[0]].to_numpy(dtype=float)
 
-        probas = np.stack(probas, axis=0)
+                if (
+                    not np.isfinite(member_uncertainty).all()
+                    or np.any(member_uncertainty < 0)
+                    or np.isnan(member_uncertainty).any()
+                ):
+                    continue
+                member_uncertainties.append(member_uncertainty)
+                available_types.append(uncertainty_type)
+
+            if predict_uncertainty:
+                if len(available_types) > 0:
+                    uncertainties.append(np.stack(member_uncertainties, axis=-1))
+                else:
+                    raise ValueError(
+                        "No valid member uncertainties available for any type of {}".format(uncertainty_types)
+                    )
+
+        probas_array = np.stack(probas, axis=0)
 
         if uncertainties:
-            uncertainties = np.stack(uncertainties, axis=0)
-            return probas, uncertainties
+            uncertainties_array = np.stack(uncertainties, axis=0)
+            return probas_array, uncertainties_array, available_types
 
-        return probas
+        return probas_array
 
     def _convert_class_index_to_label(self, class_indices: np.ndarray) -> np.ndarray:
         """
@@ -372,7 +349,7 @@ class CVEnsembleClassifierMother(AbstractMotherPipeline, MetaEstimatorMixin, Cla
         Returns:
             np.ndarray: Array of predicted class labels, shape (n_samples,).
         """
-        estimator_probas = self._predict_probas_and_uncertainties(X)
+        estimator_probas = self._predict_probas_and_uncertainties(X, predict_uncertainty=False)
         ensemble_probas = self._aggregate_predictions(estimator_probas, strategy=aggregation_strategy)
         pred_label_index = np.argmax(ensemble_probas, axis=1)
         predictions = self._convert_class_index_to_label(pred_label_index)
@@ -389,7 +366,7 @@ class CVEnsembleClassifierMother(AbstractMotherPipeline, MetaEstimatorMixin, Cla
         Returns:
             np.ndarray: Array of predicted class probabilities, shape (n_samples, n_classes).
         """
-        estimator_probas = self._predict_probas_and_uncertainties(X)
+        estimator_probas = self._predict_probas_and_uncertainties(X, predict_uncertainty=False)
         return self._aggregate_predictions(estimator_probas, strategy=aggregation_strategy)
 
     def predict_uncertainty(
@@ -397,7 +374,7 @@ class CVEnsembleClassifierMother(AbstractMotherPipeline, MetaEstimatorMixin, Cla
         X: pd.DataFrame,
         uncertainty_for_opt: bool = False,
         aggregation_strategy: str = "average",
-        uncertainty_method: str = "variance",
+        uncertainty_method: str = "entropy",
         **kwargs,
     ) -> pd.DataFrame:
         """
@@ -407,7 +384,15 @@ class CVEnsembleClassifierMother(AbstractMotherPipeline, MetaEstimatorMixin, Cla
             X (pd.DataFrame): DataFrame containing features.
             uncertainty_for_opt (bool): Flag indicating if uncertainty is for optimization purposes. Default is False.
             aggregation_strategy (str): Strategy to aggregate predictions from ensemble members. Default is "average".
-            uncertainty_method (str): Method to estimate uncertainty. Default is "variance".
+            uncertainty_method (str): Method to estimate uncertainty. Default is "entropy". Current options are:
+                - "variance": Computes the variance of predicted probabilities across estimators = knowledge uncertainty
+                - "disagreement": Computes disagreement among estimators using sum of Kullback-Leibler divergences (see
+                Lakshminarayanan et al., 2017). Knowledge uncertainty only.
+                - "entropy": Computes the entropy of the average predicted probabilities across estimators.
+                Uncertainty decomposition (total = knowledge + data).
+                - "member_average": Computes the average decomposed uncertainty estimated by ensemble members
+                individually, per available uncertainty type in the member prediction. All uncertainty types
+                are considered: knowledge, data, total.
             **kwargs: Additional keyword arguments for uncertainty estimation.
 
         Returns:
@@ -415,17 +400,68 @@ class CVEnsembleClassifierMother(AbstractMotherPipeline, MetaEstimatorMixin, Cla
             uncertainty_for_opt=False) or only estimates of knowledge uncertainty (if uncertainty_for_opt=True).
         """
 
-        # 1. predict probabilities
-        estimator_probas, estimator_knowledge_uncertainties = self._predict_probas_and_uncertainties(
-            X, uncertainty_type="knowledge"
-        )
+        # 1. predict estimator probabilities (default) or probabilites and uncertainties (for member_average)
+        if uncertainty_method == "member_average":
+            estimator_probas, estimator_uncertainties, available_types = self._predict_probas_and_uncertainties(
+                X, predict_uncertainty=True, **kwargs
+            )
+        else:
+            estimator_probas = self._predict_probas_and_uncertainties(X, predict_uncertainty=False)
+
+        # 2. aggregate predictions from ensemble members to get ensemble-level probabilities
         ensemble_probas = self._aggregate_predictions(estimator_probas, strategy=aggregation_strategy)
         ensemble_pred = self._convert_class_index_to_label(np.argmax(ensemble_probas, axis=1))
 
         # 2. estimate uncertainty using a specified method: variance, entropy, disagreement (extendable)
-        knowledge_uncertainty = self._estimate_knowledge_uncertainty(
-            probas=estimator_probas, uncertainties=estimator_knowledge_uncertainties, method=uncertainty_method
-        )
+        if uncertainty_method == "variance":
+            # Variance across estimator probas for each sample
+            knowledge_uncertainty = np.var(estimator_probas, axis=0).mean(axis=1)  # shape (n_samples,)
+            data_uncertainty = None
+            total_uncertainty = None
+        elif uncertainty_method == "disagreement":
+            # Compute prediction of ensemble per sample (by averaging member predictions)
+            ensemble_probs = np.mean(estimator_probas, axis=0)  # shape: (n_samples, n_classes)
+
+            # Compute KL divergence for each member's prediction against ensemble prediction
+            kl_matrix = np.sum(
+                rel_entr(estimator_probas, ensemble_probs[None, :, :]), axis=-1
+            )  # shape: (n_estimators, n_samples)
+
+            # Sum up KL divergences across members to get disagreement per sample
+            disagreement_score = np.sum(kl_matrix, axis=0)  # shape: (n_samples,)
+
+            knowledge_uncertainty = disagreement_score
+            data_uncertainty = None
+            total_uncertainty = None
+        elif uncertainty_method == "entropy":
+            # This approach approximately captures the mutual information among ensemble members and
+            # resulting knowledge uncertainty equals np.mean(kl_matrix, axis=0) with close-to-zero
+            # numerical difference
+
+            ensemble_probs = np.mean(estimator_probas, axis=0)  # shape: (n_samples, n_classes)
+
+            total_uncertainty = -np.sum(ensemble_probs * np.log(ensemble_probs + 1e-12), axis=-1)  # shape: (n_samples,)
+
+            data_uncertainty = np.mean(
+                -np.sum(estimator_probas * np.log(estimator_probas + 1e-12), axis=-1),
+                axis=0,
+            )  # shape (n_samples,)
+
+            knowledge_uncertainty = total_uncertainty - data_uncertainty
+        elif uncertainty_method == "member_average":
+            if estimator_uncertainties is not None:
+                average_uncertainties = np.mean(estimator_uncertainties, axis=0)  # shape(n_samples, n_available_types)
+
+                uncertainty_by_type = {
+                    uncertainty_type: average_uncertainties[:, type_index]
+                    for type_index, uncertainty_type in enumerate(available_types)
+                }
+
+                knowledge_uncertainty = uncertainty_by_type.get("knowledge", None)
+                data_uncertainty = uncertainty_by_type.get("data", None)
+                total_uncertainty = uncertainty_by_type.get("total", None)
+        else:
+            raise ValueError(f"Unknown uncertainty estimation method for ensemble model: {uncertainty_method}")
 
         if uncertainty_for_opt:
             return pd.DataFrame(
@@ -439,10 +475,10 @@ class CVEnsembleClassifierMother(AbstractMotherPipeline, MetaEstimatorMixin, Cla
                 **{f"proba_{i}": ensemble_probas[:, i] for i in range(ensemble_probas.shape[1])},
                 "mean_predictions": None,  # intentionally unset for classifier
                 "knowledge_uncertainty": knowledge_uncertainty,
-                "data_uncertainty": None,
-                "total_uncertainty": None,
+                "data_uncertainty": data_uncertainty,
+                "total_uncertainty": total_uncertainty,
             },
-            index=X.index,
+            index=X.index if isinstance(X, pd.DataFrame) else None,
         )
 
         return pred_res
