@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- version list -->
 
+## v2.0.5 (2026-10-16)
+
+### Documentation
+
+- Add TabICLEmbeddingTransformer to the file
+  ([#94](https://github.com/Bayer-Group/MotherML/pull/94),
+  [`1159b10`](https://github.com/Bayer-Group/MotherML/commit/1159b10200c035a06857f0203f807da13d0a1d5b))
+
+- **tabicl**: Add missing documentation for TabICL
+  ([#94](https://github.com/Bayer-Group/MotherML/pull/94),
+  [`1159b10`](https://github.com/Bayer-Group/MotherML/commit/1159b10200c035a06857f0203f807da13d0a1d5b))
+
+- **tabicl**: Fix capitalization and formatting for TabICL entry
+  ([#94](https://github.com/Bayer-Group/MotherML/pull/94),
+  [`1159b10`](https://github.com/Bayer-Group/MotherML/commit/1159b10200c035a06857f0203f807da13d0a1d5b))
+
+
 ## v2.0.4 (2026-10-13)
 
 ### Bug Fixes
