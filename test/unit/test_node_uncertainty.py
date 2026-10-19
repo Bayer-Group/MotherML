@@ -600,7 +600,12 @@ def test_flow_dropout_overrides_restore_on_sampling_error(tiny_regression_data, 
         verbose=0,
     ).fit(features, targets)
 
-    class BrokenDistribution:
+    class BrokenDistribution(torch.distributions.Distribution):
+        arg_constraints = {}
+
+        def __init__(self):
+            super().__init__(batch_shape=torch.Size([3]), event_shape=torch.Size([1]))
+
         def sample(self, shape):
             assert model.module_.dense_block.input_dropout == 0.2
             assert model.module_.dense_block.tree_dropout == 0.3
@@ -906,6 +911,7 @@ def test_mc_passes_keep_rows_aligned_with_changing_batch_sizes(tiny_regression_d
         if task == "classification":
             return torch.cat([location, -location], dim=1)
         if task == "flow":
+            location = (location - model.target_scaler_.mean_[0]) / model.target_scaler_.scale_[0]
             return torch.distributions.Independent(torch.distributions.Normal(location, 1e-5), 1)
         return location
 

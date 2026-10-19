@@ -106,11 +106,11 @@ import skorch
 import torch
 import torch.nn as nn
 from optuna import Trial
-from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import LabelEncoder, StandardScaler
 from skorch import NeuralNetClassifier
 from skorch.callbacks import EarlyStopping
 from skorch.net import NeuralNet
-from skorch.utils import to_device
+from skorch.utils import data_from_dataset, to_device
 from torch import Tensor
 from torch.utils.data import default_collate, default_convert
 
@@ -1955,6 +1955,9 @@ class NODERegressor(BaseNODEEstimator):
                     doubled sizes up to the bound.
         - DataFrame and numpy array support
         - Validation split + early stopping are opt-in via ``train_split``
+        - Flow targets are standardized automatically (``scale_targets=True``),
+          using only the internal training partition. Predictions, samples and
+          quantiles are returned in the units supplied to ``fit``.
 
     Example:
         >>> reg = NODERegressor(num_trees=2048, depth=6, max_epochs=100)
@@ -1980,14 +1983,9 @@ class NODERegressor(BaseNODEEstimator):
         >>> reg.fit(X_train_df, y_train)
 
         >>> # For probabilistic predictions with flow head:
-        >>> # IMPORTANT: Flow heads require standardized targets for numerical stability
-        >>> from sklearn.preprocessing import StandardScaler
-        >>> y_scaler = StandardScaler()
-        >>> y_train_scaled = y_scaler.fit_transform(y_train.reshape(-1, 1)).ravel()
         >>> reg_prob = NODERegressor(head_type="flow", max_epochs=100)
-        >>> reg_prob.fit(X_train, y_train_scaled)
-        >>> predictions_scaled = reg_prob.predict(X_test)  # Mode of distribution
-        >>> predictions = y_scaler.inverse_transform(predictions_scaled.reshape(-1, 1)).ravel()
+        >>> reg_prob.fit(X_train, y_train)
+        >>> predictions = reg_prob.predict(X_test)  # Mode, in original target units
 
         >>> # Batch-size tuning with only an upper bound:
         >>> # starts at batch_size=128 and can try 256, 512, 1024
@@ -2062,6 +2060,7 @@ class NODERegressor(BaseNODEEstimator):
         callbacks: Optional[List[Any]] = None,  # Additional Skorch callbacks
         tune_head: bool = True,  # Tune head params during hyperparameter search
         tree_chunk_size: Optional[int] = 256,
+        scale_targets: bool = True,
         **kwargs: Any,
     ) -> None:
         """Configure the NODE regressor's architecture, head, dropout, and training settings (see class docstring)."""
@@ -2071,6 +2070,7 @@ class NODERegressor(BaseNODEEstimator):
         self.model_type = model_type
         self.target_type = target_type
         self.task_weights = task_weights
+        self.scale_targets = scale_targets
         self._user_provided_criterion = criterion is not nn.MSELoss
 
         # Resolve mutable default for mlp_hidden_dims
@@ -2134,6 +2134,45 @@ class NODERegressor(BaseNODEEstimator):
         # store the tuning parameters
         self.tune_head = tune_head
 
+    def initialize(self) -> "NODERegressor":
+        """Reset target scaling when starting a fresh model, but not on warm starts."""
+        self.__dict__.pop("target_scaler_", None)
+        return super().initialize()
+
+    def get_split_datasets(self, X: Any, y: Any = None, **fit_params: Any) -> Tuple[Any, Any]:
+        """Learn flow target units from the training partition, never validation targets."""
+        dataset_train, dataset_valid = super().get_split_datasets(X, y, **fit_params)
+        if self._is_flow_head and self.scale_targets and not hasattr(self, "target_scaler_"):
+            _, targets = data_from_dataset(dataset_train)
+            if isinstance(targets, Tensor):
+                targets = targets.detach().cpu().numpy()
+            targets = np.asarray(targets)
+            if targets.ndim == 1:
+                targets = targets.reshape(-1, 1)
+            if not np.isfinite(targets).all():
+                raise ValueError("Flow heads require complete, finite targets; use a non-flow head for NaN masking.")
+            self.target_scaler_ = StandardScaler().fit(targets)
+        return dataset_train, dataset_valid
+
+    def _flow_in_target_units(self, distribution: torch.distributions.Distribution) -> torch.distributions.Distribution:
+        """Apply the inverse target transform, including its density Jacobian."""
+        if not hasattr(self, "target_scaler_"):
+            return distribution
+        parameter = next(self.module_.parameters())
+        location = torch.as_tensor(self.target_scaler_.mean_, dtype=parameter.dtype, device=parameter.device)
+        scale = torch.as_tensor(self.target_scaler_.scale_, dtype=parameter.dtype, device=parameter.device)
+        return torch.distributions.TransformedDistribution(
+            distribution,
+            torch.distributions.AffineTransform(location, scale, event_dim=1),
+        )
+
+    def forward_iter(self, X: Any, training: bool = False, device: Any = "cpu") -> Iterator[Any]:
+        """Expose flow inference distributions in original target units."""
+        for prediction in super().forward_iter(X, training=training, device=device):
+            if not training and self._is_flow_head:
+                prediction = self._flow_in_target_units(prediction)
+            yield prediction
+
     def _set_loss(self, y: Union[pd.Series, npt.NDArray[Any], None] = None) -> None:
         """Set appropriate loss for regression tasks.
 
@@ -2173,6 +2212,10 @@ class NODERegressor(BaseNODEEstimator):
                 y_true = y_true.to(model_device)
             if y_true.dim() == 1:
                 y_true = y_true.unsqueeze(-1)  # Add feature dimension for flow head
+            if hasattr(self, "target_scaler_"):
+                location = y_true.new_tensor(self.target_scaler_.mean_)
+                scale = y_true.new_tensor(self.target_scaler_.scale_)
+                y_true = (y_true - location) / scale
             loss = -y_pred.log_prob(y_true)  # -log p(y_true | X) where y_pred = flow(X)
             loss = loss.mean()
             return loss
@@ -2295,7 +2338,12 @@ class NODERegressor(BaseNODEEstimator):
         y: Union[pd.Series, npt.NDArray[np.float32]],
         **fit_params: Any,
     ) -> "NODERegressor":
-        """Enhanced fit method with DataFrame support."""
+        """Fit on supplied targets; flow heads standardize them internally by default.
+
+        ``scale_targets=False`` disables flow standardization. Non-flow heads
+        are unchanged. A fresh fit relearns scaling; warm starts and
+        ``partial_fit`` retain the original scaler to preserve the learned units.
+        """
         X = self._prepare_fit_X(X)
         y = np.asarray(y, dtype=np.float32)
         return super().fit(X, y, **fit_params)  # type: ignore
@@ -2379,8 +2427,6 @@ class NODERegressor(BaseNODEEstimator):
             X: Input features
             num_samples: Number of samples to draw from the flow distribution.
                         More samples give better mode estimates but slower. Default: 200
-                        NOTE: Mode estimation requires standardized targets during training
-                        for numerical stability of log_prob calculations.
             return_sample_distribution: If ``True``, return raw samples from the
                 learned flow with shape ``(n_molecules, num_samples, output_dim)``
                 instead of mode predictions, so that ``result[i]`` gives all
@@ -2392,15 +2438,11 @@ class NODERegressor(BaseNODEEstimator):
             if ``return_sample_distribution=True``.
 
         Note:
-            For best results with flow heads, standardize your targets before training:
+            Targets are standardized internally by default; every prediction
+            API returns values in the units supplied to ``fit``:
             ```python
-            from sklearn.preprocessing import StandardScaler
-
-            y_scaler = StandardScaler()
-            y_train_scaled = y_scaler.fit_transform(y_train.reshape(-1, 1)).ravel()
-            model.fit(X_train, y_train_scaled)
-            predictions_scaled = model.predict(X_test)
-            predictions = y_scaler.inverse_transform(predictions_scaled.reshape(-1, 1)).ravel()
+            model.fit(X_train, y_train)
+            predictions = model.predict(X_test)
             ```
         """
         if num_samples < 1:
@@ -2638,7 +2680,10 @@ class NODERegressor(BaseNODEEstimator):
                             features = batch[0] if isinstance(batch, (tuple, list)) else batch
                             features = features.to(self.device)
                             pooled = torch.cat(
-                                [model(features).sample(torch.Size([n_flow_per_pass])) for _ in range(n_mc)],
+                                [
+                                    self._flow_in_target_units(model(features)).sample(torch.Size([n_flow_per_pass]))
+                                    for _ in range(n_mc)
+                                ],
                                 dim=0,
                             )
                             all_quantiles.append(
@@ -2843,6 +2888,13 @@ class NODERegressor(BaseNODEEstimator):
 
         Flow-head only. Requires dropout > 0 for knowledge uncertainty.
 
+        Predictions, samples, MC means and MC standard deviations use the
+        target units supplied to ``fit``. Data/total/per-pass entropies include
+        the inverse-scaling log-Jacobian (sum of log scales for joint targets).
+        BALD mutual information is invariant to this change of units; BALSA-EMD
+        is computed from inverse-transformed samples. The training/validation
+        loss remains negative log likelihood in standardized coordinates.
+
         Algorithm (information-theoretic / BALD decomposition):
             Treat the ``num_mc_samples`` MC-dropout passes as an ensemble of flows
             ``{p_t(y|x)}``. Using differential entropies estimated by Monte-Carlo
@@ -3009,7 +3061,7 @@ class NODERegressor(BaseNODEEstimator):
                     batch_distributions = []
                     batch_samples = []
                     for _ in range(num_mc_samples):
-                        distribution = model(features)
+                        distribution = self._flow_in_target_units(model(features))
                         batch_distributions.append(distribution)
                         batch_samples.append(distribution.sample(torch.Size([num_flow_samples])))
                     dists_by_batch.append(batch_distributions)
