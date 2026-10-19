@@ -78,6 +78,37 @@ def test_odst_tree_chunk_size_defaults_to_256():
     assert ODST(3, 4).tree_chunk_size == 256
 
 
+@pytest.mark.parametrize("leading_shape", [(2, 3), (2, 1, 3)])
+@pytest.mark.parametrize("flatten_output", [False, True])
+@pytest.mark.parametrize("tree_chunk_size", [None, 3])
+def test_odst_preserves_leading_and_output_dimensions(leading_shape, flatten_output, tree_chunk_size):
+    torch.manual_seed(0)
+    module = ODST(
+        5,
+        4,
+        depth=2,
+        tree_output_dim=2,
+        flatten_output=flatten_output,
+        tree_chunk_size=tree_chunk_size,
+        random_state=0,
+    )
+    module.initialize(torch.randn(256, 5))
+    inputs = torch.randn(*leading_shape, 5).transpose(0, 1).requires_grad_()
+    leading_shape = tuple(inputs.shape[:-1])
+    output_shape = (8,) if flatten_output else (4, 2)
+
+    actual = module(inputs)
+    expected = module(inputs.reshape(-1, 5)).reshape(*leading_shape, *output_shape)
+
+    assert actual.shape == (*leading_shape, *output_shape)
+    torch.testing.assert_close(actual, expected)
+    parameters = tuple(module.parameters())
+    actual_gradients = torch.autograd.grad(actual.square().sum(), (inputs, *parameters))
+    expected_gradients = torch.autograd.grad(expected.square().sum(), (inputs, *parameters))
+    for actual_gradient, expected_gradient in zip(actual_gradients, expected_gradients, strict=True):
+        torch.testing.assert_close(actual_gradient, expected_gradient)
+
+
 @pytest.mark.parametrize("training", [False, True])
 @pytest.mark.parametrize("requires_input_grad", [False, True])
 def test_odst_tree_chunk_size_bounds_feature_selection(monkeypatch, training, requires_input_grad):

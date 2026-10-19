@@ -604,15 +604,17 @@ class ODST(ModuleWithInit):
         checkpointed training, selection and routing are recomputed per slice.
 
         Args:
-            input: [batch_size, in_features]
+            input: [..., in_features]. Higher-dimensional inputs must be
+                initialized first using a two-dimensional batch.
 
         Returns:
-            [batch_size, num_trees * tree_output_dim] if flatten_output else
-            [batch_size, num_trees, tree_output_dim]
+            [..., num_trees * tree_output_dim] if flatten_output else
+            [..., num_trees, tree_output_dim], preserving all leading dimensions.
         """
         assert len(input.shape) >= 2
         if len(input.shape) > 2:
-            return self.forward(input.reshape(-1, input.shape[-1])).reshape(*input.shape[:-1], -1)
+            response = self.forward(input.reshape(-1, input.shape[-1]))
+            return response.reshape(*input.shape[:-1], *response.shape[1:])
 
         # Each tree slice performs all six steps, including sparse feature selection.
         # Concatenation preserves tree order without keeping full-width intermediates.
