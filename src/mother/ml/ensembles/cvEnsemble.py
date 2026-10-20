@@ -19,8 +19,8 @@ UncertaintyType: TypeAlias = Literal["knowledge", "data", "total"]
 
 class CVEnsembleClassifierMother(AbstractMotherPipeline, MetaEstimatorMixin, ClassifierMixin, BaseEstimator):
     """
-    Ensemble classifier that combines predictions from multiple fixed pre-fitted estimators. As it inherits from
-    `BaseEstimator`, it follows the scikit-learn estimator interface. Ensembles are meta-estimators and can
+    Homogeneous ensemble classifier that combines predictions from multiple fixed pre-fitted estimators. As it inherits
+    from `BaseEstimator`, it follows the scikit-learn estimator interface. Ensembles are meta-estimators and can
     be recognized as such by scikit-learn utilities.
 
     Note:
@@ -30,7 +30,7 @@ class CVEnsembleClassifierMother(AbstractMotherPipeline, MetaEstimatorMixin, Cla
 
     Attributes:
         estimators (list): List of pre-fitted estimators to be used in the ensemble. Each estimator must have a
-        `classes_` attribute and a `predict_uncertainty` method.
+        `classes_` attribute and a `predict_uncertainty` method. All estimator instances have to be of the same type.
 
     Methods:
         get_hyperparameter_space: Returns the hyperparameter search space for the ensemble (no tunable hyperparameters
@@ -52,21 +52,26 @@ class CVEnsembleClassifierMother(AbstractMotherPipeline, MetaEstimatorMixin, Cla
     @staticmethod
     def _validate_estimators(estimators: list) -> None:
         """
-        Validate the provided estimators for the ensemble.
+        Validate the provided estimators for the ensemble and their class label consistency.
 
         Args:
             estimators (list): List of pre-fitted estimators to be used in the ensemble.
 
         Raises:
-            ValueError: If the estimators list has fewer than two members, if any estimator is not fitted, if any
-            estimator lacks the required attributes.
+            ValueError: If the estimators list has fewer than two members, if estimator instances are not of
+            the same type, if any estimator is not fitted, if any estimator lacks the required attributes,
+            or if class labels are inconsistent across estimators.
         """
         if len(estimators) < 2:
             raise ValueError("At least two estimators must be provided as ensemble members.")
 
-        # Validate each estimator and collect class labels
         classes = None
+        expected_type = type(estimators[0])
         for i, estimator in enumerate(estimators):
+            # Validate that each estimator has same model type
+            if not isinstance(estimator, expected_type):
+                raise ValueError(f"Estimator {i} must be of type {expected_type.__name__}.")
+
             # Validate that each member estimator is fitted
             try:
                 check_is_fitted(estimator)
@@ -281,7 +286,11 @@ class CVEnsembleClassifierMother(AbstractMotherPipeline, MetaEstimatorMixin, Cla
                 prediction = estimator.predict_proba(X)
             else:
                 prediction = estimator.predict_uncertainty(X, **kwargs)
-            member_probas = prediction.loc[:, proba_columns].to_numpy(dtype=float)
+            member_probas = (
+                prediction.loc[:, proba_columns].to_numpy(dtype=float)
+                if isinstance(prediction, pd.DataFrame)
+                else np.asarray(prediction, dtype=float)
+            )
 
             if (
                 not np.isfinite(member_probas).all()

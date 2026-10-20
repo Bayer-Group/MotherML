@@ -210,11 +210,11 @@ class TestEnsembleClassifierInitialization:
         with pytest.raises(ValueError, match=r"At least two estimators"):
             CVEnsembleClassifierMother([])
 
-    def test_unfitted_estimator_raises(self, binary_probas, knowledge_uncertainties):
+    def test_unfitted_estimator_raises(self):
         with pytest.raises(ValueError, match=r"is not fitted"):
             CVEnsembleClassifierMother(
                 [
-                    _FakeClassifier(binary_probas[0], knowledge_uncertainties[0], classes=[0, 1]),
+                    _UnfittedClassifier(),
                     _UnfittedClassifier(),
                 ]
             )
@@ -471,11 +471,10 @@ class TestEnsembleClassifierPredictions:
 class TestEnsembleClassifierErrorHandling:
     def test_empty_uncertainty_raises(self, binary_probas, knowledge_uncertainties, X):
         first, second = binary_probas
-        first_unc, second_unc = knowledge_uncertainties
         ensemble = CVEnsembleClassifierMother(
             [
                 _ClassifierWithoutKnowledgeUncertaintyValues(first, classes=[0, 1]),
-                _FakeClassifier(second, second_unc, classes=[0, 1]),
+                _ClassifierWithoutKnowledgeUncertaintyValues(second, classes=[0, 1]),
             ]
         )
         with pytest.raises(ValueError, match=r"No valid member uncertainties available"):
