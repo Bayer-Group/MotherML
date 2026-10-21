@@ -159,9 +159,64 @@ use `model.algorithm="tabm"` and put TabM constructor options, including
   cloning, serialization, pipelines, cross-validation, and MotherTuner.
   The initial tuning space covers learning rate, weight decay, depth, width,
   dropout, and ensemble size.
-- `predict_uncertainty()` uses Mother's standard fallback. Regression uncertainty
-  fields remain unset; classification includes class probabilities and entropy.
-  Ensemble disagreement is not exposed as a calibrated uncertainty decomposition.
+- `predict_uncertainty()` reports regression member spread and the classification
+  entropy decomposition described below.
+
+### Regression knowledge uncertainty from TabM members
+
+For member predictions \(f_k(x)\) in the original target units, regression returns
+their mean in both `pred` and `mean_predictions`, and their population standard
+deviation in `knowledge_uncertainty`:
+
+\[
+\sigma_{\mathrm{knowledge}}(x) =
+\sqrt{\frac{1}{K}\sum_{k=1}^{K}(f_k(x)-\bar f(x))^2}.
+\]
+
+This uses `ddof=0`, so a single member or identical predictions produce zero
+spread. The target scaler is accounted for: uncertainty is in the same units as
+the predictions, not standardized units. This is member disagreement, **not**
+the standard error of the mean (there is no division by \(\sqrt K\)), a calibrated
+prediction interval, or a measure of observed-label noise. Shared parameters
+can reduce member diversity; low spread does not guarantee a correct prediction.
+
+`data_uncertainty` and `total_uncertainty` remain unset because this adapter
+does not estimate observation noise. The returned DataFrame preserves the input
+index; `uncertainty_for_opt=True` returns only `knowledge_uncertainty`.
+
+### Classification uncertainty from TabM members
+
+For each input, let \(p_k(c)\) be member \(k\)'s class probabilities,
+\(\bar p = K^{-1}\sum_k p_k\), and \(H(p)=-\sum_c p(c)\log p(c)\).
+TabM classification returns:
+
+| Output | Definition | Interpretation |
+|---|---|---|
+| `total_uncertainty` | \(H(\bar p)\) | Entropy of the averaged prediction |
+| `data_uncertainty` | \(K^{-1}\sum_k H(p_k)\) | Average uncertainty within members |
+| `knowledge_uncertainty` | \(H(\bar p)-K^{-1}\sum_k H(p_k)\) | Disagreement between members |
+
+These values are in **nats**, use all fitted members, and satisfy
+`total_uncertainty = data_uncertainty + knowledge_uncertainty` up to numerical
+precision. The knowledge term is the generalized Jensen-Shannon divergence.
+Confident members that disagree produce high knowledge uncertainty; members
+that all predict the same uncertain distribution produce data uncertainty but
+no knowledge uncertainty. With one member, knowledge uncertainty is zero.
+
+This entropy-based interpretation is analogous to CatBoost's virtual-ensemble
+classification uncertainty. Independence is not required for the decomposition:
+TabM members share parameters and CatBoost virtual ensembles share trees.
+Dependence can reduce diversity, however, so disagreement is an epistemic proxy,
+not a calibrated Bayesian posterior estimate. Expected member entropy is a
+data-uncertainty proxy, not a guaranteed isolation of irreducible label noise.
+Low disagreement does not prove that a prediction is correct.
+
+The returned DataFrame preserves the input index and contains `pred`, `proba_i`
+in `classes_` order, unset `mean_predictions`, and the three uncertainty columns.
+Both binary and multiclass classification are supported. No target labels are
+needed; this uses predicted probabilities, not observed-label likelihood or
+negative log-likelihood. `uncertainty_for_opt=True` returns only the
+`knowledge_uncertainty` column for acquisition/optimization workflows.
 
 Optional numerical embeddings and non-shared training batches are not exposed
 by this initial adapter. The bundled architecture retains its upstream helpers

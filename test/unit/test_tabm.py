@@ -79,6 +79,42 @@ def test_regression_fit_prediction_and_serialization(data, small_params, as_fram
         "data_uncertainty",
         "total_uncertainty",
     ]
+    np.testing.assert_allclose(result["pred"], predictions)
+    np.testing.assert_allclose(result["mean_predictions"], predictions)
+    assert np.isfinite(result["knowledge_uncertainty"]).all()
+    assert (result["knowledge_uncertainty"] >= 0).all()
+    assert result["data_uncertainty"].isna().all()
+    assert result["total_uncertainty"].isna().all()
+    pd.testing.assert_frame_equal(
+        model.predict_uncertainty(X[:5], uncertainty_for_opt=True), result[["knowledge_uncertainty"]]
+    )
+
+
+@pytest.mark.parametrize("values, expected_std", [([1.0, 3.0], 1.0), ([2.0, 2.0], 0.0), ([2.0], 0.0)])
+@pytest.mark.parametrize("as_frame", [False, True])
+def test_regression_uncertainty_population_std_and_target_scale(
+    data, small_params, monkeypatch, values, expected_std, as_frame
+):
+    X, y = data
+    model = TabMRegressorMother(**small_params).fit(X, y)
+    members = torch.tensor([[values], [values]], dtype=torch.float32).transpose(1, 2)
+    calls = []
+
+    def predict_members(X):
+        calls.append(len(X))
+        return members
+
+    monkeypatch.setattr(model, "_member_predictions", predict_members)
+    inputs = X.iloc[[4, 1]] if as_frame else X.iloc[[4, 1]].to_numpy()
+    result = model.predict_uncertainty(inputs)
+    assert calls == [2]
+    expected_members = model.target_scaler_.inverse_transform(np.array(values)[:, None]).ravel()
+    np.testing.assert_allclose(result["knowledge_uncertainty"], expected_std * model.target_scaler_.scale_[0])
+    np.testing.assert_allclose(result["knowledge_uncertainty"], expected_members.std(ddof=0))
+    np.testing.assert_allclose(result["mean_predictions"], expected_members.mean(), rtol=1e-6)
+    np.testing.assert_array_equal(result["pred"], model.predict(inputs))
+    assert result.index.tolist() == ([4, 1] if as_frame else [0, 1])
+    assert result[["data_uncertainty", "total_uncertainty"]].isna().all().all()
 
 
 @pytest.mark.parametrize("n_classes", [2, 3])
@@ -96,6 +132,60 @@ def test_classification_labels_probabilities_and_serialization(data, small_param
     np.testing.assert_allclose(pickle.loads(pickle.dumps(model)).predict_proba(X[:5]), probabilities)
     result = model.predict_uncertainty(X[:5])
     assert all(f"proba_{i}" in result for i in range(n_classes))
+    assert list(result.columns) == ["pred"] + [f"proba_{i}" for i in range(n_classes)] + [
+        "mean_predictions",
+        "knowledge_uncertainty",
+        "data_uncertainty",
+        "total_uncertainty",
+    ]
+    pd.testing.assert_index_equal(result.index, X[:5].index)
+    np.testing.assert_array_equal(result["pred"], model.predict(X[:5]))
+    np.testing.assert_allclose(result[[f"proba_{i}" for i in range(n_classes)]], probabilities)
+    np.testing.assert_allclose(
+        result["total_uncertainty"], result["data_uncertainty"] + result["knowledge_uncertainty"], atol=1e-12
+    )
+    terms = result[["knowledge_uncertainty", "data_uncertainty", "total_uncertainty"]]
+    assert np.isfinite(terms).all().all()
+    assert (terms >= -1e-12).all().all()
+    assert (terms <= np.log(n_classes) + 1e-6).all().all()
+    pd.testing.assert_frame_equal(
+        model.predict_uncertainty(X[:5], uncertainty_for_opt=True), result[["knowledge_uncertainty"]]
+    )
+
+
+@pytest.mark.parametrize(
+    "member_logits, expected",
+    [
+        ([[1000.0, -1000.0], [1000.0, -1000.0]], (0.0, 0.0, 0.0)),
+        ([[1000.0, -1000.0], [-1000.0, 1000.0]], (np.log(2), 0.0, np.log(2))),
+        ([[0.0, 0.0], [0.0, 0.0]], (0.0, np.log(2), np.log(2))),
+        ([[0.0, 0.0]], (0.0, np.log(2), np.log(2))),
+        (
+            [[1000.0, -1000.0, -1000.0], [-1000.0, 1000.0, -1000.0], [-1000.0, -1000.0, 1000.0]],
+            (np.log(3), 0.0, np.log(3)),
+        ),
+    ],
+)
+def test_entropy_decomposition_known_cases(data, small_params, monkeypatch, member_logits, expected):
+    X, _ = data
+    logits = torch.tensor([member_logits])
+    n_classes = logits.shape[-1]
+    model = TabMClassifierMother(**small_params).fit(X, np.arange(len(X)) % n_classes)
+    calls = []
+
+    def predict_members(X):
+        calls.append(len(X))
+        return logits
+
+    monkeypatch.setattr(model, "_member_predictions", predict_members)
+    result = model.predict_uncertainty(X.iloc[[3]])
+    assert calls == [1]
+    actual = result[["knowledge_uncertainty", "data_uncertainty", "total_uncertainty"]].to_numpy()[0]
+    np.testing.assert_allclose(actual, expected, atol=1e-12)
+    assert result["mean_predictions"].isna().all()
+    assert result.index.tolist() == [3]
+    array_result = model.predict_uncertainty(X.iloc[[3]].to_numpy())
+    assert array_result.index.tolist() == [0]
 
 
 @pytest.mark.parametrize("integer_categories", [False, True])
@@ -218,6 +308,22 @@ def test_mother_cv(data, small_params):
     assert isinstance(result, pd.DataFrame)
     assert len(result) == len(X)
     assert result["pred_target"].notna().all()
+    assert result["pred_knowledge_uncertainty"].notna().all()
+    assert "pred_total_uncertainty" not in result
+
+
+def test_classification_uncertainty_mother_cv(data, small_params):
+    X, y = data
+    result = mother_cv(
+        TabMClassifierMother(**small_params),
+        X=X,
+        y=pd.Series(np.where(y > 0, "yes", "no"), name="label"),
+        cv=KFold(2, shuffle=True, random_state=42),
+    )
+    assert len(result) == len(X)
+    terms = result[["pred_knowledge_uncertainty", "pred_data_uncertainty", "pred_total_uncertainty"]]
+    assert np.isfinite(terms).all().all()
+    np.testing.assert_allclose(terms.iloc[:, 2], terms.iloc[:, 0] + terms.iloc[:, 1], atol=1e-12)
 
 
 def test_mother_tuner(data, small_params):
@@ -326,8 +432,12 @@ def test_cuda_training_and_rng_restoration(data, small_params, estimator):
     assert model.predict(X[:5]).shape == (5,)
     if estimator is TabMClassifierMother:
         assert np.isfinite(model.predict_proba(X[:5])).all()
+        uncertainty = model.predict_uncertainty(X[:5])
+        assert np.isfinite(uncertainty["knowledge_uncertainty"]).all()
     else:
         assert np.isfinite(model.predict(X[:5])).all()
+        uncertainty = model.predict_uncertainty(X[:5])
+        assert np.isfinite(uncertainty["knowledge_uncertainty"]).all()
     assert next(model.net_.module_.parameters()).device.type == "cuda"
     torch.testing.assert_close(torch.cuda.get_rng_state(device), gpu_state)
     torch.testing.assert_close(torch.random.get_rng_state(), cpu_state)

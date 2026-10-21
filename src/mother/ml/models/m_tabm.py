@@ -256,6 +256,30 @@ class TabMRegressorMother(RegressorMixin, _BaseTabMMother):
         predictions = self._member_predictions(X).mean(dim=1).numpy()
         return self.target_scaler_.inverse_transform(predictions).ravel().astype(np.float32)
 
+    def predict_uncertainty(self, X: Features, uncertainty_for_opt: bool = False) -> pd.DataFrame:
+        """Return member-mean predictions and population standard deviation.
+
+        Knowledge uncertainty is member spread (ddof=0) in original target units,
+        not a standard error or calibrated interval. Shared parameters can limit
+        diversity. Data and total uncertainty are unavailable and remain unset.
+        """
+        members = self._member_predictions(X)
+        predictions = self.target_scaler_.inverse_transform(members.mean(dim=1).numpy()).ravel().astype(np.float32)
+        knowledge = members.double().std(dim=1, correction=0).numpy().ravel() * self.target_scaler_.scale_[0]
+        index = X.index if isinstance(X, pd.DataFrame) else pd.RangeIndex(len(predictions))
+        if uncertainty_for_opt:
+            return pd.DataFrame({"knowledge_uncertainty": knowledge}, index=index)
+        return pd.DataFrame(
+            {
+                "pred": predictions,
+                "mean_predictions": predictions,
+                "knowledge_uncertainty": knowledge,
+                "data_uncertainty": None,
+                "total_uncertainty": None,
+            },
+            index=index,
+        )
+
 
 class TabMClassifierMother(ClassifierMixin, _BaseTabMMother):
     """Binary or multiclass TabM classification with probability-space averaging."""
@@ -266,3 +290,35 @@ class TabMClassifierMother(ClassifierMixin, _BaseTabMMother):
     def predict(self, X: Features) -> npt.NDArray[Any]:
         probabilities = self.predict_proba(X)
         return self.classes_[probabilities.argmax(axis=1)]
+
+    def predict_uncertainty(self, X: Features, uncertainty_for_opt: bool = False) -> pd.DataFrame:
+        """Decompose predictive entropy into expected member entropy and disagreement.
+
+        All entropies use natural logarithms (nats). Data uncertainty is the mean
+        member entropy; knowledge uncertainty is the generalized Jensen-Shannon
+        divergence between members. Independence is not required, but shared
+        parameters can limit disagreement: these are not calibrated noise or
+        Bayesian posterior estimates.
+
+        Probability columns follow ``classes_``. ``mean_predictions`` is unset
+        for classification, matching Mother's classification fallback.
+        """
+        probabilities = self._member_predictions(X).softmax(dim=-1)
+        mean_probabilities = probabilities.mean(dim=1).numpy()
+        # Float64 and xlogy preserve small differences and define 0 * log(0) as 0.
+        member_probabilities = probabilities.double()
+        ensemble_mean = member_probabilities.mean(dim=1)
+        total = -torch.special.xlogy(ensemble_mean, ensemble_mean).sum(dim=-1)
+        data = -torch.special.xlogy(member_probabilities, member_probabilities).sum(dim=-1).mean(dim=1)
+        knowledge = (total - data).clamp_min(0)
+        index = X.index if isinstance(X, pd.DataFrame) else pd.RangeIndex(len(mean_probabilities))
+        if uncertainty_for_opt:
+            return pd.DataFrame({"knowledge_uncertainty": knowledge.numpy()}, index=index)
+        result = pd.DataFrame({"pred": self.classes_[mean_probabilities.argmax(axis=1)]}, index=index)
+        for i in range(len(self.classes_)):
+            result[f"proba_{i}"] = mean_probabilities[:, i]
+        result["mean_predictions"] = None
+        result["knowledge_uncertainty"] = knowledge.numpy()
+        result["data_uncertainty"] = data.numpy()
+        result["total_uncertainty"] = total.numpy()
+        return result
