@@ -202,6 +202,31 @@ def test_get_model_raises_invalid_parameters(settings: MotherSettings) -> None:
         get_model(settings)
 
 
+@pytest.mark.parametrize("clear_categorical_features", [False, True])
+def test_default_settings_numeric_pipeline_fit(clear_categorical_features: bool) -> None:
+    settings = MotherSettings.create()
+    if clear_categorical_features:
+        settings.model.categorical_features = []
+    settings.model.parameters.update(
+        iterations=3,
+        max_depth=2,
+        verbose=False,
+        thread_count=1,
+        allow_writing_files=False,
+    )
+    rng = np.random.default_rng(42)
+    data = pd.DataFrame(rng.normal(size=(30, 3)), columns=["A", "B", "C"])
+    targets = data["A"].to_numpy() + data["B"].to_numpy()
+    selector = get_feature_selection_pipeline(settings, data=data).set_output(transform="pandas")
+    pipeline = Pipeline([("features", selector), ("model", get_model(settings))])
+
+    pipeline.fit(data, targets)
+    predictions = pipeline.predict(data.iloc[:5])
+
+    assert predictions.shape == (5,)
+    assert np.isfinite(predictions).all()
+
+
 @pytest.mark.parametrize("as_dict", [False, True])
 @pytest.mark.parametrize("model_type", ["regression", "classification_binary", "classification_multiclass", "ranking"])
 def test_get_model_native_feature_declarations(settings, as_dict, model_type):

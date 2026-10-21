@@ -127,10 +127,11 @@ model:
   embedding_features: ["embedding"]
 ```
 
-The example YAML template uses `["cat_col"]`, `["text_col"]`, and
-`["embedding_col"]`. Replace these placeholders with your own columns, or use
-`[]` for feature types you do not have. When constructing `ModelConfig` directly,
-omitted lists default to `[]`. Column names must refer to the data reaching the
+The runtime YAML template loaded by `MotherSettings.create()` defaults all three
+native-feature lists to `[]`, so numeric-only workflows need no overrides.
+Direct `ModelConfig` construction also defaults omitted lists to `[]`.
+Populate only the feature types present in your data, as in the example above.
+Column names must refer to the data reaching the
 estimator, not columns discarded by an earlier preprocessing or feature-generation step.
 
 | Setting | Value in each DataFrame cell | CatBoost parameter |

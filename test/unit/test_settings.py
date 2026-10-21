@@ -124,9 +124,9 @@ class TestMotherSettings:
     def test_generic(self, settings: MotherSettings) -> None:
         assert isinstance(settings.feature_generation, fg_conf.FeatureGenerationConfig)
         assert isinstance(settings.preprocessing, prep_conv.PreprocessingConfig)
-        assert settings.model.categorical_features == ["cat_col"]
-        assert settings.model.text_features == ["text_col"]
-        assert settings.model.embedding_features == ["embedding_col"]
+        assert settings.model.categorical_features == []
+        assert settings.model.text_features == []
+        assert settings.model.embedding_features == []
 
     def test_dump_to_yaml(self, tmp_path) -> None:
         # Create a sample MotherSettings object
