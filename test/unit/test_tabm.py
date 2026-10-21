@@ -9,7 +9,7 @@ from optuna.trial import FixedTrial
 from sklearn.base import clone, is_classifier, is_regressor
 from sklearn.exceptions import NotFittedError
 from sklearn.metrics import accuracy_score
-from sklearn.model_selection import KFold, cross_val_score
+from sklearn.model_selection import KFold, cross_val_score, cross_validate
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
@@ -27,6 +27,7 @@ from mother.ml.models.m_tabm import (
     TabMRegressorMother,
     _EnsembleLoss,
 )
+from mother.ml.models.tabm_utils import PiecewiseLinearEmbeddings
 from mother.optimization.core import MotherTuner
 from mother.pipeline_utils import get_model, mother_cv
 from mother.settings import MotherSettings
@@ -88,6 +89,94 @@ def test_regression_fit_prediction_and_serialization(data, small_params, as_fram
     pd.testing.assert_frame_equal(
         model.predict_uncertainty(X[:5], uncertainty_for_opt=True), result[["knowledge_uncertainty"]]
     )
+
+
+@pytest.mark.parametrize("estimator", [TabMRegressorMother, TabMClassifierMother])
+@pytest.mark.parametrize("arch_type", ["tabm", "tabm-mini"])
+@pytest.mark.parametrize("scale_features", [False, True])
+def test_piecewise_embeddings(data, small_params, estimator, arch_type, scale_features):
+    X, y = data
+    if estimator is TabMClassifierMother:
+        y = np.where(y > 0, "yes", "no")
+    X = X.assign(category=np.tile(["red", "green", "blue"], len(X) // 3))
+    model = estimator(
+        **small_params,
+        arch_type=arch_type,
+        num_emb_type="pwl",
+        d_embedding=5,
+        num_emb_n_bins=8,
+        cat_features=["category"],
+        scale_features=scale_features,
+    )
+    cloned = clone(model)
+    assert cloned.get_params() == model.get_params()
+    state = torch.random.get_rng_state().clone()
+    model.fit(X, y)
+    assert isinstance(model.net_.module_.num_module, PiecewiseLinearEmbeddings)
+    numeric = X[["a", "b", "c"]].to_numpy(dtype=np.float32)
+    if model.scaler_ is not None:
+        numeric = model.scaler_.transform(numeric)
+    expected = torch.quantile(torch.from_numpy(numeric), torch.linspace(0, 1, 9), dim=0).T
+    for actual, edges in zip(model.bins_, expected):
+        torch.testing.assert_close(actual, edges.unique())
+    embedded = model.net_.module_.num_module(torch.from_numpy(numeric))
+    assert embedded.shape == (len(X), 3, 5)
+    original_bins = [edges.clone() for edges in model.bins_]
+    model.predict(X.assign(a=X.a + 1000))
+    for actual, edges in zip(model.bins_, original_bins):
+        torch.testing.assert_close(actual, edges)
+    predictions = model.predict(X[:5])
+    restored = pickle.loads(pickle.dumps(model))
+    np.testing.assert_array_equal(restored.predict(X[:5]), predictions)
+    np.testing.assert_array_equal(cloned.fit(X, y).predict(X[:5]), predictions)
+    result = model.predict_uncertainty(X[:5])
+    assert np.isfinite(result["knowledge_uncertainty"]).all()
+    if estimator is TabMClassifierMother:
+        np.testing.assert_allclose(model.predict_proba(X[:5]).sum(axis=1), 1, atol=1e-6)
+    torch.testing.assert_close(torch.random.get_rng_state(), state)
+    model.set_params(num_emb_type="none").fit(X, y)
+    assert model.bins_ is None
+    assert model.net_.module_.num_module is None
+
+
+def test_piecewise_bins_are_fold_local_and_capped(data, small_params):
+    X, y = data
+    model = TabMRegressorMother(**small_params, num_emb_type="pwl", num_emb_n_bins=48)
+    splitter = KFold(2)
+    results = cross_validate(model, X, y, cv=splitter, return_estimator=True)
+    for fitted, (train, _) in zip(results["estimator"], splitter.split(X)):
+        numeric = fitted.scaler_.transform(X.iloc[train].to_numpy(dtype=np.float32))
+        expected = torch.quantile(torch.from_numpy(numeric), torch.linspace(0, 1, len(train)), dim=0).T
+        for actual, edges in zip(fitted.bins_, expected):
+            torch.testing.assert_close(actual, edges.unique())
+    model.fit(X.iloc[:3], y[:3])
+    assert all(len(edges) <= 3 for edges in model.bins_)
+    model.fit(X + 100, y)
+    np.testing.assert_allclose(model.scaler_.mean_, X.mean() + 100, atol=1e-5)
+
+
+@pytest.mark.parametrize("num_emb_type", ["none", "pwl"])
+def test_categorical_only_skips_numerical_embeddings(data, small_params, num_emb_type):
+    X, y = data
+    X = pd.DataFrame({"category": np.tile(["red", "green", "blue"], len(X) // 3)})
+    model = TabMRegressorMother(**small_params, cat_features=["category"], num_emb_type=num_emb_type).fit(X, y)
+    assert model.bins_ is None
+    assert model.net_.module_.num_module is None
+    assert np.isfinite(model.predict(X)).all()
+
+
+def test_piecewise_embeddings_reject_unsupported_training_data(data, small_params):
+    X, y = data
+    model = TabMRegressorMother(**small_params, num_emb_type="pwl")
+    with pytest.raises(ValueError, match="at least 3 training samples"):
+        model.fit(X.iloc[:2], y[:2])
+    with pytest.raises(ValueError, match="two distinct values"):
+        model.fit(X.assign(a=1), y)
+    with pytest.raises(NotFittedError):
+        model.predict(X)
+    # Constant numeric columns remain supported with embeddings disabled.
+    model.set_params(num_emb_type="none").fit(X.assign(a=1), y)
+    assert np.isfinite(model.predict(X.assign(a=1))).all()
 
 
 @pytest.mark.parametrize("values, expected_std", [([1.0, 3.0], 1.0), ([2.0, 2.0], 0.0), ([2.0], 0.0)])
@@ -275,25 +364,53 @@ def test_registry_and_settings_builder(small_params, model_type):
     settings = MotherSettings.create()
     settings.model.algorithm = "tabm"
     settings.model.model_type = model_type
-    settings.model.parameters = small_params
+    settings.model.parameters = small_params | {"num_emb_type": "pwl", "d_embedding": 8, "num_emb_n_bins": 12}
     estimator = get_model(settings)
     expected = TabMRegressorMother if model_type == "regression" else TabMClassifierMother
     assert isinstance(estimator, expected)
     assert ml.get_model_class_by_algorithm_and_type("tabm", model_type) is expected
     assert estimator.get_params()["k"] == 4
+    assert estimator.num_emb_type == "pwl"
+    assert estimator.d_embedding == 8
+    assert estimator.num_emb_n_bins == 12
 
 
-def test_pipeline_cross_validation_and_tuning_contract(data, small_params):
+@pytest.mark.parametrize("num_emb_type", ["none", "pwl"])
+def test_pipeline_cross_validation_and_tuning_contract(data, small_params, num_emb_type):
     X, y = data
-    model = TabMRegressorMother(**small_params)
+    model = TabMRegressorMother(**small_params, num_emb_type=num_emb_type)
     pipeline = PipelineWithHyperparameterRooting([("scale", StandardScaler()), ("model", model)])
     trial = FixedTrial({"model__" + name: value for name, value in model.default_parameters().items()})
     suggested = pipeline.get_hyperparameter_space(X, y, trial)
     assert suggested == pipeline.default_parameters()
     assert clone(pipeline).set_params(**suggested).get_params()["model__k"] == 32
+    embedding_keys = {"model__d_embedding", "model__num_emb_n_bins"}
+    assert embedding_keys <= suggested.keys() if num_emb_type == "pwl" else embedding_keys.isdisjoint(suggested)
+    assert "model__num_emb_type" not in suggested
     scores = cross_val_score(Pipeline([("model", model)]), X, y, cv=2, scoring="neg_mean_squared_error")
     assert scores.shape == (2,)
     assert np.isfinite(scores).all()
+
+
+@pytest.mark.parametrize("estimator", [TabMRegressorMother, TabMClassifierMother])
+def test_embedding_tuning_ranges_and_nondefault_values(data, small_params, estimator):
+    X, y = data
+    if estimator is TabMClassifierMother:
+        y = (y > 0).astype(int)
+    model = estimator(**small_params, num_emb_type="pwl")
+    values = model.default_parameters() | {"d_embedding": 7, "num_emb_n_bins": 13}
+    trial = FixedTrial(values)
+    suggested = model.get_hyperparameter_space(X, y, trial)
+    assert suggested == values
+    for name, low, high in [("d_embedding", 4, 64), ("num_emb_n_bins", 2, 128)]:
+        distribution = trial.distributions[name]
+        assert distribution.low == low
+        assert distribution.high == high
+        assert distribution.log
+    fitted = clone(model).set_params(**suggested).fit(X, y)
+    assert fitted.net_.module_.num_module(torch.zeros(2, 3)).shape == (2, 3, 7)
+    assert all(len(edges) <= 14 for edges in fitted.bins_)
+    assert fitted.predict(X[:5]).shape == (5,)
 
 
 def test_mother_cv(data, small_params):
@@ -326,14 +443,21 @@ def test_classification_uncertainty_mother_cv(data, small_params):
     np.testing.assert_allclose(terms.iloc[:, 2], terms.iloc[:, 0] + terms.iloc[:, 1], atol=1e-12)
 
 
-def test_mother_tuner(data, small_params):
+@pytest.mark.parametrize("num_emb_type", ["none", "pwl"])
+def test_mother_tuner(data, small_params, num_emb_type):
     X, y = data
-    pipeline = PipelineWithHyperparameterRooting([("model", TabMRegressorMother(**small_params))])
+    pipeline = PipelineWithHyperparameterRooting(
+        [("model", TabMRegressorMother(**small_params, num_emb_type=num_emb_type))]
+    )
     tuner = MotherTuner(scorer="neg_mean_squared_error", n_trials_optuna=1, n_startup_trials=1)
     fitted = tuner.optimize(pipeline, X, pd.Series(y), cross_validation=KFold(2))
     assert fitted.predict(X[:5]).shape == (5,)
     assert tuner.study is not None
     assert len(tuner.study.trials) == 1
+    if num_emb_type == "pwl":
+        assert tuner.study.best_params["model__d_embedding"] == 16
+        assert tuner.study.best_params["model__num_emb_n_bins"] == 48
+        assert fitted.named_steps["model"].net_.module_.num_module is not None
 
 
 @pytest.mark.parametrize(
@@ -341,6 +465,12 @@ def test_mother_tuner(data, small_params):
     [
         ({"k": 0}, "k must"),
         ({"arch_type": "tabm-packed"}, "arch_type"),
+        ({"num_emb_type": "periodic"}, "num_emb_type"),
+        ({"d_embedding": 0}, "d_embedding"),
+        ({"d_embedding": True}, "d_embedding"),
+        ({"num_emb_n_bins": 1}, "num_emb_n_bins"),
+        ({"num_emb_n_bins": 2.5}, "num_emb_n_bins"),
+        ({"num_emb_n_bins": True}, "num_emb_n_bins"),
         ({"dropout": 1}, "dropout"),
         ({"lr": float("nan")}, "lr must"),
         ({"weight_decay": -1}, "weight_decay"),
@@ -421,14 +551,15 @@ else:
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 @pytest.mark.parametrize("estimator", [TabMRegressorMother, TabMClassifierMother])
-def test_cuda_training_and_rng_restoration(data, small_params, estimator):
+@pytest.mark.parametrize("num_emb_type", ["none", "pwl"])
+def test_cuda_training_and_rng_restoration(data, small_params, estimator, num_emb_type):
     X, y = data
     if estimator is TabMClassifierMother:
         y = np.where(y > 0, "yes", "no")
     device = torch.cuda.current_device()
     gpu_state = torch.cuda.get_rng_state(device).clone()
     cpu_state = torch.random.get_rng_state().clone()
-    model = estimator(**small_params, device=f"cuda:{device}").fit(X, y)
+    model = estimator(**small_params, device=f"cuda:{device}", num_emb_type=num_emb_type).fit(X, y)
     assert model.predict(X[:5]).shape == (5,)
     if estimator is TabMClassifierMother:
         assert np.isfinite(model.predict_proba(X[:5])).all()

@@ -142,6 +142,51 @@ configure a separate ColumnTransformer. For configuration-driven construction,
 use `model.algorithm="tabm"` and put TabM constructor options, including
 `cat_features`, in `model.parameters`.
 
+### Optional numerical embeddings
+
+Numerical embeddings are disabled by default (`num_emb_type="none"`), preserving
+the ordinary numeric-input workflow. To enable the same piecewise-linear
+embedding configuration used by
+[pytabkit's TabM adapter](https://github.com/dholzmueller/pytabkit/blob/main/pytabkit/models/alg_interfaces/tabm_interface.py):
+
+```python
+embedded_regressor = TabMRegressorMother(
+    **demo_parameters,
+    num_emb_type="pwl",
+    d_embedding=16,
+    num_emb_n_bins=48,
+)
+embedded_regressor.fit(X_train, y_train)
+assert embedded_regressor.predict(X_test).shape == (len(X_test),)
+```
+
+The same options work for `TabMClassifierMother` and can be supplied through
+`model.parameters` in MotherSettings. Like pytabkit, this uses quantile bins
+and `PiecewiseLinearEmbeddings` version `"B"` with `activation=False`.
+`d_embedding` defaults to 16 and `num_emb_n_bins` to 48; the effective bin count
+is capped at the number of training samples minus one. Duplicate quantiles
+are removed, so features can have fewer bins.
+
+Bins are fitted only on the numeric training data, after the optional numeric
+scaling, on every `fit()` call (and therefore separately within each CV fold).
+Prediction reuses the fitted bins; serialization preserves them. Each numeric
+feature becomes `d_embedding` internal coordinates, increasing the backbone's
+input size and computational cost without adding new measured information.
+Categorical encoding is unchanged; categorical-only inputs do not use numerical
+embeddings. With numerical embeddings enabled, training requires at least three
+rows and at least two distinct values per numeric column. Remove constant
+numeric columns upstream or leave embeddings disabled.
+
+Unlike pytabkit's optional automatic depth selection, Mother's `n_blocks`
+remains explicit and unchanged (default 3), including when embeddings are enabled.
+When `num_emb_type="pwl"` is enabled, MotherTuner also tunes `d_embedding`
+(integers 4–64, logarithmic sampling) and `num_emb_n_bins` (integers 2–128,
+logarithmic sampling). Its initial default trial uses 16 and 48 respectively.
+The requested bin count is still capped separately within each training fold.
+The embedding mode itself stays fixed: tuning does not silently enable
+embeddings for `num_emb_type="none"`. Rooted pipelines automatically prefix
+these parameters like the other model hyperparameters.
+
 ### Training, tuning, and predictions
 
 - `arch_type` supports `"tabm"` and `"tabm-mini"`; `k` controls ensemble size.
@@ -218,9 +263,9 @@ needed; this uses predicted probabilities, not observed-label likelihood or
 negative log-likelihood. `uncertainty_for_opt=True` returns only the
 `knowledge_uncertainty` column for acquisition/optimization workflows.
 
-Optional numerical embeddings and non-shared training batches are not exposed
-by this initial adapter. The bundled architecture retains its upstream helpers
-for numerical embeddings, but the Mother wrapper uses ordinary numeric inputs.
+Non-shared training batches are not exposed by this adapter. Numerical
+embeddings are opt-in as described above; linear/ReLU and periodic embedding
+variants are not exposed by the Mother wrapper.
 
 ## Ranking with `CatboostRankerMother`
 

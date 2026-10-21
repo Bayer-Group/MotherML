@@ -22,6 +22,7 @@ except ImportError as error:
     raise ExtrasDependencyImportError("tabm", error) from error
 
 from mother.ml.models.tabm_network import Model, make_parameter_groups
+from mother.ml.models.tabm_utils import compute_bins
 
 Features: TypeAlias = pd.DataFrame | npt.NDArray[Any]
 
@@ -60,6 +61,9 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
         dropout: float = 0.1,
         k: int = 32,
         arch_type: Literal["tabm", "tabm-mini"] = "tabm",
+        num_emb_type: Literal["none", "pwl"] = "none",
+        d_embedding: int = 16,
+        num_emb_n_bins: int = 48,
         lr: float = 0.002,
         weight_decay: float = 0.0003,
         max_epochs: int = 100,
@@ -75,6 +79,9 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
         self.dropout = dropout
         self.k = k
         self.arch_type = arch_type
+        self.num_emb_type = num_emb_type
+        self.d_embedding = d_embedding
+        self.num_emb_n_bins = num_emb_n_bins
         self.lr = lr
         self.weight_decay = weight_decay
         self.max_epochs = max_epochs
@@ -92,12 +99,16 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
         return super().set_params(**params)
 
     def _validate_parameters(self) -> None:
-        for name in ("n_blocks", "d_block", "k", "max_epochs", "batch_size"):
+        for name in ("n_blocks", "d_block", "k", "max_epochs", "batch_size", "d_embedding"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"{name} must be a positive integer.")
         if self.arch_type not in ("tabm", "tabm-mini"):
             raise ValueError("arch_type must be 'tabm' or 'tabm-mini'.")
+        if self.num_emb_type not in ("none", "pwl"):
+            raise ValueError("num_emb_type must be 'none' or 'pwl'.")
+        if isinstance(self.num_emb_n_bins, bool) or not isinstance(self.num_emb_n_bins, int) or self.num_emb_n_bins < 2:
+            raise ValueError("num_emb_n_bins must be an integer of at least 2.")
         if not 0 <= self.dropout < 1:
             raise ValueError("dropout must be in [0, 1).")
         if not np.isfinite(self.lr) or self.lr <= 0:
@@ -180,6 +191,11 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             output_dim = 1
 
         inputs = self._prepare_features(X, fitting=True)
+        self.bins_: list[Tensor] | None = None
+        if self.num_emb_type == "pwl" and self.numeric_indices_:
+            if len(X) < 3:
+                raise ValueError("Piecewise-linear embeddings require at least 3 training samples.")
+            self.bins_ = compute_bins(torch.from_numpy(inputs["x_num"]), n_bins=min(self.num_emb_n_bins, len(X) - 1))
         net = _TabMNet(
             module=Model,
             module__n_num_features=len(self.numeric_indices_),
@@ -191,7 +207,17 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
                 "d_block": self.d_block,
                 "dropout": self.dropout,
             },
-            module__bins=None,
+            module__bins=self.bins_,
+            module__num_embeddings=(
+                None
+                if self.bins_ is None
+                else {
+                    "type": "PiecewiseLinearEmbeddings",
+                    "d_embedding": self.d_embedding,
+                    "activation": False,
+                    "version": "B",
+                }
+            ),
             module__arch_type=self.arch_type,
             module__k=self.k,
             module__share_training_batches=True,
@@ -226,7 +252,7 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
         return torch.cat(list(self.net_.forward_iter(inputs, training=False, device="cpu")), dim=0)
 
     def get_hyperparameter_space(self, X: Features, y: Any, trial: Trial, prefix: str = "") -> dict[str, Any]:
-        return {
+        parameters = {
             prefix + "lr": trial.suggest_float(prefix + "lr", 1e-4, 1e-2, log=True),
             prefix + "weight_decay": trial.suggest_float(prefix + "weight_decay", 1e-6, 1e-2, log=True),
             prefix + "n_blocks": trial.suggest_int(prefix + "n_blocks", 1, 4),
@@ -234,9 +260,17 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             prefix + "dropout": trial.suggest_float(prefix + "dropout", 0.0, 0.5),
             prefix + "k": trial.suggest_categorical(prefix + "k", [8, 16, 32]),
         }
+        if self.num_emb_type == "pwl":
+            parameters.update(
+                {
+                    prefix + "d_embedding": trial.suggest_int(prefix + "d_embedding", 4, 64, log=True),
+                    prefix + "num_emb_n_bins": trial.suggest_int(prefix + "num_emb_n_bins", 2, 128, log=True),
+                }
+            )
+        return parameters
 
     def default_parameters(self, prefix: str = "") -> dict[str, Any]:
-        return {
+        parameters = {
             prefix + name: value
             for name, value in {
                 "lr": 0.002,
@@ -247,6 +281,9 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
                 "k": 32,
             }.items()
         }
+        if self.num_emb_type == "pwl":
+            parameters.update({prefix + "d_embedding": 16, prefix + "num_emb_n_bins": 48})
+        return parameters
 
 
 class TabMRegressorMother(RegressorMixin, _BaseTabMMother):
