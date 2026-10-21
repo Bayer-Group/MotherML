@@ -1,5 +1,6 @@
 import json
 import logging
+from functools import partial
 from typing import (
     Any,
     Callable,
@@ -301,6 +302,10 @@ def get_importance_selector(
     return importance_selector
 
 
+def _get_numeric_selection_columns(data: pd.DataFrame, categorical_features: Sequence[str]) -> List[str]:
+    return [column for column in mother_utils.get_numeric_columns(data) if column not in categorical_features]
+
+
 @overload
 def get_feature_selection_pipeline(
     settings: MotherSettings,
@@ -349,10 +354,13 @@ def get_feature_selection_pipeline(
         ]
     ] = []
     numeric_columns_list: Sequence[Tuple[str, Union[TransformerMixin, ml.PipelineWithHyperparameterRooting]]] = []
+    numeric_selector = partial(
+        _get_numeric_selection_columns, categorical_features=tuple(model_settings.get("categorical_features", []))
+    )
 
     if data is not None:
         module_logger.info("Determine numerical features. Categorical, text, and embedding features are skipped")
-        numerical_ix = mother_utils.get_numeric_columns(data=data)
+        numerical_ix = numeric_selector(data)
         categorical_ix: List[str] = mother_utils.get_categorical_column_names(data=data)
         declared_features = (
             model_settings.get("categorical_features", [])
@@ -456,7 +464,7 @@ def get_feature_selection_pipeline(
                     verbose=pipeline_settings.get("verbose", False),
                     memory=pipeline_settings.get("memory", None),
                 ),
-                mother_utils.get_numeric_columns,
+                numeric_selector,
             )
         )
     assert pipeline_settings is not None

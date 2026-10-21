@@ -162,9 +162,12 @@ assert native_model.get_params()["text_features"] == ["description"]
 assert native_model.get_params()["embedding_features"] == ["embedding"]
 ```
 
-The feature-selection builder applies numeric selection to numeric columns;
-string categories, text, and vector-valued embedding columns pass through the
-remainder. Use `remainder="passthrough"`, pandas output
+The feature-selection builder applies numeric selection to numeric columns,
+excluding declared categorical columns even when their labels are integers.
+These categorical columns pass through the remainder unless categorical imputation
+is enabled, in which case they are handled by the categorical imputer.
+Text and vector-valued embedding columns also pass through the remainder.
+Use `remainder="passthrough"`, pandas output
 (`.set_output(transform="pandas")`), and `verbose_feature_names_out=False` to retain
 those columns and their original names for CatBoost. `IMPUTE_CATEGORICAL` still
 applies only to categorical columns; supply valid, nonmissing text and embedding

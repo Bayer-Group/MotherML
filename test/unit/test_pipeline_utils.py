@@ -321,6 +321,37 @@ def test_native_feature_selection_and_catboost_fit(settings, native_feature_data
     assert np.isfinite(predictions).all()
 
 
+@pytest.mark.parametrize("provide_data", [False, True])
+def test_integer_categorical_feature_survives_numeric_selection(settings, provide_data):
+    settings.model.categorical_features = ["category"]
+    settings.model.feature_selection_flags = ["DROP_CONSTANT"]
+    settings.model.parameters = {
+        "iterations": 3,
+        "max_depth": 2,
+        "verbose": False,
+        "thread_count": 1,
+        "allow_writing_files": False,
+    }
+    data = pd.DataFrame(
+        {"numeric": np.arange(30, dtype=float), "constant": np.ones(30), "category": np.ones(30, dtype=np.int64)}
+    )
+    targets = data["numeric"].to_numpy()
+    selector = get_feature_selection_pipeline(settings, data=data if provide_data else None).set_output(
+        transform="pandas"
+    )
+    pipeline = Pipeline([("features", selector), ("model", get_model(settings))])
+
+    pipeline.fit(data, targets)
+
+    selected = selector.transform(data)
+    assert "constant" not in selected
+    pdt.assert_series_equal(selected["category"], data["category"])
+    assert list(selector.named_transformers_["feature_selector"].feature_names_in_) == ["numeric", "constant"]
+    predictions = pipeline.predict(data.iloc[:5])
+    assert predictions.shape == (5,)
+    assert np.isfinite(predictions).all()
+
+
 def test_native_features_with_categorical_imputation(settings, native_feature_data):
     data, targets = native_feature_data
     data["category"] = data["category"].astype(str)
