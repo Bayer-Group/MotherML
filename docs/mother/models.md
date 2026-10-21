@@ -12,6 +12,7 @@ At the moment, the built-in algorithm groups are:
 - `lasso`
 - `tabpfn`
 - `tabicl`
+- `tabm` (optional `tabm` extra)
 
 You can always verify what is available in your environment:
 
@@ -31,6 +32,7 @@ print(ml.get_supported_models())
 | `lasso` | `LassoRegressorMother`, `LassoClassifierBinaryMother`, `LassoClassifierMulticlassMother` |
 | `tabpfn` | `TabPFNRegressorMother`, `TabPFNClassifierMother` |
 | `tabicl` | `TabICLRegressorMother`, `TabICLClassifierMother` , `TabICLEmbeddingTransformer` (utility extracting TabICL embeddings for dowstream models)|
+| `tabm` | `TabMRegressorMother`, `TabMClassifierMother` |
 
 ### Easy usage patterns
 
@@ -68,6 +70,102 @@ from mother import ml
 all_catboost_models = ml.get_model_class_by_algorithm("catboost")
 print([m.__name__ for m in all_catboost_models])
 ```
+
+## TabM with skorch
+
+For a runnable tour of the supported functionality, see the
+[TabM integration notebook](https://github.com/Bayer-Group/MotherML/blob/main/examples/notebooks/05_advanced/06_tabm_skorch_integration.ipynb).
+
+Install the optional dependencies with `pip install 'mother-ml[tabm]'` or
+`uv sync --extra tabm`. TabM uses PyTorch and skorch; installing pytabkit is
+not required. The neural architecture is adapted from
+[pytabkit's TabM implementation](https://github.com/dholzmueller/pytabkit/blob/main/pytabkit/models/nn_models/tabm.py),
+based on [TabM](https://github.com/yandex-research/tabm).
+
+```python
+import numpy as np
+from sklearn.datasets import make_regression
+from sklearn.model_selection import train_test_split
+
+from mother.ml.models.m_tabm import TabMRegressorMother, TabMClassifierMother
+
+X, y = make_regression(
+    n_samples=120, n_features=6, noise=5.0, random_state=42,
+)
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.25, random_state=42,
+)
+demo_parameters = dict(
+    n_blocks=1, d_block=32, k=4, max_epochs=5, batch_size=32,
+)
+regressor = TabMRegressorMother(
+    **demo_parameters,
+)
+regressor.fit(X_train, y_train)
+predictions = regressor.predict(X_test)
+assert predictions.shape == (len(X_test),)
+
+class_labels = np.where(y_train >= np.median(y_train), "high", "low")
+classifier = TabMClassifierMother(**demo_parameters)
+classifier.fit(X_train, class_labels)
+probabilities = classifier.predict_proba(X_test)
+assert probabilities.shape == (len(X_test), 2)
+np.testing.assert_allclose(probabilities.sum(axis=1), 1.0, atol=1e-6)
+```
+
+This self-contained smoke example uses a deliberately small training budget,
+not a recommended configuration for model-quality evaluation.
+
+The supported tasks are finite single-target regression, binary classification,
+and multiclass classification. Both pandas DataFrames and dense NumPy arrays
+are accepted. For DataFrames, column names and order must match at prediction
+time. Sparse inputs, multilabel classification, multi-target regression,
+missing-target learning, and flow heads are not supported in this initial integration.
+
+### Categorical inputs and preprocessing
+
+Declare categorical columns explicitly with `cat_features=["category"]` for a
+DataFrame or positional indices for an array. This includes integer-valued
+categories. Columns not declared categorical must be finite numeric values.
+Impute missing numeric and categorical values upstream.
+
+The estimator fits its numeric scaler, category encoder, and regression-target
+scaler on the data supplied to each `fit()` call. Prediction reuses those fitted
+transforms; unseen categories use the network's all-zero unknown-category
+encoding. Numeric scaling is enabled by default and can be disabled with
+`scale_features=False`. Regression targets are standardized internally and
+predictions are converted back to the original target scale.
+
+When combining TabM with upstream feature selection, preserve its categorical
+columns and their names yourself; declaring `cat_features` in TabM does not
+configure a separate ColumnTransformer. For configuration-driven construction,
+use `model.algorithm="tabm"` and put TabM constructor options, including
+`cat_features`, in `model.parameters`.
+
+### Training, tuning, and predictions
+
+- `arch_type` supports `"tabm"` and `"tabm-mini"`; `k` controls ensemble size.
+- Each member is trained against the target separately. Regression predictions
+  are averaged; classification applies softmax to each member before averaging
+  probabilities. Labels are decoded using `classes_`.
+- Training uses skorch mini-batches and AdamW, retaining upstream zero-weight-decay
+  parameter groups. `max_epochs` is a fixed budget: this initial version has no
+  internal validation split or early stopping.
+- CPU is the default; use `device="cuda"` for an available CUDA device.
+  `random_state` seeds training while restoring the caller's PyTorch CPU and
+  selected CUDA generator state afterward. GPU execution is not guaranteed to
+  be bitwise deterministic.
+- Mother discovers the wrappers under `algorithm="tabm"`. They support sklearn
+  cloning, serialization, pipelines, cross-validation, and MotherTuner.
+  The initial tuning space covers learning rate, weight decay, depth, width,
+  dropout, and ensemble size.
+- `predict_uncertainty()` uses Mother's standard fallback. Regression uncertainty
+  fields remain unset; classification includes class probabilities and entropy.
+  Ensemble disagreement is not exposed as a calibrated uncertainty decomposition.
+
+Optional numerical embeddings and non-shared training batches are not exposed
+by this initial adapter. The bundled architecture retains its upstream helpers
+for numerical embeddings, but the Mother wrapper uses ordinary numeric inputs.
 
 ## Ranking with `CatboostRankerMother`
 

@@ -82,5 +82,6 @@ Dive into sophisticated methods and specialized algorithms:
 | `03_uncertainty_prediction_tabpfn.ipynb` | Uncertainty quantification with TabPFN | 🔴 Advanced | 35 min |
 | `04_ranking_model.ipynb` | Learning-to-Rank using CatboostRanker | 🔴 Advanced | 5 min* |
 | `05_tabicl_embedding_transformer.ipynb` | Embedding extraction using TabICL | 🔴 Advanced | 5 min |
+| `06_tabm_skorch_integration.ipynb` | TabM regression/classification, categories, skorch history, pipelines, CV, tuning, and serialization | Intermediate | 10 min |
 
 **w/o the last optimization section. > 1h to run the optimization section*
