@@ -371,8 +371,10 @@ automatically prefix these parameters like the other model hyperparameters.
   tuning; direct `.fit()` requires a specific variant. Architecture and
   embedding selection can be tuned together.
 - Each member is trained against the target separately. Regression predictions
-  are averaged; classification applies softmax to each member before averaging
-  probabilities. Labels are decoded using `classes_`.
+  are averaged; single-target classification applies softmax to each member,
+  while multitarget binary classification applies a sigmoid per task.
+  Probabilities are averaged across members before decoding labels using
+  `classes_`.
 - Training uses skorch mini-batches and AdamW, retaining upstream zero-weight-decay
   parameter groups. `max_epochs` is a fixed budget: this initial version has no
   internal validation split or early stopping.
@@ -436,9 +438,11 @@ not a calibrated Bayesian posterior estimate. Expected member entropy is a
 data-uncertainty proxy, not a guaranteed isolation of irreducible label noise.
 Low disagreement does not prove that a prediction is correct.
 
-The returned DataFrame preserves the input index and contains `pred`, `proba_i`
-in `classes_` order, unset `mean_predictions`, and the three uncertainty columns.
-Both binary and multiclass classification are supported. No target labels are
+For single-target classification, the returned DataFrame preserves the input
+index and contains `pred`, `proba_i` in `classes_` order, unset
+`mean_predictions`, and the three uncertainty columns. Both binary and multiclass
+classification are supported. Multitarget binary classification uses the
+per-task columns documented above. No target labels are
 needed; this uses predicted probabilities, not observed-label likelihood or
 negative log-likelihood. `uncertainty_for_opt=True` returns only the
 `knowledge_uncertainty` column for acquisition/optimization workflows.
