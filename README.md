@@ -293,6 +293,7 @@ To keep the package size small, some dependencies are added as optional extras. 
 | `torch` | PyTorch neural network support | torch, pytorch-tabular | **Adds ~3GB to environment size!** |
 | `tabpfn` | TabPFN model support | tabpfn | Prior-fitted networks for tabular data |
 | `tabicl` | TabICL models and SHAP explainability | tabicl, torch | Prior-fitted models for tabular data |
+| `tabm` | TabM regression and classification | torch, skorch | Neural ensembles trained with mini-batches |
 | `clustering` | Chemical compound clustering | mol2vec, cluster-my-molecules | For molecular clustering analysis |
 
 #### Installation Examples
@@ -307,14 +308,14 @@ pip install 'mother-ml[report]'
 pip install 'mother-ml[torch]'
 
 # Install multiple extras
-pip install 'mother-ml[report,torch,tabpfn,tabicl]'
+pip install 'mother-ml[report,torch,tabpfn,tabicl,tabm]'
 ```
 
 **Using uv:**
 
 ```bash
 # Install with specific extras
-uv add mother-ml --extra report --extra torch --extra tabicl
+uv add mother-ml --extra report --extra torch --extra tabicl --extra tabm
 ```
 
 > [!CAUTION]
