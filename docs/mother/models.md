@@ -131,6 +131,10 @@ Regression and classification remain separate estimators. Use
 to train multiple tasks together. The tasks share one neural backbone, rather
 than fitting a separate network per target. Regression uses one output per task;
 multitarget binary classification uses one sigmoid output per task.
+A target vector or Series is also accepted as a one-column target matrix,
+including when CV or tuning flattens a one-column DataFrame. Predictions retain
+their two-dimensional multitarget shape, and probabilities remain a list with
+one array per task.
 
 ```text
                   Shared TabM backbone
@@ -223,7 +227,9 @@ The estimators' `.score()` methods mask missing evaluation labels. Regression
 returns the mean per-task R-squared and requires at least two observed labels
 per evaluated task. Classification returns mean per-task accuracy, not
 all-tasks-correct subset accuracy, and requires observed labels in each
-evaluated task. With complete single-target labels, these match the usual
+evaluated task. Evaluation classes absent from training count as incorrect
+predictions rather than raising a label-encoding error.
+With complete single-target labels, these match the usual
 sklearn scoring definitions.
 
 For missing-label CV, use an appropriate splitter such as `KFold`, ensuring
@@ -303,6 +309,8 @@ For example, PWL uses the same configuration as
 [pytabkit's TabM adapter](https://github.com/dholzmueller/pytabkit/blob/main/pytabkit/models/alg_interfaces/tabm_interface.py):
 
 ```python
+from mother.ml.models.m_tabm import TabMRegressorMother
+
 embedded_regressor = TabMRegressorMother(
     **demo_parameters,
     num_emb_type="pwl",

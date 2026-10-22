@@ -552,6 +552,19 @@ def test_missing_multiclass_labels_and_masked_loss(data, small_params):
     assert (logits.grad[1] == 0).all()
 
 
+@pytest.mark.parametrize("labels", [np.array(["a", "b", "c"]), np.array([0, 1, 2])])
+def test_classification_score_with_unseen_labels(data, small_params, labels):
+    X, y = data
+    model = TabMClassifierMother(**small_params).fit(X, labels[(y > 0).astype(int)])
+    predictions = model.predict(X)
+    targets = pd.Series(predictions).astype(object)
+    targets.iloc[0] = labels[2]
+    targets.iloc[1] = None
+    weights = np.arange(1, len(X) + 1)
+    expected = weights[2:].sum() / (weights[0] + weights[2:].sum())
+    assert model.score(X, targets, sample_weight=weights) == pytest.approx(expected)
+
+
 @pytest.mark.parametrize("estimator", [TabMRegressorMother, TabMClassifierMother])
 def test_multitarget_one_column_shapes(data, small_params, estimator):
     X, y = data
@@ -564,6 +577,28 @@ def test_multitarget_one_column_shapes(data, small_params, estimator):
         assert isinstance(probabilities, list)
         assert len(probabilities) == 1
         assert probabilities[0].shape == (len(X), 2)
+
+
+@pytest.mark.parametrize("estimator", [TabMRegressorMother, TabMClassifierMother])
+@pytest.mark.parametrize("as_frame", [True, False])
+def test_multitarget_one_task_cv_and_tuning(data, small_params, estimator, as_frame):
+    X, y = data
+    targets = y.astype(float) if estimator is TabMRegressorMother else (y > 0).astype(float)
+    targets[::4] = np.nan
+    labels = pd.DataFrame({"task": targets}) if as_frame else pd.Series(targets, name="task")
+    model = estimator(**small_params, target_type="multi_target")
+    result = mother_cv(model, X=X, y=labels, cv=KFold(2))
+    assert len(result) == len(X)
+    assert result["pred_target_0_pred"].notna().all()
+    pipeline = PipelineWithHyperparameterRooting([("model", model)])
+    tuner = MotherTuner(
+        scorer=lambda fitted, features, values: fitted.score(features, values),
+        n_trials_optuna=1,
+        n_startup_trials=1,
+    )
+    fitted = tuner.optimize(pipeline, X, labels, cross_validation=KFold(2))
+    assert fitted.predict(X).shape == (len(X), 1)
+    assert np.isfinite(fitted.score(X, labels))
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
@@ -608,7 +643,7 @@ def test_multitarget_invalid_labels(data, small_params, estimator):
     X, y = data
     model = estimator(**small_params, target_type="multi_target")
     with pytest.raises(ValueError, match="2D"):
-        model.fit(X, y)
+        model.fit(X, np.zeros((len(X), 1, 1)))
     with pytest.raises(ValueError, match="observed"):
         model.fit(X, np.column_stack([y, np.full(len(y), np.nan)]))
     targets = np.column_stack([(y > 0).astype(float), (y > 0).astype(float)])
@@ -1023,6 +1058,35 @@ except ExtrasDependencyImportError as error:
     assert "mother-ml[tabm]" in str(error)
 else:
     raise AssertionError("Expected a missing-extra error")
+"""
+    subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, text=True)
+
+
+def test_tabm_documentation_without_optional_dependencies():
+    code = """
+import importlib.abc
+import pathlib
+import runpy
+import sys
+
+class BlockSkorch(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "skorch":
+            raise ModuleNotFoundError("skorch is unavailable", name="skorch")
+
+sys.meta_path.insert(0, BlockSkorch())
+checker = runpy.run_path("scripts/check_docs_python_fences.py")
+blocks = checker["_extract_python_blocks"](pathlib.Path("docs/mother/models.md").read_text())
+namespace = {}
+skipped = 0
+for block in blocks:
+    try:
+        exec(block, namespace, namespace)
+    except Exception as error:
+        if error.__class__.__name__ != "ExtrasDependencyImportError":
+            raise
+        skipped += 1
+assert skipped >= 3
 """
     subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, text=True)
 

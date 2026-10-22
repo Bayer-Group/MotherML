@@ -151,6 +151,8 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             target_type: ``"single_target"`` (default) accepts one target.
                 ``"multi_target"`` trains a shared network on target columns;
                 classification requires two observed classes per column.
+                A target vector is treated as a one-column matrix in
+                multitarget mode, retaining multitarget output shapes.
                 Both modes allow missing target labels, but not missing inputs.
             n_blocks: Number of blocks in the MLP backbone. ``None`` (default)
                 follows pytabkit's depth heuristic: two blocks when PWL
@@ -462,6 +464,8 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
         if self.target_type == "single_target":
             return np.asarray(column_or_1d(y))[:, None]
         values = np.asarray(y)
+        if values.ndim == 1:
+            values = values[:, None]
         if values.ndim != 2 or values.shape[1] == 0:
             raise ValueError("multi_target requires a 2D target array with at least one column.")
         return values
@@ -761,12 +765,12 @@ class TabMClassifierMother(ClassifierMixin, _BaseTabMMother):
         if targets.shape != predictions.shape:
             raise ValueError("Evaluation target shape must match predictions.")
         scores = []
-        for task, encoder in enumerate(self.label_encoders_):
+        for task in range(self.n_outputs_):
             observed = ~pd.isna(targets[:, task])
             if not observed.any():
                 raise ValueError("Each classification task requires observed labels for scoring.")
-            actual = encoder.transform(np.asarray(targets[observed, task].tolist()))
-            predicted = encoder.transform(np.asarray(predictions[observed, task].tolist()))
+            actual = np.asarray(targets[observed, task].tolist())
+            predicted = np.asarray(predictions[observed, task].tolist())
             weights = None if sample_weight is None else np.asarray(sample_weight)[observed]
             scores.append(accuracy_score(actual, predicted, sample_weight=weights))
         return float(np.mean(scores))
