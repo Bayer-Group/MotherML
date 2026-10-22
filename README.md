@@ -308,14 +308,14 @@ pip install 'mother-ml[report]'
 pip install 'mother-ml[torch]'
 
 # Install multiple extras
-pip install 'mother-ml[report,torch,tabpfn,tabicl]'
+pip install 'mother-ml[report,torch,tabpfn,tabicl,tabm]'
 ```
 
 **Using uv:**
 
 ```bash
 # Install with specific extras
-uv add mother-ml --extra report --extra torch --extra tabicl
+uv add mother-ml --extra report --extra torch --extra tabicl --extra tabm
 ```
 
 > [!CAUTION]

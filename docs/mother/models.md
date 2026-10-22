@@ -145,8 +145,33 @@ use `model.algorithm="tabm"` and put TabM constructor options, including
 ### Optional numerical embeddings
 
 Numerical embeddings are disabled by default (`num_emb_type="none"`), preserving
-the ordinary numeric-input workflow. To enable the same piecewise-linear
-embedding configuration used by
+the ordinary numeric-input workflow. An embedding changes how each numeric
+value is presented to the neural network. Instead of giving the network one
+number directly, it gives it a small set of learned signals that can make
+useful patterns easier to recognize. The embedding does not create new
+measurements; it changes the representation of the values you already have.
+
+Choose an embedding based on the kinds of patterns you expect:
+
+- `"linear"` learns a simple, feature-specific rescaling and offset. This is a
+  straightforward way to give each numeric feature its own learned input
+  representation.
+- `"linear_relu"` adds a threshold-like step to the linear version. This can
+  help the model treat values below and above a learned point differently.
+- `"periodic"` represents a value with repeating wave-like signals. This can
+  help when a feature has a repeating pattern, such as an hour of day or a
+  seasonal cycle. For genuinely cyclic features, make sure their numeric
+  encoding reflects that cycle (for example, hour-of-day values wrap around).
+- `"pwl"` splits the observed range into intervals and learns how the value
+  should be represented in each interval. This can help when a feature's effect
+  changes across its range, such as a stronger effect at low values and a
+  flatter effect at high values.
+
+These are options to try, not guarantees that one representation will work
+better. If you are unsure, keep embeddings disabled or use
+`num_emb_type="auto"` with MotherTuner to compare the four embedding types.
+
+For example, PWL uses the same configuration as
 [pytabkit's TabM adapter](https://github.com/dholzmueller/pytabkit/blob/main/pytabkit/models/alg_interfaces/tabm_interface.py):
 
 ```python
@@ -161,35 +186,62 @@ assert embedded_regressor.predict(X_test).shape == (len(X_test),)
 ```
 
 The same options work for `TabMClassifierMother` and can be supplied through
-`model.parameters` in MotherSettings. Like pytabkit, this uses quantile bins
-and `PiecewiseLinearEmbeddings` version `"B"` with `activation=False`.
-`d_embedding` defaults to 16 and `num_emb_n_bins` to 48; the effective bin count
-is capped at the number of training samples minus one. Duplicate quantiles
-are removed, so features can have fewer bins.
+`model.parameters` in MotherSettings. PWL uses a piecewise-linear embedding
+with quantile-based intervals, fitted from training data only. Its internal
+implementation uses version `"B"` without an extra ReLU. `d_embedding`
+defaults to 16 for each embedding type; for PWL, `num_emb_n_bins` defaults to
+48. The effective number of intervals is capped by the training sample count,
+and repeated quantile boundaries are removed, so some features may end up with
+fewer intervals.
 
-Bins are fitted only on the numeric training data, after the optional numeric
+PWL bins are fitted only on the numeric training data, after optional numeric
 scaling, on every `fit()` call (and therefore separately within each CV fold).
 Prediction reuses the fitted bins; serialization preserves them. Each numeric
-feature becomes `d_embedding` internal coordinates, increasing the backbone's
-input size and computational cost without adding new measured information.
+feature is represented with `d_embedding` values inside the model, increasing
+the backbone's input size and computational cost without adding new measured
+information.
 Categorical encoding is unchanged; categorical-only inputs do not use numerical
-embeddings. With numerical embeddings enabled, training requires at least three
-rows and at least two distinct values per numeric column. Remove constant
-numeric columns upstream or leave embeddings disabled.
+embeddings. PWL training requires at least three rows and at least two distinct
+values per numeric column. Remove constant numeric columns upstream or leave
+PWL embeddings disabled.
 
-Unlike pytabkit's optional automatic depth selection, Mother's `n_blocks`
-remains explicit and unchanged (default 3), including when embeddings are enabled.
-When `num_emb_type="pwl"` is enabled, MotherTuner also tunes `d_embedding`
-(integers 4–64, logarithmic sampling) and `num_emb_n_bins` (integers 2–128,
-logarithmic sampling). Its initial default trial uses 16 and 48 respectively.
-The requested bin count is still capped separately within each training fold.
-The embedding mode itself stays fixed: tuning does not silently enable
-embeddings for `num_emb_type="none"`. Rooted pipelines automatically prefix
-these parameters like the other model hyperparameters.
+By default, `n_blocks=None` follows pytabkit's automatic-depth heuristic: use
+two blocks when PWL embeddings are active on numeric features, otherwise three.
+Linear, linear/ReLU, periodic, and categorical-only inputs therefore use three
+blocks. This is a fixed rule, not a search for the best depth. Set
+`n_blocks` to a positive integer to use that depth during ordinary fitting;
+the actual fitted depth is stored in `n_blocks_` without changing the constructor
+parameter. MotherTuner continues to search depths from one to four, overriding
+either `None` or an explicit depth, with three blocks in its default first trial.
+This changes the untuned PWL default from three blocks to two; specify
+`n_blocks=3` to retain the previous depth.
+
+With a fixed embedding type, MotherTuner tunes its settings: `d_embedding`
+(integers 4–64, logarithmic sampling) for all types; `num_emb_n_bins` (integers
+2–128, logarithmic sampling) for PWL; and `num_emb_n_frequencies` (integers
+8–128, logarithmic sampling), `num_emb_frequency_init_scale` (0.001–0.1,
+logarithmic sampling), and `num_emb_activation` for periodic embeddings. The
+periodic defaults are 48 frequencies, scale 0.01, and activation enabled.
+
+Set `num_emb_type="auto"` to let MotherTuner choose among `"linear"`,
+`"linear_relu"`, `"periodic"`, and `"pwl"`, then tune that type's settings. The
+default first trial uses PWL with width 16 and 48 bins. `"auto"` is for tuning;
+direct `.fit()` requires a specific embedding type. Embeddings remain opt-in:
+`num_emb_type="none"` does not search or enable them. Rooted pipelines
+automatically prefix these parameters like the other model hyperparameters.
 
 ### Training, tuning, and predictions
 
-- `arch_type` supports `"tabm"` and `"tabm-mini"`; `k` controls ensemble size.
+- `arch_type="tabm"` is the default. Ensemble members share the main network
+  but have their own small adjustments throughout its layers. With
+  `"tabm-mini"`, members have their own input adjustments and output heads,
+  while sharing the intervening network. Mini has fewer member-specific
+  parameters, not fewer members; `k` controls ensemble size for both variants.
+- Set `arch_type="auto"` to let MotherTuner compare `"tabm"` and
+  `"tabm-mini"`. The first default trial uses `"tabm"`. Explicit choices stay
+  fixed during tuning. Like embedding `"auto"`, architecture `"auto"` is for
+  tuning; direct `.fit()` requires a specific variant. Architecture and
+  embedding selection can be tuned together.
 - Each member is trained against the target separately. Regression predictions
   are averaged; classification applies softmax to each member before averaging
   probabilities. Labels are decoded using `classes_`.

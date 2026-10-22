@@ -155,13 +155,59 @@ def test_piecewise_bins_are_fold_local_and_capped(data, small_params):
     np.testing.assert_allclose(model.scaler_.mean_, X.mean() + 100, atol=1e-5)
 
 
+@pytest.mark.parametrize("estimator", [TabMRegressorMother, TabMClassifierMother])
+@pytest.mark.parametrize("arch_type", ["tabm", "tabm-mini"])
+@pytest.mark.parametrize("num_emb_type", ["none", "pwl", "linear", "linear_relu", "periodic"])
+def test_automatic_depth(data, small_params, estimator, arch_type, num_emb_type):
+    X, y = data
+    if estimator is TabMClassifierMother:
+        y = (y > 0).astype(int)
+    assert estimator().n_blocks is None
+    model = estimator(**(small_params | {"n_blocks": None}), arch_type=arch_type, num_emb_type=num_emb_type)
+    model.fit(X, y)
+    expected_depth = 2 if num_emb_type == "pwl" else 3
+    assert model.n_blocks is None
+    assert model.n_blocks_ == expected_depth
+    assert len(model.net_.module_.backbone.blocks) == expected_depth
+    assert model.predict(X[:5]).shape == (5,)
+    assert clone(model).n_blocks is None
+    restored = pickle.loads(pickle.dumps(model))
+    assert restored.n_blocks_ == expected_depth
+    np.testing.assert_array_equal(restored.predict(X[:5]), model.predict(X[:5]))
+
+    model.set_params(n_blocks=4).fit(X, y)
+    assert model.n_blocks_ == 4
+    assert len(model.net_.module_.backbone.blocks) == 4
+    model.set_params(n_blocks=None, num_emb_type="none" if num_emb_type == "pwl" else "pwl").fit(X, y)
+    assert model.n_blocks_ == (3 if num_emb_type == "pwl" else 2)
+
+
+@pytest.mark.parametrize("n_blocks", [None, 2])
+def test_tuning_overrides_depth(data, small_params, n_blocks):
+    X, y = data
+    model = TabMRegressorMother(**(small_params | {"n_blocks": n_blocks}), num_emb_type="pwl")
+    trial = FixedTrial(model.default_parameters() | {"n_blocks": 4})
+    suggested = model.get_hyperparameter_space(X, y, trial)
+    assert suggested["n_blocks"] == 4
+    assert trial.distributions["n_blocks"].low == 1
+    assert trial.distributions["n_blocks"].high == 4
+    fitted = clone(model).set_params(**suggested).fit(X, y)
+    assert fitted.n_blocks_ == 4
+    assert model.n_blocks == n_blocks
+
+
 @pytest.mark.parametrize("num_emb_type", ["none", "pwl"])
 def test_categorical_only_skips_numerical_embeddings(data, small_params, num_emb_type):
     X, y = data
     X = pd.DataFrame({"category": np.tile(["red", "green", "blue"], len(X) // 3)})
-    model = TabMRegressorMother(**small_params, cat_features=["category"], num_emb_type=num_emb_type).fit(X, y)
+    model = TabMRegressorMother(
+        **(small_params | {"n_blocks": None}),
+        cat_features=["category"],
+        num_emb_type=num_emb_type,
+    ).fit(X, y)
     assert model.bins_ is None
     assert model.net_.module_.num_module is None
+    assert model.n_blocks_ == 3
     assert np.isfinite(model.predict(X)).all()
 
 
@@ -177,6 +223,13 @@ def test_piecewise_embeddings_reject_unsupported_training_data(data, small_param
     # Constant numeric columns remain supported with embeddings disabled.
     model.set_params(num_emb_type="none").fit(X.assign(a=1), y)
     assert np.isfinite(model.predict(X.assign(a=1))).all()
+
+
+def test_auto_embeddings_require_tuning(data, small_params):
+    X, y = data
+    model = TabMRegressorMother(**small_params, num_emb_type="auto")
+    with pytest.raises(ValueError, match="only supported during MotherTuner"):
+        model.fit(X, y)
 
 
 @pytest.mark.parametrize("values, expected_std", [([1.0, 3.0], 1.0), ([2.0, 2.0], 0.0), ([2.0], 0.0)])
@@ -375,7 +428,7 @@ def test_registry_and_settings_builder(small_params, model_type):
     assert estimator.num_emb_n_bins == 12
 
 
-@pytest.mark.parametrize("num_emb_type", ["none", "pwl"])
+@pytest.mark.parametrize("num_emb_type", ["none", "pwl", "auto"])
 def test_pipeline_cross_validation_and_tuning_contract(data, small_params, num_emb_type):
     X, y = data
     model = TabMRegressorMother(**small_params, num_emb_type=num_emb_type)
@@ -384,10 +437,16 @@ def test_pipeline_cross_validation_and_tuning_contract(data, small_params, num_e
     suggested = pipeline.get_hyperparameter_space(X, y, trial)
     assert suggested == pipeline.default_parameters()
     assert clone(pipeline).set_params(**suggested).get_params()["model__k"] == 32
-    embedding_keys = {"model__d_embedding", "model__num_emb_n_bins"}
-    assert embedding_keys <= suggested.keys() if num_emb_type == "pwl" else embedding_keys.isdisjoint(suggested)
-    assert "model__num_emb_type" not in suggested
-    scores = cross_val_score(Pipeline([("model", model)]), X, y, cv=2, scoring="neg_mean_squared_error")
+    if num_emb_type == "pwl":
+        assert {"model__d_embedding", "model__num_emb_n_bins"} <= suggested.keys()
+        assert "model__num_emb_type" not in suggested
+    elif num_emb_type == "auto":
+        assert suggested["model__num_emb_type"] == "pwl"
+        assert {"model__d_embedding", "model__num_emb_n_bins"} <= suggested.keys()
+    else:
+        assert {"model__d_embedding", "model__num_emb_n_bins", "model__num_emb_type"}.isdisjoint(suggested)
+    cv_model = clone(model).set_params(num_emb_type="pwl") if num_emb_type == "auto" else model
+    scores = cross_val_score(Pipeline([("model", cv_model)]), X, y, cv=2, scoring="neg_mean_squared_error")
     assert scores.shape == (2,)
     assert np.isfinite(scores).all()
 
@@ -411,6 +470,51 @@ def test_embedding_tuning_ranges_and_nondefault_values(data, small_params, estim
     assert fitted.net_.module_.num_module(torch.zeros(2, 3)).shape == (2, 3, 7)
     assert all(len(edges) <= 14 for edges in fitted.bins_)
     assert fitted.predict(X[:5]).shape == (5,)
+
+
+@pytest.mark.parametrize(
+    "embedding_type, extra_params, expected_module",
+    [
+        ("linear", {}, "LinearEmbeddings"),
+        ("linear_relu", {}, "LinearReLUEmbeddings"),
+        (
+            "periodic",
+            {
+                "num_emb_n_frequencies": 12,
+                "num_emb_frequency_init_scale": 0.02,
+                "num_emb_activation": False,
+            },
+            "PeriodicEmbeddings",
+        ),
+        ("pwl", {"num_emb_n_bins": 12}, "PiecewiseLinearEmbeddings"),
+    ],
+)
+def test_auto_embedding_type_tuning(data, small_params, embedding_type, extra_params, expected_module):
+    X, y = data
+    model = TabMRegressorMother(**small_params, num_emb_type="auto")
+    defaults = model.default_parameters()
+    values = {name: defaults[name] for name in ("lr", "weight_decay", "n_blocks", "d_block", "dropout", "k")}
+    values.update({"num_emb_type": embedding_type, "d_embedding": 7} | extra_params)
+
+    trial = FixedTrial(values)
+    suggested = model.get_hyperparameter_space(X, y, trial)
+    assert suggested["num_emb_type"] == embedding_type
+    assert suggested["d_embedding"] == 7
+    assert trial.distributions["num_emb_type"].choices == ("linear", "linear_relu", "periodic", "pwl")
+    fitted = clone(model).set_params(**suggested).fit(X, y)
+    assert fitted.net_.module_.num_module.__class__.__name__ == expected_module
+    assert fitted.predict(X[:5]).shape == (5,)
+
+    if embedding_type == "periodic":
+        assert suggested["num_emb_n_frequencies"] == 12
+        assert suggested["num_emb_frequency_init_scale"] == 0.02
+        assert suggested["num_emb_activation"] is False
+        assert trial.distributions["num_emb_n_frequencies"].log
+        assert trial.distributions["num_emb_frequency_init_scale"].log
+    elif embedding_type == "pwl":
+        assert suggested["num_emb_n_bins"] == 12
+    else:
+        assert "num_emb_n_bins" not in suggested
 
 
 def test_mother_cv(data, small_params):
@@ -443,29 +547,67 @@ def test_classification_uncertainty_mother_cv(data, small_params):
     np.testing.assert_allclose(terms.iloc[:, 2], terms.iloc[:, 0] + terms.iloc[:, 1], atol=1e-12)
 
 
-@pytest.mark.parametrize("num_emb_type", ["none", "pwl"])
-def test_mother_tuner(data, small_params, num_emb_type):
+@pytest.mark.parametrize("arch_type", ["tabm", "tabm-mini", "auto"])
+@pytest.mark.parametrize("num_emb_type", ["none", "pwl", "auto"])
+def test_mother_tuner(data, small_params, num_emb_type, arch_type):
     X, y = data
     pipeline = PipelineWithHyperparameterRooting(
-        [("model", TabMRegressorMother(**small_params, num_emb_type=num_emb_type))]
+        [("model", TabMRegressorMother(**small_params, num_emb_type=num_emb_type, arch_type=arch_type))]
     )
     tuner = MotherTuner(scorer="neg_mean_squared_error", n_trials_optuna=1, n_startup_trials=1)
     fitted = tuner.optimize(pipeline, X, pd.Series(y), cross_validation=KFold(2))
     assert fitted.predict(X[:5]).shape == (5,)
     assert tuner.study is not None
     assert len(tuner.study.trials) == 1
-    if num_emb_type == "pwl":
+    if arch_type == "auto":
+        assert tuner.study.best_params["model__arch_type"] == "tabm"
+    else:
+        assert "model__arch_type" not in tuner.study.best_params
+    assert fitted.named_steps["model"].arch_type == ("tabm" if arch_type == "auto" else arch_type)
+    if num_emb_type in ("pwl", "auto"):
+        if num_emb_type == "auto":
+            assert tuner.study.best_params["model__num_emb_type"] == "pwl"
         assert tuner.study.best_params["model__d_embedding"] == 16
         assert tuner.study.best_params["model__num_emb_n_bins"] == 48
         assert fitted.named_steps["model"].net_.module_.num_module is not None
+
+
+@pytest.mark.parametrize("estimator", [TabMRegressorMother, TabMClassifierMother])
+@pytest.mark.parametrize("arch_type", ["tabm", "tabm-mini"])
+def test_auto_architecture_tuning(data, small_params, estimator, arch_type):
+    X, y = data
+    if estimator is TabMClassifierMother:
+        y = (y > 0).astype(int)
+    model = estimator(**small_params, arch_type="auto")
+    assert clone(model).get_params() == model.get_params()
+    with pytest.raises(ValueError, match="arch_type='auto'.*MotherTuner"):
+        model.fit(X, y)
+
+    pipeline = PipelineWithHyperparameterRooting([("model", model)])
+    values = pipeline.default_parameters() | {"model__arch_type": arch_type}
+    assert pipeline.default_parameters()["model__arch_type"] == "tabm"
+    trial = FixedTrial(values)
+    suggested = pipeline.get_hyperparameter_space(X, y, trial)
+    assert suggested == values
+    assert trial.distributions["model__arch_type"].choices == ("tabm", "tabm-mini")
+    fitted = clone(pipeline).set_params(**suggested).fit(X, y)
+    module = fitted.named_steps["model"].net_.module_
+    assert module.arch_type == arch_type
+    assert (module.minimal_ensemble_adapter is not None) == (arch_type == "tabm-mini")
+    assert fitted.predict(X[:5]).shape == (5,)
+    assert model.arch_type == "auto"
 
 
 @pytest.mark.parametrize(
     "params, message",
     [
         ({"k": 0}, "k must"),
+        ({"n_blocks": 0}, "n_blocks"),
+        ({"n_blocks": True}, "n_blocks"),
+        ({"n_blocks": 2.5}, "n_blocks"),
+        ({"n_blocks": "auto"}, "n_blocks"),
         ({"arch_type": "tabm-packed"}, "arch_type"),
-        ({"num_emb_type": "periodic"}, "num_emb_type"),
+        ({"num_emb_type": "fourier"}, "num_emb_type"),
         ({"d_embedding": 0}, "d_embedding"),
         ({"d_embedding": True}, "d_embedding"),
         ({"num_emb_n_bins": 1}, "num_emb_n_bins"),

@@ -25,6 +25,14 @@ from mother.ml.models.tabm_network import Model, make_parameter_groups
 from mother.ml.models.tabm_utils import compute_bins
 
 Features: TypeAlias = pd.DataFrame | npt.NDArray[Any]
+_EMBEDDING_TYPES = ("linear", "linear_relu", "periodic", "pwl")
+_EMBEDDING_DEFAULTS = {
+    "d_embedding": 16,
+    "num_emb_n_bins": 48,
+    "num_emb_n_frequencies": 48,
+    "num_emb_frequency_init_scale": 0.01,
+    "num_emb_activation": True,
+}
 
 
 class _EnsembleLoss(nn.Module):
@@ -95,14 +103,17 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
     def __init__(
         self,
         *,
-        n_blocks: int = 3,
+        n_blocks: int | None = None,
         d_block: int = 256,
         dropout: float = 0.1,
         k: int = 32,
-        arch_type: Literal["tabm", "tabm-mini"] = "tabm",
-        num_emb_type: Literal["none", "pwl"] = "none",
+        arch_type: Literal["tabm", "tabm-mini", "auto"] = "tabm",
+        num_emb_type: Literal["none", "auto", "linear", "linear_relu", "periodic", "pwl"] = "none",
         d_embedding: int = 16,
         num_emb_n_bins: int = 48,
+        num_emb_n_frequencies: int = 48,
+        num_emb_frequency_init_scale: float = 0.01,
+        num_emb_activation: bool = True,
         lr: float = 0.002,
         weight_decay: float = 0.0003,
         max_epochs: int = 100,
@@ -116,16 +127,44 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
         """Configure a TabM estimator.
 
         Args:
-            n_blocks: Number of blocks in the MLP backbone.
+            n_blocks: Number of blocks in the MLP backbone. ``None`` (default)
+                follows pytabkit's depth heuristic: two blocks when PWL
+                embeddings are active on numeric features, otherwise three.
+                An explicit positive integer is used as given. MotherTuner
+                searches depths from one to four regardless of this setting.
+                The fitted depth is available as ``n_blocks_``.
             d_block: Width of each MLP block.
             dropout: Dropout rate used by the MLP backbone.
             k: Number of ensemble members.
-            arch_type: TabM architecture variant.
-            num_emb_type: Numerical input representation; ``"pwl"`` enables
-                piecewise-linear embeddings.
-            d_embedding: Embedding width per numeric feature when PWL
-                embeddings are enabled.
+            arch_type: Ensemble architecture. ``"tabm"`` (default) gives
+                members their own small adjustments throughout the shared
+                network. ``"tabm-mini"`` uses member-specific input adjustments
+                and output heads with a shared backbone. ``"auto"`` lets
+                MotherTuner compare both variants, starting with ``"tabm"``;
+                direct fitting requires a specific variant. Explicit variants
+                remain fixed during tuning. ``k`` controls member count for
+                either variant.
+            num_emb_type: Numerical input representation. ``"none"`` gives
+                each numeric value directly to the network. The other options
+                turn a value into learned signals: ``"linear"`` learns a
+                separate rescaling and offset for each feature;
+                ``"linear_relu"`` adds a threshold-like step that can treat
+                lower and higher values differently; ``"periodic"`` uses
+                repeating wave-like signals for cyclic patterns; and ``"pwl"``
+                learns a representation across value intervals, which can
+                capture different effects in different parts of a feature's
+                range. These are alternative representations, not new data.
+                ``"auto"`` lets MotherTuner compare the four embedding types;
+                choose a specific type for direct fitting.
+            d_embedding: Embedding width per numeric feature when embeddings
+                are enabled.
             num_emb_n_bins: Requested quantile-bin count for PWL embeddings.
+            num_emb_n_frequencies: Number of learned frequencies per feature
+                for periodic embeddings.
+            num_emb_frequency_init_scale: Standard deviation used to initialize
+                periodic embedding frequencies.
+            num_emb_activation: Whether to apply ReLU after periodic
+                embeddings.
             lr: AdamW learning rate.
             weight_decay: AdamW weight decay for parameters not excluded by
                 TabM's parameter-group rules.
@@ -146,6 +185,9 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
         self.num_emb_type = num_emb_type
         self.d_embedding = d_embedding
         self.num_emb_n_bins = num_emb_n_bins
+        self.num_emb_n_frequencies = num_emb_n_frequencies
+        self.num_emb_frequency_init_scale = num_emb_frequency_init_scale
+        self.num_emb_activation = num_emb_activation
         self.lr = lr
         self.weight_decay = weight_decay
         self.max_epochs = max_epochs
@@ -180,16 +222,30 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
 
     def _validate_parameters(self) -> None:
         """Raise ``ValueError`` when a constructor parameter is unsupported."""
-        for name in ("n_blocks", "d_block", "k", "max_epochs", "batch_size", "d_embedding"):
+        for name in (
+            "n_blocks",
+            "d_block",
+            "k",
+            "max_epochs",
+            "batch_size",
+            "d_embedding",
+            "num_emb_n_frequencies",
+        ):
             value = getattr(self, name)
+            if name == "n_blocks" and value is None:
+                continue
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"{name} must be a positive integer.")
-        if self.arch_type not in ("tabm", "tabm-mini"):
-            raise ValueError("arch_type must be 'tabm' or 'tabm-mini'.")
-        if self.num_emb_type not in ("none", "pwl"):
-            raise ValueError("num_emb_type must be 'none' or 'pwl'.")
+        if self.arch_type not in ("tabm", "tabm-mini", "auto"):
+            raise ValueError("arch_type must be 'tabm', 'tabm-mini', or 'auto'.")
+        if self.num_emb_type not in ("none", "auto", *_EMBEDDING_TYPES):
+            raise ValueError(f"num_emb_type must be 'none', 'auto', or one of {_EMBEDDING_TYPES}.")
         if isinstance(self.num_emb_n_bins, bool) or not isinstance(self.num_emb_n_bins, int) or self.num_emb_n_bins < 2:
             raise ValueError("num_emb_n_bins must be an integer of at least 2.")
+        if not np.isfinite(self.num_emb_frequency_init_scale) or self.num_emb_frequency_init_scale <= 0:
+            raise ValueError("num_emb_frequency_init_scale must be positive and finite.")
+        if not isinstance(self.num_emb_activation, bool):
+            raise ValueError("num_emb_activation must be a boolean.")
         if not 0 <= self.dropout < 1:
             raise ValueError("dropout must be in [0, 1).")
         if not np.isfinite(self.lr) or self.lr <= 0:
@@ -280,6 +336,10 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
         # A failed refit must not expose a stale trained network with new encoders.
         if hasattr(self, "net_"):
             del self.net_
+        if self.arch_type == "auto":
+            raise ValueError("arch_type='auto' is only supported during MotherTuner optimization.")
+        if self.num_emb_type == "auto":
+            raise ValueError("num_emb_type='auto' is only supported during MotherTuner optimization.")
         targets = column_or_1d(y)
         if len(targets) != len(X):
             raise ValueError("X and y must contain the same number of samples.")
@@ -308,6 +368,7 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             if len(X) < 3:
                 raise ValueError("Piecewise-linear embeddings require at least 3 training samples.")
             self.bins_ = compute_bins(torch.from_numpy(inputs["x_num"]), n_bins=min(self.num_emb_n_bins, len(X) - 1))
+        self.n_blocks_ = self.n_blocks if self.n_blocks is not None else (2 if self.bins_ is not None else 3)
 
         # Skorch instantiates Model from these module__ parameters, including
         # the dimensions Mother discovered from X and y.
@@ -318,21 +379,12 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             module__n_classes=output_dim,
             module__backbone={
                 "type": "MLP",
-                "n_blocks": self.n_blocks,
+                "n_blocks": self.n_blocks_,
                 "d_block": self.d_block,
                 "dropout": self.dropout,
             },
             module__bins=self.bins_,
-            module__num_embeddings=(
-                None
-                if self.bins_ is None
-                else {
-                    "type": "PiecewiseLinearEmbeddings",
-                    "d_embedding": self.d_embedding,
-                    "activation": False,
-                    "version": "B",
-                }
-            ),
+            module__num_embeddings=self._numerical_embedding_config(),
             module__arch_type=self.arch_type,
             module__k=self.k,
             module__share_training_batches=True,
@@ -362,6 +414,32 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             net.fit(inputs, prepared_targets)
         self.net_ = net
         return self
+
+    def _numerical_embedding_config(self) -> dict[str, Any] | None:
+        """Build the network configuration for the selected numeric embedding."""
+        if not self.numeric_indices_ or self.num_emb_type == "none":
+            return None
+        if self.num_emb_type == "linear":
+            return {"type": "LinearEmbeddings", "d_embedding": self.d_embedding}
+        if self.num_emb_type == "linear_relu":
+            return {"type": "LinearReLUEmbeddings", "d_embedding": self.d_embedding}
+        if self.num_emb_type == "periodic":
+            return {
+                "type": "PeriodicEmbeddings",
+                "d_embedding": self.d_embedding,
+                "n_frequencies": self.num_emb_n_frequencies,
+                "frequency_init_scale": self.num_emb_frequency_init_scale,
+                "activation": self.num_emb_activation,
+                "lite": False,
+            }
+        if self.num_emb_type == "pwl":
+            return {
+                "type": "PiecewiseLinearEmbeddings",
+                "d_embedding": self.d_embedding,
+                "activation": False,
+                "version": "B",
+            }
+        raise ValueError(f"Unsupported numerical embedding type: {self.num_emb_type!r}.")
 
     def _member_predictions(self, X: Features) -> Tensor:
         """Run the fitted network and concatenate ensemble predictions.
@@ -395,13 +473,26 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             prefix + "dropout": trial.suggest_float(prefix + "dropout", 0.0, 0.5),
             prefix + "k": trial.suggest_categorical(prefix + "k", [8, 16, 32]),
         }
-        if self.num_emb_type == "pwl":
-            parameters.update(
-                {
-                    prefix + "d_embedding": trial.suggest_int(prefix + "d_embedding", 4, 64, log=True),
-                    prefix + "num_emb_n_bins": trial.suggest_int(prefix + "num_emb_n_bins", 2, 128, log=True),
-                }
+        if self.arch_type == "auto":
+            parameters[prefix + "arch_type"] = trial.suggest_categorical(prefix + "arch_type", ["tabm", "tabm-mini"])
+        embedding_type = self.num_emb_type
+        if embedding_type == "auto":
+            embedding_type = trial.suggest_categorical(prefix + "num_emb_type", list(_EMBEDDING_TYPES))
+            parameters[prefix + "num_emb_type"] = embedding_type
+        if embedding_type in _EMBEDDING_TYPES:
+            parameters[prefix + "d_embedding"] = trial.suggest_int(prefix + "d_embedding", 4, 64, log=True)
+        if embedding_type == "periodic":
+            parameters[prefix + "num_emb_n_frequencies"] = trial.suggest_int(
+                prefix + "num_emb_n_frequencies", 8, 128, log=True
             )
+            parameters[prefix + "num_emb_frequency_init_scale"] = trial.suggest_float(
+                prefix + "num_emb_frequency_init_scale", 1e-3, 1e-1, log=True
+            )
+            parameters[prefix + "num_emb_activation"] = trial.suggest_categorical(
+                prefix + "num_emb_activation", [False, True]
+            )
+        elif embedding_type == "pwl":
+            parameters[prefix + "num_emb_n_bins"] = trial.suggest_int(prefix + "num_emb_n_bins", 2, 128, log=True)
         return parameters
 
     def default_parameters(self, prefix: str = "") -> dict[str, Any]:
@@ -424,8 +515,24 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
                 "k": 32,
             }.items()
         }
-        if self.num_emb_type == "pwl":
-            parameters.update({prefix + "d_embedding": 16, prefix + "num_emb_n_bins": 48})
+        if self.arch_type == "auto":
+            parameters[prefix + "arch_type"] = "tabm"
+        embedding_type = self.num_emb_type
+        if embedding_type == "auto":
+            embedding_type = "pwl"
+            parameters[prefix + "num_emb_type"] = embedding_type
+        if embedding_type in _EMBEDDING_TYPES:
+            parameters[prefix + "d_embedding"] = _EMBEDDING_DEFAULTS["d_embedding"]
+        if embedding_type == "periodic":
+            parameters.update(
+                {
+                    prefix + "num_emb_n_frequencies": _EMBEDDING_DEFAULTS["num_emb_n_frequencies"],
+                    prefix + "num_emb_frequency_init_scale": _EMBEDDING_DEFAULTS["num_emb_frequency_init_scale"],
+                    prefix + "num_emb_activation": _EMBEDDING_DEFAULTS["num_emb_activation"],
+                }
+            )
+        elif embedding_type == "pwl":
+            parameters[prefix + "num_emb_n_bins"] = _EMBEDDING_DEFAULTS["num_emb_n_bins"]
         return parameters
 
 
