@@ -22,6 +22,15 @@ from mother.ml.models import tabm_utils as rtdl_num_embeddings
 # Initialization
 # ======================================================================================
 def init_rsqrt_uniform_(x: Tensor, d: int) -> Tensor:
+    """Initialize a tensor uniformly using the inverse square root of ``d``.
+
+    Args:
+        x: Tensor to initialize in place.
+        d: Positive fan-in used to calculate the uniform bound.
+
+    Returns:
+        The initialized tensor.
+    """
     assert d > 0
     d_rsqrt = d**-0.5
     return nn.init.uniform_(x, -d_rsqrt, d_rsqrt)
@@ -29,6 +38,14 @@ def init_rsqrt_uniform_(x: Tensor, d: int) -> Tensor:
 
 @torch.inference_mode()
 def init_random_signs_(x: Tensor) -> Tensor:
+    """Initialize a tensor in place with randomly sampled ``-1`` and ``1``.
+
+    Args:
+        x: Tensor to initialize.
+
+    Returns:
+        The initialized tensor.
+    """
     return x.bernoulli_(0.5).mul_(2).add_(-1)
 
 
@@ -53,18 +70,35 @@ class NLinear(nn.Module):
     """
 
     def __init__(self, n: int, in_features: int, out_features: int, bias: bool = True) -> None:
+        """Create ``n`` independent linear transforms.
+
+        Args:
+            n: Number of parallel transforms.
+            in_features: Input width of each transform.
+            out_features: Output width of each transform.
+            bias: Whether each transform has a bias.
+        """
         super().__init__()
         self.weight = nn.Parameter(torch.empty(n, in_features, out_features))
         self.bias = nn.Parameter(torch.empty(n, out_features)) if bias else None
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
+        """Initialize weights and biases with inverse-square-root bounds."""
         d = self.weight.shape[-2]
         init_rsqrt_uniform_(self.weight, d)
         if self.bias is not None:
             init_rsqrt_uniform_(self.bias, d)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply each transform to its corresponding ensemble slice.
+
+        Args:
+            x: Input tensor with shape ``(batch, n, in_features)``.
+
+        Returns:
+            Tensor with shape ``(batch, n, out_features)``.
+        """
         assert x.ndim == 3
         assert x.shape[-(self.weight.ndim - 1) :] == self.weight.shape[:-1]
 
@@ -81,10 +115,25 @@ class OneHotEncoding0d(nn.Module):
     # Output: (*, sum(cardinalities))
 
     def __init__(self, cardinalities: List[int]) -> None:
+        """Configure one-hot encoding for each categorical feature.
+
+        Args:
+            cardinalities: Number of known categories in each feature. One
+                additional index is reserved for unknown values and encoded
+                as all zeros.
+        """
         super().__init__()
         self._cardinalities = cardinalities
 
     def forward(self, x: Tensor) -> Tensor:
+        """Encode categorical indices as concatenated one-hot vectors.
+
+        Args:
+            x: Integer category indices with the feature axis last.
+
+        Returns:
+            Concatenated one-hot features; unknown indices produce zeros.
+        """
         assert x.ndim >= 1
         assert x.shape[-1] == len(self._cardinalities)
 
@@ -119,12 +168,20 @@ class ScaleEnsemble(nn.Module):
         *,
         init: Literal["ones", "normal", "random-signs"],
     ) -> None:
+        """Create a learned per-member scale over the flattened inputs.
+
+        Args:
+            k: Number of ensemble members.
+            d: Number of input coordinates to scale.
+            init: Initialization used for the scale weights.
+        """
         super().__init__()
         self.weight = nn.Parameter(torch.empty(k, d))
         self._weight_init = init
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
+        """Initialize the member scales according to ``self._weight_init``."""
         if self._weight_init == "ones":
             nn.init.ones_(self.weight)
         elif self._weight_init == "normal":
@@ -135,6 +192,14 @@ class ScaleEnsemble(nn.Module):
             raise ValueError(f"Unknown weight_init: {self._weight_init}")
 
     def forward(self, x: Tensor) -> Tensor:
+        """Scale each member's input coordinates.
+
+        Args:
+            x: Input with ensemble members on the penultimate axis.
+
+        Returns:
+            The element-wise scaled input.
+        """
         assert x.ndim >= 2
         return x * self.weight
 
@@ -176,7 +241,19 @@ class LinearEfficientEnsemble(nn.Module):
         ensemble_scaling_out: bool,
         ensemble_bias: bool,
         scaling_init: Literal["ones", "random-signs"],
-    ):
+    ) -> None:
+        """Configure the shared linear transform and member-specific factors.
+
+        Args:
+            in_features: Input width of the shared linear transform.
+            out_features: Output width of the shared linear transform.
+            bias: Whether the transform includes a bias.
+            k: Number of ensemble members.
+            ensemble_scaling_in: Learn an input scale for each member.
+            ensemble_scaling_out: Learn an output scale for each member.
+            ensemble_bias: Learn a separate bias for each member.
+            scaling_init: Initialization for member-specific scale factors.
+        """
         assert k > 0
         if ensemble_bias:
             assert bias
@@ -210,6 +287,7 @@ class LinearEfficientEnsemble(nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
+        """Initialize shared weights, member scales, and biases."""
         init_rsqrt_uniform_(self.weight, self.in_features)
         scaling_init_fn = {"ones": nn.init.ones_, "random-signs": init_random_signs_}[self.scaling_init]
         if self.r is not None:
@@ -231,6 +309,14 @@ class LinearEfficientEnsemble(nn.Module):
                 self.bias.copy_(bias_init)
 
     def forward(self, x: Tensor) -> Tensor:
+        """Apply the shared linear transform with member-specific factors.
+
+        Args:
+            x: Input tensor with shape ``(batch, members, in_features)``.
+
+        Returns:
+            Tensor with shape ``(batch, members, out_features)``.
+        """
         # x.shape == (B, K, D)
         assert x.ndim == 3
 
@@ -248,6 +334,8 @@ class LinearEfficientEnsemble(nn.Module):
 
 
 class MLP(nn.Module):
+    """Feed-forward MLP backbone used by the TabM ensemble."""
+
     def __init__(
         self,
         *,
@@ -258,6 +346,16 @@ class MLP(nn.Module):
         dropout: float,
         activation: str = "ReLU",
     ) -> None:
+        """Build an MLP with configurable depth, width, and activation.
+
+        Args:
+            d_in: Input width; defaults to ``d_block`` when omitted.
+            d_out: Optional output width for a final linear layer.
+            n_blocks: Number of hidden blocks.
+            d_block: Width of each hidden block.
+            dropout: Dropout probability applied after each activation.
+            activation: Name of the PyTorch activation class in ``torch.nn``.
+        """
         super().__init__()
 
         d_first = d_block if d_in is None else d_in
@@ -274,6 +372,15 @@ class MLP(nn.Module):
         self.output = None if d_out is None else nn.Linear(d_block, d_out)
 
     def forward(self, x: Tensor) -> Tensor:
+        """Apply the hidden blocks and optional output projection.
+
+        Args:
+            x: Input tensor whose final dimension matches the configured
+                input width.
+
+        Returns:
+            The transformed tensor.
+        """
         for block in self.blocks:
             x = block(x)
         if self.output is not None:
@@ -283,6 +390,11 @@ class MLP(nn.Module):
 
 def make_efficient_ensemble(module: nn.Module, EnsembleLayer: Callable[..., nn.Module], **kwargs: Any) -> None:
     """Replace linear layers with efficient ensembles of linear layers.
+
+    Args:
+        module: Module tree whose linear layers should be replaced in place.
+        EnsembleLayer: Factory used to create each replacement layer.
+        **kwargs: Ensemble-specific keyword arguments forwarded to the factory.
 
     NOTE
     In the paper, there are no experiments with networks with normalization layers.
@@ -306,6 +418,14 @@ def make_efficient_ensemble(module: nn.Module, EnsembleLayer: Callable[..., nn.M
 
 
 def _get_first_ensemble_layer(backbone: MLP) -> LinearEfficientEnsemble:
+    """Return the first ensemble layer in the MLP backbone.
+
+    Args:
+        backbone: MLP whose first block has already been ensembled.
+
+    Returns:
+        The first block's linear ensemble layer.
+    """
     if isinstance(backbone, MLP):
         return backbone.blocks[0][0]  # type: ignore[code]
     else:
@@ -349,7 +469,7 @@ def _init_first_adapter(
         weight[:, section_bounds[i] : section_bounds[i + 1]] = w
 
 
-_CUSTOM_MODULES = {
+_CUSTOM_MODULES: Dict[str, type[nn.Module]] = {
     # https://docs.python.org/3/library/stdtypes.html#definition.__name__
     CustomModule.__name__: CustomModule
     for CustomModule in [
@@ -363,6 +483,17 @@ _CUSTOM_MODULES = {
 
 
 def make_module(type: str, *args: Any, **kwargs: Any) -> nn.Module:
+    """Construct a PyTorch or registered custom module by name.
+
+    Args:
+        type: Module class name, searched in ``torch.nn`` before the custom
+            module registry.
+        *args: Positional constructor arguments.
+        **kwargs: Keyword constructor arguments.
+
+    Returns:
+        An initialized PyTorch module.
+    """
     Module = getattr(nn, type, None)
     if Module is None:
         Module = _CUSTOM_MODULES[type]
@@ -375,6 +506,20 @@ def make_module(type: str, *args: Any, **kwargs: Any) -> nn.Module:
 def default_zero_weight_decay_condition(
     module_name: str, module: nn.Module, parameter_name: str, parameter: nn.Parameter
 ) -> bool:
+    """Return whether a parameter should be excluded from weight decay.
+
+    Biases and parameters belonging to normalization or numerical embedding
+    modules are excluded.
+
+    Args:
+        module_name: Name of the module containing the parameter.
+        module: Module that owns the parameter.
+        parameter_name: Local parameter name.
+        parameter: Parameter being checked.
+
+    Returns:
+        Whether the parameter belongs in the zero-weight-decay group.
+    """
 
     del module_name, parameter
     return parameter_name.endswith("bias") or isinstance(
@@ -397,6 +542,18 @@ def make_parameter_groups(
     ] = default_zero_weight_decay_condition,
     custom_groups: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
+    """Partition module parameters into weight-decay optimizer groups.
+
+    Args:
+        module: PyTorch module whose parameters are grouped.
+        zero_weight_decay_condition: Predicate selecting parameters that
+            receive no weight decay.
+        custom_groups: Additional optimizer groups, which must not overlap.
+
+    Returns:
+        Optimizer parameter groups: regular parameters, zero-decay
+        parameters, then any caller-provided groups.
+    """
     if custom_groups is None:
         custom_groups = []
     custom_params = frozenset(itertools.chain.from_iterable(group["params"] for group in custom_groups))
@@ -421,7 +578,12 @@ def make_parameter_groups(
 # The model
 # ======================================================================================
 class Model(nn.Module):
-    """MLP & TabM."""
+    """TabM ensemble around an MLP backbone.
+
+    Numeric and categorical inputs are transformed separately and combined
+    before the backbone. Ensemble adapters share most backbone parameters
+    while producing one output per member.
+    """
 
     def __init__(
         self,
@@ -429,9 +591,9 @@ class Model(nn.Module):
         n_num_features: int,
         cat_cardinalities: List[int],
         n_classes: Optional[int],
-        backbone: dict,
+        backbone: Dict[str, Any],
         bins: Optional[List[Tensor]],  # For piecewise-linear encoding/embeddings.
-        num_embeddings: Optional[Dict] = None,
+        num_embeddings: Optional[Dict[str, Any]] = None,
         arch_type: Literal[
             # Plain feed-forward network without any kind of ensembling.
             "plain",
@@ -456,6 +618,21 @@ class Model(nn.Module):
         k: Optional[int] = None,
         share_training_batches: bool = True,
     ) -> None:
+        """Configure input transforms, the MLP, ensemble adapters, and output.
+
+        Args:
+            n_num_features: Number of numeric input columns.
+            cat_cardinalities: Number of known categories per categorical
+                column.
+            n_classes: Number of classes, or ``None`` for regression output.
+            backbone: Constructor settings for the backbone module.
+            bins: Training-derived bin edges for piecewise-linear embeddings.
+            num_embeddings: Optional numerical embedding module settings.
+            arch_type: Network architecture variant.
+            k: Number of ensemble members; omitted only for a plain network.
+            share_training_batches: Whether all members share each input
+                batch during training.
+        """
         # >>> Validate arguments.
         assert n_num_features >= 0
         assert n_num_features or cat_cardinalities
@@ -574,6 +751,17 @@ class Model(nn.Module):
         self.share_training_batches = share_training_batches
 
     def forward(self, x_num: Optional[Tensor] = None, x_cat: Optional[Tensor] = None) -> Tensor:
+        """Compute predictions for each ensemble member.
+
+        Args:
+            x_num: Optional numeric input with shape ``(batch, features)``.
+            x_cat: Optional integer categorical input with shape
+                ``(batch, categorical_features)``.
+
+        Returns:
+            Tensor shaped ``(batch, members, outputs)``. A plain network uses
+            a singleton member dimension for the same output convention.
+        """
         x = []
         if x_num is not None:
             x.append(x_num if self.num_module is None else self.num_module(x_num))

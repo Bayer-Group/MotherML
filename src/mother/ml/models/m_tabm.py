@@ -28,11 +28,34 @@ Features: TypeAlias = pd.DataFrame | npt.NDArray[Any]
 
 
 class _EnsembleLoss(nn.Module):
+    """Apply the task loss to every ensemble member independently.
+
+    The network returns predictions with shape ``(batch, members, outputs)``.
+    Each row's target is repeated for every member, then the task loss is
+    averaged over all rows and members.
+    """
+
     def __init__(self, classification: bool) -> None:
+        """Create the regression or classification loss.
+
+        Args:
+            classification: Use cross-entropy when true, otherwise mean
+                squared error.
+        """
         super().__init__()
         self.classification = classification
 
     def forward(self, predictions: Tensor, targets: Tensor) -> Tensor:
+        """Compute the mean loss across samples and ensemble members.
+
+        Args:
+            predictions: Member outputs with batch, member, and output
+                dimensions.
+            targets: One target per input row.
+
+        Returns:
+            Scalar cross-entropy or mean-squared-error loss.
+        """
         members = predictions.shape[1]
         repeated = targets.repeat_interleave(members, dim=0)
         if self.classification:
@@ -41,7 +64,15 @@ class _EnsembleLoss(nn.Module):
 
 
 class _TabMNet(NeuralNet):
+    """Skorch wrapper that configures TabM's grouped optimizer parameters."""
+
     def initialize_optimizer(self, triggered_directly: Any = None) -> "_TabMNet":
+        """Create AdamW parameter groups during skorch initialization.
+
+        TabM excludes biases and selected normalization/embedding parameters
+        from weight decay. Skorch calls this hook after constructing the
+        PyTorch module.
+        """
         self.optimizer_ = self.optimizer(
             make_parameter_groups(self.module_),
             lr=self.lr,
@@ -51,6 +82,14 @@ class _TabMNet(NeuralNet):
 
 
 class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
+    """Shared sklearn-style preprocessing and training for TabM estimators.
+
+    Mother owns input validation, feature/target preprocessing, and
+    model-specific dimension discovery. Skorch owns module initialization and
+    the mini-batch training loop. The fitted skorch network is stored in
+    ``net_``.
+    """
+
     net_: _TabMNet
 
     def __init__(
@@ -74,6 +113,31 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
         device: str = "cpu",
         verbose: int = 0,
     ) -> None:
+        """Configure a TabM estimator.
+
+        Args:
+            n_blocks: Number of blocks in the MLP backbone.
+            d_block: Width of each MLP block.
+            dropout: Dropout rate used by the MLP backbone.
+            k: Number of ensemble members.
+            arch_type: TabM architecture variant.
+            num_emb_type: Numerical input representation; ``"pwl"`` enables
+                piecewise-linear embeddings.
+            d_embedding: Embedding width per numeric feature when PWL
+                embeddings are enabled.
+            num_emb_n_bins: Requested quantile-bin count for PWL embeddings.
+            lr: AdamW learning rate.
+            weight_decay: AdamW weight decay for parameters not excluded by
+                TabM's parameter-group rules.
+            max_epochs: Fixed number of skorch training epochs.
+            batch_size: Number of samples per training mini-batch.
+            cat_features: Categorical DataFrame column names or array column
+                indices. All other columns are treated as numeric.
+            scale_features: Standardize numeric features using training data.
+            random_state: Seed used for model initialization and training.
+            device: PyTorch device, such as ``"cpu"`` or ``"cuda"``.
+            verbose: Verbosity level passed to skorch.
+        """
         self.n_blocks = n_blocks
         self.d_block = d_block
         self.dropout = dropout
@@ -93,12 +157,29 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
         self.verbose = verbose
 
     def get_params(self, deep: bool = True) -> dict[str, Any]:
+        """Return constructor parameters using sklearn's estimator convention.
+
+        Args:
+            deep: Whether nested estimator parameters should be included.
+
+        Returns:
+            Constructor parameters, optionally including nested parameters.
+        """
         return super().get_params(deep=deep)
 
     def set_params(self, **params: Any) -> "_BaseTabMMother":
+        """Update constructor parameters using sklearn's estimator convention.
+
+        Args:
+            **params: Parameter names and replacement values.
+
+        Returns:
+            This estimator, for chaining.
+        """
         return super().set_params(**params)
 
     def _validate_parameters(self) -> None:
+        """Raise ``ValueError`` when a constructor parameter is unsupported."""
         for name in ("n_blocks", "d_block", "k", "max_epochs", "batch_size", "d_embedding"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
@@ -117,6 +198,21 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             raise ValueError("weight_decay must be nonnegative and finite.")
 
     def _prepare_features(self, X: Features, *, fitting: bool) -> dict[str, npt.NDArray[Any]]:
+        """Validate and encode features into the inputs expected by TabM.
+
+        Numeric and categorical data are returned separately because the
+        PyTorch module accepts them as distinct inputs. During fitting this
+        method learns the feature schema and preprocessing; prediction reuses
+        that fitted state.
+
+        Args:
+            X: Dense feature matrix or DataFrame.
+            fitting: Reset and learn preprocessing state when true; otherwise
+                validate against and reuse the fitted state.
+
+        Returns:
+            A mapping containing ``x_num`` and/or ``x_cat`` arrays.
+        """
         values = validate_data(self, X, reset=fitting, dtype=None, ensure_all_finite=False)
         if fitting:
             self.categorical_indices_: list[int] = []
@@ -166,6 +262,20 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
         return result
 
     def fit(self, X: Features, y: Any) -> "_BaseTabMMother":
+        """Fit preprocessing and train the TabM ensemble.
+
+        Mother derives the feature counts and output dimensions from the
+        training data, then supplies them as module parameters. Skorch does not
+        infer TabM's input size; it initializes that configured module and
+        performs its mini-batch training loop.
+
+        Args:
+            X: Dense training features as a DataFrame or NumPy array.
+            y: Single-target regression values or classification labels.
+
+        Returns:
+            This fitted estimator.
+        """
         self._validate_parameters()
         # A failed refit must not expose a stale trained network with new encoders.
         if hasattr(self, "net_"):
@@ -190,12 +300,17 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             prepared_targets = self.target_scaler_.transform(targets[:, None]).astype(np.float32)
             output_dim = 1
 
+        # Mother supplies the discovered dimensions and fitted preprocessing
+        # artifacts; skorch receives a fully configured PyTorch module factory.
         inputs = self._prepare_features(X, fitting=True)
         self.bins_: list[Tensor] | None = None
         if self.num_emb_type == "pwl" and self.numeric_indices_:
             if len(X) < 3:
                 raise ValueError("Piecewise-linear embeddings require at least 3 training samples.")
             self.bins_ = compute_bins(torch.from_numpy(inputs["x_num"]), n_bins=min(self.num_emb_n_bins, len(X) - 1))
+
+        # Skorch instantiates Model from these module__ parameters, including
+        # the dimensions Mother discovered from X and y.
         net = _TabMNet(
             module=Model,
             module__n_num_features=len(self.numeric_indices_),
@@ -242,16 +357,36 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             torch.random.default_generator.manual_seed(self.random_state)
             for index in devices:
                 torch.cuda.default_generators[index].manual_seed(self.random_state)
+            # Skorch now owns batching, epochs, loss evaluation, and optimizer
+            # steps; its history is available on the fitted ``net_``.
             net.fit(inputs, prepared_targets)
         self.net_ = net
         return self
 
     def _member_predictions(self, X: Features) -> Tensor:
+        """Run the fitted network and concatenate ensemble predictions.
+
+        Skorch performs inference in batches; concatenating those outputs
+        restores one ``(rows, members, outputs)`` tensor for Mother to
+        aggregate.
+        """
         check_is_fitted(self, "net_")
         inputs = self._prepare_features(X, fitting=False)
         return torch.cat(list(self.net_.forward_iter(inputs, training=False, device="cpu")), dim=0)
 
     def get_hyperparameter_space(self, X: Features, y: Any, trial: Trial, prefix: str = "") -> dict[str, Any]:
+        """Suggest tunable TabM parameters for a MotherTuner trial.
+
+        Args:
+            X: Training features required by Mother's tuning interface; not
+                accessed by this implementation.
+            y: Training targets required by the interface; not accessed here.
+            trial: Optuna trial used to suggest parameter values.
+            prefix: Prefix for parameter names, used by rooted pipelines.
+
+        Returns:
+            Suggested parameter values, with names prefixed when requested.
+        """
         parameters = {
             prefix + "lr": trial.suggest_float(prefix + "lr", 1e-4, 1e-2, log=True),
             prefix + "weight_decay": trial.suggest_float(prefix + "weight_decay", 1e-6, 1e-2, log=True),
@@ -270,6 +405,14 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
         return parameters
 
     def default_parameters(self, prefix: str = "") -> dict[str, Any]:
+        """Return Mother's default tuning values with an optional prefix.
+
+        Args:
+            prefix: Prefix for parameter names, used by rooted pipelines.
+
+        Returns:
+            Default values for parameters exposed to MotherTuner.
+        """
         parameters = {
             prefix + name: value
             for name, value in {
@@ -287,9 +430,22 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
 
 
 class TabMRegressorMother(RegressorMixin, _BaseTabMMother):
-    """Single-target TabM regression with skorch and standardized targets."""
+    """Single-target TabM regressor with standardized targets.
+
+    Numeric targets are standardized during fitting and converted back to
+    their original units for predictions. The final prediction is the mean
+    across the ensemble members trained by the skorch network.
+    """
 
     def predict(self, X: Features) -> npt.NDArray[np.float32]:
+        """Predict target values in their original scale.
+
+        Args:
+            X: Dense features with the same schema used during fitting.
+
+        Returns:
+            One prediction per input row, in the original target units.
+        """
         predictions = self._member_predictions(X).mean(dim=1).numpy()
         return self.target_scaler_.inverse_transform(predictions).ravel().astype(np.float32)
 
@@ -299,6 +455,14 @@ class TabMRegressorMother(RegressorMixin, _BaseTabMMother):
         Knowledge uncertainty is member spread (ddof=0) in original target units,
         not a standard error or calibrated interval. Shared parameters can limit
         diversity. Data and total uncertainty are unavailable and remain unset.
+
+        Args:
+            X: Dense features with the same schema used during fitting.
+            uncertainty_for_opt: Return only knowledge uncertainty when true.
+
+        Returns:
+            A DataFrame containing predictions and uncertainty fields, or just
+            ``knowledge_uncertainty`` when ``uncertainty_for_opt`` is true.
         """
         members = self._member_predictions(X)
         predictions = self.target_scaler_.inverse_transform(members.mean(dim=1).numpy()).ravel().astype(np.float32)
@@ -319,12 +483,33 @@ class TabMRegressorMother(RegressorMixin, _BaseTabMMother):
 
 
 class TabMClassifierMother(ClassifierMixin, _BaseTabMMother):
-    """Binary or multiclass TabM classification with probability-space averaging."""
+    """Binary or multiclass TabM classifier with probability-space averaging.
+
+    Mother encodes labels as integer class indices for training and maps
+    predictions back to the original labels. Each ensemble member's logits are
+    converted to probabilities before the member probabilities are averaged.
+    """
 
     def predict_proba(self, X: Features) -> npt.NDArray[np.float32]:
+        """Predict class probabilities by averaging member probabilities.
+
+        Args:
+            X: Dense features with the same schema used during fitting.
+
+        Returns:
+            A probability matrix with one column per class in ``classes_``.
+        """
         return self._member_predictions(X).softmax(dim=-1).mean(dim=1).numpy()
 
     def predict(self, X: Features) -> npt.NDArray[Any]:
+        """Predict the original class label with highest averaged probability.
+
+        Args:
+            X: Dense features with the same schema used during fitting.
+
+        Returns:
+            One decoded class label per input row.
+        """
         probabilities = self.predict_proba(X)
         return self.classes_[probabilities.argmax(axis=1)]
 
@@ -339,6 +524,15 @@ class TabMClassifierMother(ClassifierMixin, _BaseTabMMother):
 
         Probability columns follow ``classes_``. ``mean_predictions`` is unset
         for classification, matching Mother's classification fallback.
+
+        Args:
+            X: Dense features with the same schema used during fitting.
+            uncertainty_for_opt: Return only knowledge uncertainty when true.
+
+        Returns:
+            A DataFrame containing decoded predictions, per-class
+            probabilities, and uncertainty fields, or just
+            ``knowledge_uncertainty`` when ``uncertainty_for_opt`` is true.
         """
         probabilities = self._member_predictions(X).softmax(dim=-1)
         mean_probabilities = probabilities.mean(dim=1).numpy()

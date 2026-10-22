@@ -56,6 +56,15 @@ except ImportError:
 
 
 def _check_input_shape(x: Tensor, expected_n_features: int) -> None:
+    """Validate that the tensor's final axis matches the feature count.
+
+    Args:
+        x: Input tensor to validate.
+        expected_n_features: Required size of the final dimension.
+
+    Raises:
+        ValueError: If ``x`` has no dimensions or the feature count differs.
+    """
     if x.ndim < 1:
         raise ValueError(f"The input must have at least one dimension, however: {x.ndim=}")
     if x.shape[-1] != expected_n_features:
@@ -100,12 +109,20 @@ class LinearEmbeddings(nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
+        """Initialize feature-wise weights and biases uniformly."""
         d_rqsrt = self.weight.shape[1] ** -0.5
         nn.init.uniform_(self.weight, -d_rqsrt, d_rqsrt)
         nn.init.uniform_(self.bias, -d_rqsrt, d_rqsrt)
 
     def forward(self, x: Tensor) -> Tensor:
-        """Do the forward pass."""
+        """Apply a learned affine embedding independently to each feature.
+
+        Args:
+            x: Input with shape ``(..., n_features)``.
+
+        Returns:
+            Embedded tensor with shape ``(..., n_features, d_embedding)``.
+        """
         _check_input_shape(x, self.weight.shape[0])
         return torch.addcmul(self.bias, self.weight, x[..., None])
 
@@ -131,6 +148,12 @@ class LinearReLUEmbeddings(nn.Sequential):
     """
 
     def __init__(self, n_features: int, d_embedding: int = 32) -> None:
+        """Create a linear embedding followed by ReLU.
+
+        Args:
+            n_features: Number of continuous input features.
+            d_embedding: Embedding width for each input feature.
+        """
         super().__init__(
             OrderedDict(
                 [
@@ -154,6 +177,13 @@ class _Periodic(nn.Module):
     """
 
     def __init__(self, n_features: int, k: int, sigma: float) -> None:
+        """Create the learned frequency projection for periodic features.
+
+        Args:
+            n_features: Number of continuous input features.
+            k: Number of frequencies per feature.
+            sigma: Standard deviation for frequency initialization.
+        """
         if sigma <= 0.0:
             raise ValueError(f"sigma must be positive, however: {sigma=}")
 
@@ -163,7 +193,11 @@ class _Periodic(nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
-        """Reset the parameters."""
+        """Initialize frequencies from a truncated normal distribution.
+
+        The truncation excludes extreme values outside three standard
+        deviations from the configured scale.
+        """
         # NOTE[DIFF]
         # Here, extreme values (~0.3% probability) are explicitly avoided just in case.
         # In the paper, there was no protection from extreme values.
@@ -171,7 +205,14 @@ class _Periodic(nn.Module):
         nn.init.trunc_normal_(self.weight, 0.0, self._sigma, a=-bound, b=bound)
 
     def forward(self, x: Tensor) -> Tensor:
-        """Do the forward pass."""
+        """Map each feature to sine and cosine frequency responses.
+
+        Args:
+            x: Input with shape ``(..., n_features)``.
+
+        Returns:
+            Periodic features with twice as many coordinates per input feature.
+        """
         _check_input_shape(x, self.weight.shape[0])
         x = 2 * math.pi * self.weight * x[..., None]
         x = torch.cat([torch.cos(x), torch.sin(x)], -1)
@@ -188,6 +229,14 @@ class _NLinear(nn.Module):
     """
 
     def __init__(self, n: int, in_features: int, out_features: int, bias: bool = True) -> None:
+        """Create a separate linear transform for every feature.
+
+        Args:
+            n: Number of feature-specific transforms.
+            in_features: Input width for each transform.
+            out_features: Output width for each transform.
+            bias: Whether to include a feature-specific bias.
+        """
         super().__init__()
         self.weight = Parameter(torch.empty(n, in_features, out_features))
         self.bias = Parameter(torch.empty(n, out_features)) if bias else None
@@ -201,7 +250,14 @@ class _NLinear(nn.Module):
             nn.init.uniform_(self.bias, -d_in_rsqrt, d_in_rsqrt)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Do the forward pass."""
+        """Apply each feature's independent linear transform.
+
+        Args:
+            x: Input with shape ``(batch, n, in_features)``.
+
+        Returns:
+            Tensor with shape ``(batch, n, out_features)``.
+        """
         if x.ndim != 3:
             raise ValueError(
                 "_NLinear supports only inputs with exactly one batch dimension,"
@@ -287,7 +343,15 @@ class PeriodicEmbeddings(nn.Module):
         self.activation = nn.ReLU() if activation else None
 
     def forward(self, x: Tensor) -> Tensor:
-        """Do the forward pass."""
+        """Apply periodic features, a linear projection, and optional ReLU.
+
+        Args:
+            x: Input with shape ``(batch_size, n_features)``.
+
+        Returns:
+            Embedded tensor with shape
+            ``(batch_size, n_features, d_embedding)``.
+        """
         x = self.periodic(x)
         x = self.linear(x)
         if self.activation is not None:
@@ -296,6 +360,14 @@ class PeriodicEmbeddings(nn.Module):
 
 
 def _check_bins(bins: list[Tensor]) -> None:
+    """Validate finite, strictly increasing bin edges for every feature.
+
+    Args:
+        bins: One-dimensional edge tensor for each numeric feature.
+
+    Raises:
+        ValueError: If bins are empty, malformed, non-finite, or unsorted.
+    """
     if not bins:
         raise ValueError("The list of bins must not be empty")
     for i, feature_bins in enumerate(bins):
@@ -607,10 +679,18 @@ class _PiecewiseLinearEncodingImpl(nn.Module):
             # because the weight and bias are initialized with zeros.
 
     def get_max_n_bins(self) -> int:
+        """Return the maximum number of bins across all features."""
         return self.weight.shape[-1]
 
     def forward(self, x: Tensor) -> Tensor:
-        """Do the forward pass."""
+        """Encode input values using the fitted feature-specific bin edges.
+
+        Args:
+            x: Input tensor with shape ``(..., n_features)``.
+
+        Returns:
+            Piecewise-linear encodings with padding retained per feature.
+        """
         x = torch.addcmul(self.bias, self.weight, x[..., None])
         if x.shape[-1] > 1:
             x = torch.cat(
@@ -662,7 +742,14 @@ class PiecewiseLinearEncoding(nn.Module):
         self.impl = _PiecewiseLinearEncodingImpl(bins)
 
     def forward(self, x: Tensor) -> Tensor:
-        """Do the forward pass."""
+        """Return flattened piecewise-linear encodings without padding.
+
+        Args:
+            x: Input tensor with shape ``(..., n_features)``.
+
+        Returns:
+            Encodings concatenated across features.
+        """
         x = self.impl(x)
         return x.flatten(-2) if self.impl.mask is None else x[:, self.impl.mask]
 
@@ -727,7 +814,14 @@ class PiecewiseLinearEmbeddings(nn.Module):
         self.activation = nn.ReLU() if activation else None
 
     def forward(self, x: Tensor) -> Tensor:
-        """Do the forward pass."""
+        """Project piecewise-linear encodings into learned feature embeddings.
+
+        Args:
+            x: Input with shape ``(batch_size, n_features)``.
+
+        Returns:
+            Tensor with shape ``(batch_size, n_features, d_embedding)``.
+        """
         if x.ndim != 2:
             raise ValueError("For now, only inputs with exactly one batch dimension are supported.")
 
