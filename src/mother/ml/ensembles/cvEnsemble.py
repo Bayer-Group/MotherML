@@ -235,23 +235,27 @@ class CVEnsembleClassifierMother(AbstractMotherPipeline, MetaEstimatorMixin, Cla
             raise ValueError(f"Unknown aggregation strategy: {strategy}")
 
     @overload
+    def _predict_probas_and_uncertainties(self, X: pd.DataFrame) -> np.ndarray: ...
+
+    @overload
     def _predict_probas_and_uncertainties(
         self,
         X: pd.DataFrame,
-        predict_uncertainty: None | bool = False,
+        predict_uncertainty: Literal[False] | None,
     ) -> np.ndarray: ...
 
     @overload
     def _predict_probas_and_uncertainties(
         self,
         X: pd.DataFrame,
-        predict_uncertainty: bool = True,
+        predict_uncertainty: Literal[True],
+        **kwargs,
     ) -> tuple[np.ndarray, np.ndarray, list[str]]: ...
 
     def _predict_probas_and_uncertainties(
         self,
         X: pd.DataFrame,
-        predict_uncertainty: bool | None = None,
+        predict_uncertainty: bool | None = False,
         **kwargs,
     ) -> np.ndarray | tuple[np.ndarray, np.ndarray, list[str]]:
         """
@@ -264,7 +268,7 @@ class CVEnsembleClassifierMother(AbstractMotherPipeline, MetaEstimatorMixin, Cla
 
         Returns:
             np.ndarray: Array of predicted probabilities, shape (n_estimators, n_samples, n_classes),
-                if uncertainty_type is None (default).
+                if predict_uncertainty is False (default).
 
             tuple[np.ndarray, np.ndarray, list[str]]: Tuple of array, if predict_uncertainty is True, containing:
                 - Array of predicted probabilities, shape (n_estimators, n_samples, n_classes).
@@ -449,10 +453,11 @@ class CVEnsembleClassifierMother(AbstractMotherPipeline, MetaEstimatorMixin, Cla
 
             ensemble_probs = np.mean(estimator_probas, axis=0)  # shape: (n_samples, n_classes)
 
-            total_uncertainty = -np.sum(ensemble_probs * np.log(ensemble_probs + 1e-12), axis=-1)  # shape: (n_samples,)
+            # rel_entr computes p * log(p / q), here q=1.0 so it simplifies to p * log(p) (zero-safe)
+            total_uncertainty = -np.sum(rel_entr(ensemble_probs, 1.0), axis=-1)  # shape: (n_samples,)
 
             data_uncertainty = np.mean(
-                -np.sum(estimator_probas * np.log(estimator_probas + 1e-12), axis=-1),
+                -np.sum(rel_entr(estimator_probas, 1.0), axis=-1),
                 axis=0,
             )  # shape (n_samples,)
 
