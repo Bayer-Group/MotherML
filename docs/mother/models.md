@@ -136,6 +136,14 @@ encoding. Numeric scaling is enabled by default and can be disabled with
 `scale_features=False`. Regression targets are standardized internally and
 predictions are converted back to the original target scale.
 
+Numeric feature scaling and regression-target scaling use float64 precision
+before converting the prepared training arrays to float32 for the network.
+This preserves small differences around large offsets during standardization.
+Regression predictions, including the prediction columns in uncertainty
+outputs, are restored to original units in float64. With feature scaling
+disabled, numeric inputs are still converted to float32 for the network, so
+small differences around large offsets may be lost.
+
 When combining TabM with upstream feature selection, preserve its categorical
 columns and their names yourself; declaring `cat_features` in TabM does not
 configure a separate ColumnTransformer. For configuration-driven construction,

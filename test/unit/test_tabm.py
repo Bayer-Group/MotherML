@@ -26,6 +26,7 @@ from mother.ml.models.m_tabm import (
     TabMClassifierMother,
     TabMRegressorMother,
     _EnsembleLoss,
+    _TabMNet,
 )
 from mother.ml.models.tabm_utils import PiecewiseLinearEmbeddings
 from mother.optimization.core import MotherTuner
@@ -88,6 +89,69 @@ def test_regression_fit_prediction_and_serialization(data, small_params, as_fram
     assert result["total_uncertainty"].isna().all()
     pd.testing.assert_frame_equal(
         model.predict_uncertainty(X[:5], uncertainty_for_opt=True), result[["knowledge_uncertainty"]]
+    )
+
+
+@pytest.mark.parametrize("estimator", [TabMRegressorMother, TabMClassifierMother])
+@pytest.mark.parametrize("num_emb_type", ["none", "pwl"])
+@pytest.mark.parametrize("as_frame", [False, True])
+def test_feature_scaling_preserves_large_offset_variation(small_params, estimator, num_emb_type, as_frame):
+    values = np.array([[100000001.0], [100000002.0], [100000003.0]])
+    X = pd.DataFrame(values, columns=["offset"]) if as_frame else values
+    model = estimator(**small_params, num_emb_type=num_emb_type).fit(X, np.array([0, 1, 0]))
+    expected = StandardScaler().fit(values)
+    np.testing.assert_array_equal(model.scaler_.mean_, expected.mean_)
+    np.testing.assert_array_equal(model.scaler_.scale_, expected.scale_)
+    prepared = model._prepare_features(X, fitting=False)["x_num"]
+    assert prepared.dtype == np.float32
+    np.testing.assert_allclose(prepared, expected.transform(values).astype(np.float32), rtol=0, atol=0)
+    assert np.unique(prepared).size == 3
+    shifted = pd.DataFrame(values + 1, columns=["offset"]) if as_frame else values + 1
+    np.testing.assert_allclose(
+        model._prepare_features(shifted, fitting=False)["x_num"],
+        expected.transform(values + 1).astype(np.float32),
+        rtol=0,
+        atol=0,
+    )
+
+
+def test_target_scaling_and_outputs_preserve_large_offset_variation(small_params, monkeypatch):
+    X = np.array([[0.0], [1.0], [2.0]])
+    y = np.array([100000001.0, 100000002.0, 100000003.0])
+    expected_scaler = StandardScaler().fit(y[:, None])
+    original_fit = _TabMNet.fit
+    captured = {}
+
+    def capture_fit(net, inputs, targets):
+        captured["targets"] = targets.copy()
+        return original_fit(net, inputs, targets)
+
+    monkeypatch.setattr(_TabMNet, "fit", capture_fit)
+    model = TabMRegressorMother(**small_params).fit(X, y)
+    np.testing.assert_array_equal(model.target_scaler_.mean_, expected_scaler.mean_)
+    np.testing.assert_array_equal(model.target_scaler_.scale_, expected_scaler.scale_)
+    standardized = expected_scaler.transform(y[:, None]).astype(np.float32)
+    assert captured["targets"].dtype == np.float32
+    np.testing.assert_array_equal(captured["targets"], standardized)
+    assert np.unique(captured["targets"]).size == 3
+
+    members = torch.from_numpy(np.stack([standardized - 0.25, standardized + 0.25], axis=1))
+    monkeypatch.setattr(model, "_member_predictions", lambda inputs: members)
+    expected = expected_scaler.inverse_transform(members.double().mean(dim=1).numpy()).ravel()
+    predictions = model.predict(X)
+    assert predictions.dtype == np.float64
+    np.testing.assert_allclose(predictions, expected, rtol=0, atol=1e-8)
+    np.testing.assert_allclose(predictions, y, rtol=0, atol=1e-7)
+    assert np.unique(predictions).size == 3
+    result = model.predict_uncertainty(X)
+    for name in ("pred", "mean_predictions"):
+        assert result[name].dtype == np.float64
+        np.testing.assert_array_equal(result[name], predictions)
+    np.testing.assert_allclose(
+        result["knowledge_uncertainty"],
+        members.double().std(dim=1, correction=0).numpy().ravel() * expected_scaler.scale_[0],
+        rtol=0,
+        atol=1e-12,
     )
 
 

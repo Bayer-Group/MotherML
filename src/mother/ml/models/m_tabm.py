@@ -290,7 +290,7 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
 
         result: dict[str, npt.NDArray[Any]] = {}
         if self.numeric_indices_:
-            numeric = np.asarray(values[:, self.numeric_indices_], dtype=np.float32)
+            numeric = np.asarray(values[:, self.numeric_indices_], dtype=np.float64)
             if not np.isfinite(numeric).all():
                 raise ValueError("TabM numeric features must be finite; impute missing values before fitting.")
             if fitting:
@@ -353,7 +353,7 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             prepared_targets = self.label_encoder_.transform(targets).astype(np.int64)
             output_dim = len(self.classes_)
         else:
-            targets = np.asarray(targets, dtype=np.float32)
+            targets = np.asarray(targets, dtype=np.float64)
             if not np.isfinite(targets).all():
                 raise ValueError("TabM supports only finite, single-target regression labels.")
             self.target_scaler_ = StandardScaler().fit(targets[:, None])
@@ -544,17 +544,17 @@ class TabMRegressorMother(RegressorMixin, _BaseTabMMother):
     across the ensemble members trained by the skorch network.
     """
 
-    def predict(self, X: Features) -> npt.NDArray[np.float32]:
+    def predict(self, X: Features) -> npt.NDArray[np.float64]:
         """Predict target values in their original scale.
 
         Args:
             X: Dense features with the same schema used during fitting.
 
         Returns:
-            One prediction per input row, in the original target units.
+            One float64 prediction per input row, in the original target units.
         """
-        predictions = self._member_predictions(X).mean(dim=1).numpy()
-        return self.target_scaler_.inverse_transform(predictions).ravel().astype(np.float32)
+        predictions = self._member_predictions(X).double().mean(dim=1).numpy()
+        return self.target_scaler_.inverse_transform(predictions).ravel()
 
     def predict_uncertainty(self, X: Features, uncertainty_for_opt: bool = False) -> pd.DataFrame:
         """Return member-mean predictions and population standard deviation.
@@ -571,9 +571,9 @@ class TabMRegressorMother(RegressorMixin, _BaseTabMMother):
             A DataFrame containing predictions and uncertainty fields, or just
             ``knowledge_uncertainty`` when ``uncertainty_for_opt`` is true.
         """
-        members = self._member_predictions(X)
-        predictions = self.target_scaler_.inverse_transform(members.mean(dim=1).numpy()).ravel().astype(np.float32)
-        knowledge = members.double().std(dim=1, correction=0).numpy().ravel() * self.target_scaler_.scale_[0]
+        members = self._member_predictions(X).double()
+        predictions = self.target_scaler_.inverse_transform(members.mean(dim=1).numpy()).ravel()
+        knowledge = members.std(dim=1, correction=0).numpy().ravel() * self.target_scaler_.scale_[0]
         index = X.index if isinstance(X, pd.DataFrame) else pd.RangeIndex(len(predictions))
         if uncertainty_for_opt:
             return pd.DataFrame({"knowledge_uncertainty": knowledge}, index=index)
