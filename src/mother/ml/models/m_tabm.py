@@ -1,5 +1,6 @@
 """Mother estimators for TabM, trained with skorch."""
 
+import logging
 from typing import Any, Literal, Sequence, TypeAlias
 
 import numpy as np
@@ -7,7 +8,9 @@ import numpy.typing as npt
 import pandas as pd
 from optuna.trial import Trial
 from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin
+from sklearn.metrics import accuracy_score, r2_score
 from sklearn.preprocessing import LabelEncoder, OrdinalEncoder, StandardScaler
+from sklearn.utils import Tags
 from sklearn.utils.multiclass import check_classification_targets
 from sklearn.utils.validation import check_is_fitted, column_or_1d, validate_data
 
@@ -25,6 +28,7 @@ from mother.ml.models.tabm_network import Model, make_parameter_groups
 from mother.ml.models.tabm_utils import compute_bins
 
 Features: TypeAlias = pd.DataFrame | npt.NDArray[Any]
+module_logger = logging.getLogger(__name__)
 _EMBEDDING_TYPES = ("linear", "linear_relu", "periodic", "pwl")
 _EMBEDDING_DEFAULTS = {
     "d_embedding": 16,
@@ -39,36 +43,52 @@ class _EnsembleLoss(nn.Module):
     """Apply the task loss to every ensemble member independently.
 
     The network returns predictions with shape ``(batch, members, outputs)``.
-    Each row's target is repeated for every member, then the task loss is
-    averaged over all rows and members.
+    Missing targets are masked. Observed losses are averaged within each
+    task, then across tasks present in the batch.
     """
 
-    def __init__(self, classification: bool) -> None:
+    def __init__(self, classification: bool, multitarget: bool = False) -> None:
         """Create the regression or classification loss.
 
         Args:
             classification: Use cross-entropy when true, otherwise mean
                 squared error.
+            multitarget: Use binary cross-entropy for multitarget classification.
         """
         super().__init__()
         self.classification = classification
+        self.multitarget = multitarget
 
     def forward(self, predictions: Tensor, targets: Tensor) -> Tensor:
-        """Compute the mean loss across samples and ensemble members.
+        """Compute equally weighted observed task losses across members.
 
         Args:
             predictions: Member outputs with batch, member, and output
                 dimensions.
-            targets: One target per input row.
+            targets: A row/task matrix with NaN for missing labels, or an
+                encoded single-target class vector with -1 for missing labels.
 
         Returns:
-            Scalar cross-entropy or mean-squared-error loss.
+            Scalar masked cross-entropy, binary cross-entropy, or squared loss.
         """
-        members = predictions.shape[1]
-        repeated = targets.repeat_interleave(members, dim=0)
+        if self.classification and not self.multitarget:
+            observed = targets >= 0
+            if not observed.any():
+                raise ValueError("A training batch must contain at least one observed target.")
+            repeated = targets[observed].repeat_interleave(predictions.shape[1], dim=0)
+            return nn.functional.cross_entropy(predictions[observed].flatten(0, 1), repeated)
+        observed = torch.isfinite(targets)
+        present = observed.any(dim=0)
+        if not present.any():
+            raise ValueError("A training batch must contain at least one observed target.")
+        safe_targets = torch.where(observed, targets, 0).unsqueeze(1).expand_as(predictions)
         if self.classification:
-            return nn.functional.cross_entropy(predictions.flatten(0, 1), repeated)
-        return nn.functional.mse_loss(predictions.flatten(0, 1), repeated)
+            losses = nn.functional.binary_cross_entropy_with_logits(predictions, safe_targets, reduction="none")
+        else:
+            losses = (predictions - safe_targets).square()
+        masked = torch.where(observed.unsqueeze(1), losses, 0)
+        counts = observed.sum(dim=0).clamp_min(1) * predictions.shape[1]
+        return (masked.sum(dim=(0, 1)) / counts)[present].mean()
 
 
 class _TabMNet(NeuralNet):
@@ -103,6 +123,7 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
     def __init__(
         self,
         *,
+        target_type: Literal["single_target", "multi_target"] = "single_target",
         n_blocks: int | None = None,
         d_block: int = 256,
         dropout: float = 0.1,
@@ -127,6 +148,10 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
         """Configure a TabM estimator.
 
         Args:
+            target_type: ``"single_target"`` (default) accepts one target.
+                ``"multi_target"`` trains a shared network on target columns;
+                classification requires two observed classes per column.
+                Both modes allow missing target labels, but not missing inputs.
             n_blocks: Number of blocks in the MLP backbone. ``None`` (default)
                 follows pytabkit's depth heuristic: two blocks when PWL
                 embeddings are active on numeric features, otherwise three.
@@ -177,6 +202,7 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             device: PyTorch device, such as ``"cpu"`` or ``"cuda"``.
             verbose: Verbosity level passed to skorch.
         """
+        self.target_type = target_type
         self.n_blocks = n_blocks
         self.d_block = d_block
         self.dropout = dropout
@@ -220,8 +246,17 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
         """
         return super().set_params(**params)
 
+    def __sklearn_tags__(self) -> Tags:
+        tags = super().__sklearn_tags__()
+        tags.target_tags.multi_output = self.target_type == "multi_target"
+        tags.target_tags.single_output = self.target_type == "single_target"
+        tags.target_tags.two_d_labels = self.target_type == "multi_target"
+        return tags
+
     def _validate_parameters(self) -> None:
         """Raise ``ValueError`` when a constructor parameter is unsupported."""
+        if self.target_type not in ("single_target", "multi_target"):
+            raise ValueError("target_type must be 'single_target' or 'multi_target'.")
         for name in (
             "n_blocks",
             "d_block",
@@ -327,7 +362,8 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
 
         Args:
             X: Dense training features as a DataFrame or NumPy array.
-            y: Single-target regression values or classification labels.
+            y: Target values or labels, with one column per task in
+                ``multi_target`` mode. Missing labels are masked during training.
 
         Returns:
             This fitted estimator.
@@ -340,25 +376,30 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             raise ValueError("arch_type='auto' is only supported during MotherTuner optimization.")
         if self.num_emb_type == "auto":
             raise ValueError("num_emb_type='auto' is only supported during MotherTuner optimization.")
-        targets = column_or_1d(y)
+        targets = self._target_array(y)
         if len(targets) != len(X):
             raise ValueError("X and y must contain the same number of samples.")
         classification = isinstance(self, ClassifierMixin)
+        self.n_outputs_ = targets.shape[1]
         if classification:
-            check_classification_targets(targets)
-            self.label_encoder_ = LabelEncoder().fit(targets)
-            self.classes_ = self.label_encoder_.classes_
-            if len(self.classes_) < 2:
-                raise ValueError("TabM classification requires at least two classes.")
-            prepared_targets = self.label_encoder_.transform(targets).astype(np.int64)
-            output_dim = len(self.classes_)
+            prepared_targets, output_dim = self._prepare_classification_targets(targets)
+            observed_rows = (~pd.isna(targets)).any(axis=1)
         else:
-            targets = np.asarray(targets, dtype=np.float64)
-            if not np.isfinite(targets).all():
-                raise ValueError("TabM supports only finite, single-target regression labels.")
-            self.target_scaler_ = StandardScaler().fit(targets[:, None])
-            prepared_targets = self.target_scaler_.transform(targets[:, None]).astype(np.float32)
-            output_dim = 1
+            numeric_targets = np.asarray(np.where(pd.isna(targets), np.nan, targets), dtype=np.float64)
+            if np.isinf(numeric_targets).any():
+                raise ValueError("TabM regression targets must be finite or missing (NaN).")
+            observed_rows = np.isfinite(numeric_targets).any(axis=1)
+            if not np.isfinite(numeric_targets).any(axis=0).all():
+                raise ValueError("Each regression task requires at least one observed finite target.")
+            self.target_scaler_ = StandardScaler().fit(numeric_targets)
+            prepared_targets = self.target_scaler_.transform(numeric_targets).astype(np.float32)
+            output_dim = self.n_outputs_
+        if not observed_rows.all():
+            module_logger.warning(
+                "Excluding %d training rows with no observed target labels.", int((~observed_rows).sum())
+            )
+            X = X.iloc[observed_rows] if isinstance(X, pd.DataFrame) else X[observed_rows]
+            prepared_targets = prepared_targets[observed_rows]
 
         # Mother supplies the discovered dimensions and fitted preprocessing
         # artifacts; skorch receives a fully configured PyTorch module factory.
@@ -390,6 +431,7 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             module__share_training_batches=True,
             criterion=_EnsembleLoss,
             criterion__classification=classification,
+            criterion__multitarget=self.target_type == "multi_target",
             optimizer=torch.optim.AdamW,
             optimizer__weight_decay=self.weight_decay,
             lr=self.lr,
@@ -414,6 +456,44 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             net.fit(inputs, prepared_targets)
         self.net_ = net
         return self
+
+    def _target_array(self, y: Any) -> npt.NDArray[Any]:
+        """Validate target dimensions without replacing missing labels."""
+        if self.target_type == "single_target":
+            return np.asarray(column_or_1d(y))[:, None]
+        values = np.asarray(y)
+        if values.ndim != 2 or values.shape[1] == 0:
+            raise ValueError("multi_target requires a 2D target array with at least one column.")
+        return values
+
+    def _prepare_classification_targets(self, targets: npt.NDArray[Any]) -> tuple[npt.NDArray[Any], int]:
+        """Encode observed labels independently for each classification task."""
+        missing = pd.isna(targets)
+        if missing.all(axis=0).any():
+            raise ValueError("Each classification task requires observed labels and at least two classes.")
+        self.label_encoders_: list[LabelEncoder] = []
+        encoded = np.full(targets.shape, np.nan, dtype=np.float32)
+        for task in range(self.n_outputs_):
+            observed = targets[~missing[:, task], task]
+            # Object arrays preserve missing string labels but sklearn expects
+            # numeric labels to have a numeric dtype when validating their type.
+            labels = pd.Series(observed).infer_objects().to_numpy()
+            if labels.dtype.kind in "biuf" and not np.isfinite(labels).all():
+                raise ValueError("Classification labels must be finite or missing.")
+            check_classification_targets(labels)
+            encoder = LabelEncoder().fit(labels)
+            if len(encoder.classes_) < 2:
+                raise ValueError(f"Classification task {task} requires at least two classes.")
+            if self.target_type == "multi_target" and len(encoder.classes_) != 2:
+                raise ValueError("Multitarget classification supports only binary tasks (two classes per column).")
+            encoded[~missing[:, task], task] = encoder.transform(labels)
+            self.label_encoders_.append(encoder)
+        if self.target_type == "single_target":
+            self.label_encoder_ = self.label_encoders_[0]
+            self.classes_ = self.label_encoder_.classes_
+            return np.where(missing[:, 0], -1, encoded[:, 0]).astype(np.int64), len(self.classes_)
+        self.classes_ = [encoder.classes_ for encoder in self.label_encoders_]
+        return encoded, self.n_outputs_
 
     def _numerical_embedding_config(self) -> dict[str, Any] | None:
         """Build the network configuration for the selected numeric embedding."""
@@ -537,11 +617,14 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
 
 
 class TabMRegressorMother(RegressorMixin, _BaseTabMMother):
-    """Single-target TabM regressor with standardized targets.
+    """Single- or multitarget TabM regressor with missing-label support.
 
     Numeric targets are standardized during fitting and converted back to
     their original units for predictions. The final prediction is the mean
     across the ensemble members trained by the skorch network.
+    Use ``target_type="multi_target"`` for a two-dimensional target matrix.
+    Missing labels are masked; each task needs an observed finite training
+    value. Input features must still be nonmissing.
     """
 
     def predict(self, X: Features) -> npt.NDArray[np.float64]:
@@ -551,10 +634,32 @@ class TabMRegressorMother(RegressorMixin, _BaseTabMMother):
             X: Dense features with the same schema used during fitting.
 
         Returns:
-            One float64 prediction per input row, in the original target units.
+            Float64 predictions in original target units: a vector for
+            single-target mode, or a matrix with one column per task.
         """
         predictions = self._member_predictions(X).double().mean(dim=1).numpy()
-        return self.target_scaler_.inverse_transform(predictions).ravel()
+        restored = self.target_scaler_.inverse_transform(predictions)
+        return restored.ravel() if self.target_type == "single_target" else restored
+
+    def score(self, X: Features, y: Any, sample_weight: Any = None) -> float:
+        """Return mean task R-squared, evaluating only observed target labels.
+
+        Each task needs at least two observed evaluation labels. External
+        sklearn scorers are not automatically missing-label aware.
+        """
+        predictions = self.predict(X).reshape(len(X), self.n_outputs_)
+        raw_targets = self._target_array(y)
+        targets = np.asarray(np.where(pd.isna(raw_targets), np.nan, raw_targets), dtype=np.float64)
+        if targets.shape != predictions.shape or np.isinf(targets).any():
+            raise ValueError("Evaluation targets must match predictions and contain only finite values or NaN.")
+        scores = []
+        for task in range(self.n_outputs_):
+            observed = np.isfinite(targets[:, task])
+            if observed.sum() < 2:
+                raise ValueError("Each regression task requires at least two observed labels for scoring.")
+            weights = None if sample_weight is None else np.asarray(sample_weight)[observed]
+            scores.append(r2_score(targets[observed, task], predictions[observed, task], sample_weight=weights))
+        return float(np.mean(scores))
 
     def predict_uncertainty(self, X: Features, uncertainty_for_opt: bool = False) -> pd.DataFrame:
         """Return member-mean predictions and population standard deviation.
@@ -569,44 +674,60 @@ class TabMRegressorMother(RegressorMixin, _BaseTabMMother):
 
         Returns:
             A DataFrame containing predictions and uncertainty fields, or just
-            ``knowledge_uncertainty`` when ``uncertainty_for_opt`` is true.
+            knowledge uncertainty when ``uncertainty_for_opt`` is true.
+            Multitarget columns use ``target_i_`` prefixes in task order.
         """
         members = self._member_predictions(X).double()
-        predictions = self.target_scaler_.inverse_transform(members.mean(dim=1).numpy()).ravel()
-        knowledge = members.std(dim=1, correction=0).numpy().ravel() * self.target_scaler_.scale_[0]
+        predictions = self.target_scaler_.inverse_transform(members.mean(dim=1).numpy())
+        knowledge = members.std(dim=1, correction=0).numpy() * self.target_scaler_.scale_
         index = X.index if isinstance(X, pd.DataFrame) else pd.RangeIndex(len(predictions))
-        if uncertainty_for_opt:
-            return pd.DataFrame({"knowledge_uncertainty": knowledge}, index=index)
-        return pd.DataFrame(
-            {
-                "pred": predictions,
-                "mean_predictions": predictions,
-                "knowledge_uncertainty": knowledge,
-                "data_uncertainty": None,
-                "total_uncertainty": None,
-            },
-            index=index,
-        )
+        result = pd.DataFrame(index=index)
+        for task in range(self.n_outputs_):
+            prefix = "" if self.target_type == "single_target" else f"target_{task}_"
+            if not uncertainty_for_opt:
+                result[prefix + "pred"] = predictions[:, task]
+                result[prefix + "mean_predictions"] = predictions[:, task]
+            result[prefix + "knowledge_uncertainty"] = knowledge[:, task]
+            if not uncertainty_for_opt:
+                result[prefix + "data_uncertainty"] = None
+                result[prefix + "total_uncertainty"] = None
+        return result
 
 
 class TabMClassifierMother(ClassifierMixin, _BaseTabMMother):
-    """Binary or multiclass TabM classifier with probability-space averaging.
+    """Single-target classification or multitarget binary classification.
 
     Mother encodes labels as integer class indices for training and maps
     predictions back to the original labels. Each ensemble member's logits are
     converted to probabilities before the member probabilities are averaged.
+    Multitarget mode uses independent sigmoid outputs and requires two observed
+    classes per task; single-target mode uses softmax and also supports
+    multiclass labels. Missing labels are masked in either mode.
     """
 
-    def predict_proba(self, X: Features) -> npt.NDArray[np.float32]:
+    def predict_proba(self, X: Features) -> npt.NDArray[np.float32] | list[npt.NDArray[np.float32]]:
         """Predict class probabilities by averaging member probabilities.
 
         Args:
             X: Dense features with the same schema used during fitting.
 
         Returns:
-            A probability matrix with one column per class in ``classes_``.
+            A class-probability matrix for single-target mode. Multitarget mode
+            returns a list of two-column matrices, one per task, in each
+            task's ``classes_`` order.
         """
-        return self._member_predictions(X).softmax(dim=-1).mean(dim=1).numpy()
+        probabilities = self._classification_probabilities(X).mean(dim=1).numpy()
+        if self.target_type == "single_target":
+            return probabilities[:, 0, :]
+        return [probabilities[:, task, :] for task in range(self.n_outputs_)]
+
+    def _classification_probabilities(self, X: Features) -> Tensor:
+        """Return member probabilities with explicit task and class axes."""
+        members = self._member_predictions(X)
+        if self.target_type == "single_target":
+            return members.softmax(dim=-1).unsqueeze(2)
+        positive = members.sigmoid()
+        return torch.stack([1 - positive, positive], dim=-1)
 
     def predict(self, X: Features) -> npt.NDArray[Any]:
         """Predict the original class label with highest averaged probability.
@@ -615,10 +736,40 @@ class TabMClassifierMother(ClassifierMixin, _BaseTabMMother):
             X: Dense features with the same schema used during fitting.
 
         Returns:
-            One decoded class label per input row.
+            Decoded class labels: a vector in single-target mode or a matrix
+            with one column per task in multitarget mode.
         """
-        probabilities = self.predict_proba(X)
-        return self.classes_[probabilities.argmax(axis=1)]
+        probabilities = self._classification_probabilities(X).mean(dim=1).numpy()
+        labels = [
+            encoder.inverse_transform(probabilities[:, task, :].argmax(axis=1))
+            for task, encoder in enumerate(self.label_encoders_)
+        ]
+        if self.target_type == "single_target":
+            return labels[0]
+        result = np.empty((len(X), self.n_outputs_), dtype=object)
+        for task, values in enumerate(labels):
+            result[:, task] = values
+        # Preserve ordinary numeric output dtypes when tasks share that dtype.
+        if all(values.dtype == labels[0].dtype for values in labels):
+            return np.column_stack(labels)
+        return result
+
+    def score(self, X: Features, y: Any, sample_weight: Any = None) -> float:
+        """Return mean task accuracy using only observed evaluation labels."""
+        predictions = self.predict(X).reshape(len(X), self.n_outputs_)
+        targets = self._target_array(y)
+        if targets.shape != predictions.shape:
+            raise ValueError("Evaluation target shape must match predictions.")
+        scores = []
+        for task, encoder in enumerate(self.label_encoders_):
+            observed = ~pd.isna(targets[:, task])
+            if not observed.any():
+                raise ValueError("Each classification task requires observed labels for scoring.")
+            actual = encoder.transform(np.asarray(targets[observed, task].tolist()))
+            predicted = encoder.transform(np.asarray(predictions[observed, task].tolist()))
+            weights = None if sample_weight is None else np.asarray(sample_weight)[observed]
+            scores.append(accuracy_score(actual, predicted, sample_weight=weights))
+        return float(np.mean(scores))
 
     def predict_uncertainty(self, X: Features, uncertainty_for_opt: bool = False) -> pd.DataFrame:
         """Decompose predictive entropy into expected member entropy and disagreement.
@@ -631,6 +782,8 @@ class TabMClassifierMother(ClassifierMixin, _BaseTabMMother):
 
         Probability columns follow ``classes_``. ``mean_predictions`` is unset
         for classification, matching Mother's classification fallback.
+        Multitarget outputs use ``target_i_`` prefixes with independent
+        probability and entropy fields for each binary task.
 
         Args:
             X: Dense features with the same schema used during fitting.
@@ -641,7 +794,7 @@ class TabMClassifierMother(ClassifierMixin, _BaseTabMMother):
             probabilities, and uncertainty fields, or just
             ``knowledge_uncertainty`` when ``uncertainty_for_opt`` is true.
         """
-        probabilities = self._member_predictions(X).softmax(dim=-1)
+        probabilities = self._classification_probabilities(X)
         mean_probabilities = probabilities.mean(dim=1).numpy()
         # Float64 and xlogy preserve small differences and define 0 * log(0) as 0.
         member_probabilities = probabilities.double()
@@ -650,13 +803,16 @@ class TabMClassifierMother(ClassifierMixin, _BaseTabMMother):
         data = -torch.special.xlogy(member_probabilities, member_probabilities).sum(dim=-1).mean(dim=1)
         knowledge = (total - data).clamp_min(0)
         index = X.index if isinstance(X, pd.DataFrame) else pd.RangeIndex(len(mean_probabilities))
-        if uncertainty_for_opt:
-            return pd.DataFrame({"knowledge_uncertainty": knowledge.numpy()}, index=index)
-        result = pd.DataFrame({"pred": self.classes_[mean_probabilities.argmax(axis=1)]}, index=index)
-        for i in range(len(self.classes_)):
-            result[f"proba_{i}"] = mean_probabilities[:, i]
-        result["mean_predictions"] = None
-        result["knowledge_uncertainty"] = knowledge.numpy()
-        result["data_uncertainty"] = data.numpy()
-        result["total_uncertainty"] = total.numpy()
+        result = pd.DataFrame(index=index)
+        for task, encoder in enumerate(self.label_encoders_):
+            prefix = "" if self.target_type == "single_target" else f"target_{task}_"
+            if not uncertainty_for_opt:
+                result[prefix + "pred"] = encoder.inverse_transform(mean_probabilities[:, task, :].argmax(axis=1))
+                for i in range(len(encoder.classes_)):
+                    result[prefix + f"proba_{i}"] = mean_probabilities[:, task, i]
+                result[prefix + "mean_predictions"] = None
+            result[prefix + "knowledge_uncertainty"] = knowledge[:, task].numpy()
+            if not uncertainty_for_opt:
+                result[prefix + "data_uncertainty"] = data[:, task].numpy()
+                result[prefix + "total_uncertainty"] = total[:, task].numpy()
         return result

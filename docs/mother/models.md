@@ -116,11 +116,131 @@ np.testing.assert_allclose(probabilities.sum(axis=1), 1.0, atol=1e-6)
 This self-contained smoke example uses a deliberately small training budget,
 not a recommended configuration for model-quality evaluation.
 
-The supported tasks are finite single-target regression, binary classification,
-and multiclass classification. Both pandas DataFrames and dense NumPy arrays
-are accepted. For DataFrames, column names and order must match at prediction
-time. Sparse inputs, multilabel classification, multi-target regression,
-missing-target learning, and flow heads are not supported in this initial integration.
+The estimators support single- and multitarget regression, single-target binary
+or multiclass classification, and multitarget binary classification. Missing
+target labels are supported for both regression and classification. Both pandas
+DataFrames and dense NumPy arrays are accepted. For DataFrames, feature column
+names and order must match at prediction time. Sparse inputs, multitarget
+multiclass classification, mixed regression/classification tasks in one
+estimator, and flow heads are not supported.
+
+### Multitask learning and missing labels
+
+Regression and classification remain separate estimators. Use
+`target_type="multi_target"` and a two-dimensional target matrix or DataFrame
+to train multiple tasks together. The tasks share one neural backbone, rather
+than fitting a separate network per target. Regression uses one output per task;
+multitarget binary classification uses one sigmoid output per task.
+
+```text
+                  Shared TabM backbone
+                          |
+                +---------+---------+
+                |                   |
+             Task 0              Task 1
+                |                   |
+           Observed label?     Observed label?
+                |                   |
+         Yes: include loss   No: mask this loss
+```
+
+For classification, each task column must contain exactly two observed classes.
+Labels are encoded independently per task; different tasks may use different
+label sets. Single-target classification still supports more than two classes.
+
+```python
+from mother.ml.models.m_tabm import TabMRegressorMother, TabMClassifierMother
+
+# Reuse X_train, X_test, y_train, and demo_parameters from the example above.
+# Target matrices have shape (n_samples, n_tasks). Missing entries may be NaN.
+regression_targets = np.column_stack([y_train, -2.0 * y_train])
+binary_targets = np.column_stack([
+    (y_train > np.median(y_train)).astype(float),
+    (X_train[:, 0] > np.median(X_train[:, 0])).astype(float),
+])
+regression_targets[::4, 0] = np.nan
+regression_targets[1::4, 1] = np.nan
+binary_targets[::4, 0] = np.nan
+binary_targets[1::4, 1] = np.nan
+
+regressor = TabMRegressorMother(**demo_parameters, target_type="multi_target")
+regressor.fit(X_train, regression_targets)
+regression_predictions = regressor.predict(X_test)  # (n_test, n_tasks), float64
+assert regression_predictions.shape == (len(X_test), 2)
+assert np.isfinite(regression_predictions).all()
+
+classifier = TabMClassifierMother(**demo_parameters, target_type="multi_target")
+classifier.fit(X_train, binary_targets)
+classification_predictions = classifier.predict(X_test)  # (n_test, n_tasks)
+task_probabilities = classifier.predict_proba(X_test)
+# List of (n_test, 2) probability arrays, one per task.
+# classifier.classes_[task] gives the label order for that array.
+assert classification_predictions.shape == (len(X_test), 2)
+assert len(task_probabilities) == 2
+for probabilities in task_probabilities:
+    assert probabilities.shape == (len(X_test), 2)
+    np.testing.assert_allclose(probabilities.sum(axis=1), 1.0, atol=1e-6)
+```
+
+In MotherSettings, set `model.target_type="multi_target"` and use
+`model.model_type="regression"` or `"classification_binary"`. Constructor
+parameters such as network width remain in `model.parameters`.
+
+Missing labels (`NaN`, `None`, or pandas missing values) are masked, not imputed.
+For each mini-batch, the loss first averages over the observed labels and
+ensemble members within each task, then averages over tasks that have an
+observed label in that batch. Tasks without labels in a batch contribute no
+loss. This gives each present task equal weight rather than giving tasks with
+more observed labels a larger weight.
+
+Rows with no observed target labels are excluded from training with a warning,
+before fitting feature preprocessing or PWL bins. Every regression task needs
+at least one observed finite training value; each classification task needs both
+classes in the training fold. Infinities are rejected. Numeric and categorical
+**input features must still be nonmissing** and should be imputed upstream.
+
+Regression target scaling uses observed values separately for each task and
+keeps the missing-label mask intact. This also prevents a target with large
+numeric units from dominating solely because of its scale.
+
+Multitarget uncertainty outputs use `target_0_`, `target_1_`, etc., regardless of
+the original target column names:
+
+| Output | Multitarget regression | Multitarget binary classification |
+|---|---|---|
+| `target_i_pred` | Mean member prediction in task units | Decoded class label |
+| `target_i_mean_predictions` | Same as `target_i_pred` | Unset |
+| `target_i_proba_0`, `target_i_proba_1` | Not returned | Mean class probabilities in task class order |
+| `target_i_knowledge_uncertainty` | Member standard deviation in task units | Member disagreement in nats |
+| `target_i_data_uncertainty` | Unset | Mean member entropy in nats |
+| `target_i_total_uncertainty` | Unset | Entropy of mean probabilities in nats |
+
+`uncertainty_for_opt=True` returns only the per-task knowledge-uncertainty
+columns; it does not collapse tasks into one acquisition value. Single-target
+prediction shapes and unprefixed uncertainty column names are unchanged.
+
+The estimators' `.score()` methods mask missing evaluation labels. Regression
+returns the mean per-task R-squared and requires at least two observed labels
+per evaluated task. Classification returns mean per-task accuracy, not
+all-tasks-correct subset accuracy, and requires observed labels in each
+evaluated task. With complete single-target labels, these match the usual
+sklearn scoring definitions.
+
+For missing-label CV, use an appropriate splitter such as `KFold`, ensuring
+each training fold contains enough observations/classes for every task.
+Standard stratification cannot consume arbitrary missing multitask labels.
+External sklearn scorers such as `"neg_mean_squared_error"` do not become
+missing-label aware automatically. To use the estimator's masked scoring in
+MotherTuner, pass a scorer callable:
+
+```python
+from mother.optimization.core import MotherTuner
+
+def observed_target_score(estimator, X, y):
+    return estimator.score(X, y)
+
+tuner = MotherTuner(scorer=observed_target_score)
+```
 
 ### Categorical inputs and preprocessing
 
@@ -324,8 +444,7 @@ negative log-likelihood. `uncertainty_for_opt=True` returns only the
 `knowledge_uncertainty` column for acquisition/optimization workflows.
 
 Non-shared training batches are not exposed by this adapter. Numerical
-embeddings are opt-in as described above; linear/ReLU and periodic embedding
-variants are not exposed by the Mother wrapper.
+embeddings remain opt-in as described above.
 
 ## Ranking with `CatboostRankerMother`
 

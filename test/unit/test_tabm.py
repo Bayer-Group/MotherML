@@ -434,6 +434,278 @@ def test_ensemble_loss_trains_each_member():
     torch.testing.assert_close(_EnsembleLoss(classification=True)(logits, labels), expected)
 
 
+@pytest.mark.parametrize("classification", [False, True])
+def test_masked_multitarget_loss_and_gradients(classification):
+    predictions = torch.tensor(
+        [[[0.2, 1.0, 2.0], [0.8, 2.0, 3.0]], [[0.3, 3.0, 4.0], [0.7, 4.0, 5.0]]],
+        requires_grad=True,
+    )
+    targets = torch.tensor([[1.0, 0.0, float("nan")], [0.0, float("nan"), float("nan")]])
+    loss = _EnsembleLoss(classification=classification, multitarget=True)(predictions, targets)
+    task_losses = []
+    for task in range(2):
+        observed = targets[:, task].isfinite()
+        expected_targets = targets[observed, task, None].expand(-1, 2)
+        if classification:
+            task_losses.append(
+                nn.functional.binary_cross_entropy_with_logits(predictions[observed, :, task], expected_targets)
+            )
+        else:
+            task_losses.append(nn.functional.mse_loss(predictions[observed, :, task], expected_targets))
+    torch.testing.assert_close(loss, torch.stack(task_losses).mean())
+    loss.backward()
+    assert predictions.grad.isfinite().all()
+    assert (predictions.grad[:, :, 2] == 0).all()
+    assert (predictions.grad[1, :, 1] == 0).all()
+    assert (predictions.grad[:, :, 0] != 0).all()
+    with pytest.raises(ValueError, match="at least one observed"):
+        _EnsembleLoss(classification=classification, multitarget=True)(predictions, torch.full((2, 3), float("nan")))
+
+
+@pytest.mark.parametrize("estimator", [TabMRegressorMother, TabMClassifierMother])
+@pytest.mark.parametrize("as_frame", [False, True])
+@pytest.mark.parametrize("arch_type", ["tabm", "tabm-mini"])
+def test_multitarget_missing_labels(data, small_params, estimator, as_frame, arch_type, caplog):
+    X, y = data
+    targets = np.column_stack([y.astype(np.float64) + 1e8, y * 100])
+    if estimator is TabMClassifierMother:
+        targets = np.column_stack([(y > 0).astype(float), (y > np.median(y)).astype(float)])
+    targets[::3, 0] = np.nan
+    targets[1::3, 1] = np.nan
+    targets[-1] = np.nan
+    input_targets = pd.DataFrame(targets, columns=["task_a", "task_b"]) if as_frame else targets
+    model = estimator(**small_params, target_type="multi_target", num_emb_type="pwl", arch_type=arch_type).fit(
+        X, input_targets
+    )
+    assert "no observed target labels" in caplog.text
+    observed_rows = np.isfinite(targets).any(axis=1)
+    np.testing.assert_allclose(model.scaler_.mean_, X.loc[observed_rows].mean(), atol=1e-12)
+    predictions = model.predict(X)
+    assert predictions.shape == targets.shape
+    assert np.isfinite(predictions).all()
+    assert np.isfinite(model.score(X, input_targets))
+    assert model.net_.module_.output.weight.shape[-1] == 2
+    assert np.isfinite(model.net_.history[-1]["train_loss"])
+    cloned = clone(model)
+    assert cloned.get_params() == model.get_params()
+    restored = pickle.loads(pickle.dumps(model))
+    np.testing.assert_array_equal(restored.predict(X), predictions)
+    result = model.predict_uncertainty(X)
+    pd.testing.assert_index_equal(result.index, X.index)
+    for task in range(2):
+        np.testing.assert_array_equal(result[f"target_{task}_pred"], predictions[:, task])
+        assert np.isfinite(result[f"target_{task}_knowledge_uncertainty"]).all()
+    assert model.predict_uncertainty(X, uncertainty_for_opt=True).columns.tolist() == [
+        "target_0_knowledge_uncertainty",
+        "target_1_knowledge_uncertainty",
+    ]
+    if estimator is TabMRegressorMother:
+        np.testing.assert_allclose(model.target_scaler_.mean_, np.nanmean(targets, axis=0), rtol=0, atol=1e-8)
+        np.testing.assert_allclose(model.target_scaler_.scale_, np.nanstd(targets, axis=0), atol=1e-7)
+        assert predictions.dtype == np.float64
+        for task in range(2):
+            assert result[f"target_{task}_data_uncertainty"].isna().all()
+    else:
+        probabilities = model.predict_proba(X)
+        assert isinstance(probabilities, list)
+        assert len(probabilities) == 2
+        assert len(model.classes_) == 2
+        for task in range(2):
+            assert probabilities[task].shape == (len(X), 2)
+            np.testing.assert_allclose(probabilities[task].sum(axis=1), 1, atol=1e-6)
+            np.testing.assert_array_equal(
+                predictions[:, task], model.classes_[task][probabilities[task].argmax(axis=1)]
+            )
+            np.testing.assert_allclose(
+                result[f"target_{task}_total_uncertainty"],
+                result[f"target_{task}_knowledge_uncertainty"] + result[f"target_{task}_data_uncertainty"],
+                atol=1e-12,
+            )
+    # Refit with another target layout must not retain task-specific state.
+    single_targets = (y > 0).astype(int) if estimator is TabMClassifierMother else y
+    model.set_params(target_type="single_target").fit(X, single_targets)
+    assert model.predict(X).shape == (len(X),)
+
+
+@pytest.mark.parametrize("estimator", [TabMRegressorMother, TabMClassifierMother])
+def test_single_target_missing_labels(data, small_params, estimator):
+    X, y = data
+    targets = y.astype(np.float64) if estimator is TabMRegressorMother else (y > 0).astype(float)
+    targets[::3] = np.nan
+    model = estimator(**small_params).fit(X, targets)
+    assert model.predict(X).shape == (len(X),)
+    assert np.isfinite(model.score(X, targets))
+    assert np.isfinite(model.net_.history[-1]["train_loss"])
+
+
+def test_missing_multiclass_labels_and_masked_loss(data, small_params):
+    X, y = data
+    targets = (np.arange(len(y)) % 3).astype(float)
+    targets[::4] = np.nan
+    model = TabMClassifierMother(**small_params).fit(X, targets)
+    assert model.predict_proba(X).shape == (len(X), 3)
+    assert np.isfinite(model.score(X, targets))
+    logits = torch.tensor([[[2.0, 0.0], [1.0, 0.0]], [[0.0, 0.0], [0.0, 0.0]]], requires_grad=True)
+    loss = _EnsembleLoss(classification=True)(logits, torch.tensor([0, -1]))
+    torch.testing.assert_close(loss, nn.functional.cross_entropy(logits[0], torch.tensor([0, 0])))
+    loss.backward()
+    assert (logits.grad[1] == 0).all()
+
+
+@pytest.mark.parametrize("estimator", [TabMRegressorMother, TabMClassifierMother])
+def test_multitarget_one_column_shapes(data, small_params, estimator):
+    X, y = data
+    targets = y[:, None] if estimator is TabMRegressorMother else (y[:, None] > 0).astype(float)
+    model = estimator(**small_params, target_type="multi_target").fit(X, targets)
+    assert model.predict(X).shape == (len(X), 1)
+    assert model.predict_uncertainty(X, uncertainty_for_opt=True).shape == (len(X), 1)
+    if estimator is TabMClassifierMother:
+        probabilities = model.predict_proba(X)
+        assert isinstance(probabilities, list)
+        assert len(probabilities) == 1
+        assert probabilities[0].shape == (len(X), 2)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+@pytest.mark.parametrize("estimator", [TabMRegressorMother, TabMClassifierMother])
+def test_multitarget_cuda_missing_labels(data, small_params, estimator):
+    X, y = data
+    targets = np.column_stack([y, -y]).astype(np.float64)
+    if estimator is TabMClassifierMother:
+        targets = (targets > 0).astype(float)
+    targets[::3, 0] = np.nan
+    targets[1::3, 1] = np.nan
+    state = torch.cuda.get_rng_state().clone()
+    model = estimator(**small_params, target_type="multi_target", device="cuda").fit(X, targets)
+    assert model.predict(X).shape == targets.shape
+    assert np.isfinite(model.score(X, targets))
+    torch.testing.assert_close(torch.cuda.get_rng_state(), state)
+
+
+def test_multitarget_string_labels_and_nullable_targets(data, small_params):
+    X, y = data
+    targets = pd.DataFrame(
+        {
+            "first": pd.Series(np.where(y > 0, "yes", "no"), dtype="string"),
+            "second": pd.Series((y > np.median(y)).astype(int), dtype="Int64"),
+        }
+    )
+    targets.iloc[::3, 0] = pd.NA
+    targets.iloc[1::3, 1] = pd.NA
+    model = TabMClassifierMother(**small_params, target_type="multi_target").fit(X, targets)
+    predictions = model.predict(X)
+    assert set(predictions[:, 0]) <= {"yes", "no"}
+    assert set(predictions[:, 1]) <= {0, 1}
+    assert np.isfinite(model.score(X, targets))
+    regression_targets = pd.DataFrame({"a": pd.Series(y, dtype="Float64"), "b": y * 2})
+    regression_targets.iloc[::3, 0] = pd.NA
+    regressor = TabMRegressorMother(**small_params, target_type="multi_target").fit(X, regression_targets)
+    assert np.isfinite(regressor.predict(X)).all()
+
+
+@pytest.mark.parametrize("estimator", [TabMRegressorMother, TabMClassifierMother])
+def test_multitarget_invalid_labels(data, small_params, estimator):
+    X, y = data
+    model = estimator(**small_params, target_type="multi_target")
+    with pytest.raises(ValueError, match="2D"):
+        model.fit(X, y)
+    with pytest.raises(ValueError, match="observed"):
+        model.fit(X, np.column_stack([y, np.full(len(y), np.nan)]))
+    targets = np.column_stack([(y > 0).astype(float), (y > 0).astype(float)])
+    targets[0, 1] = np.inf
+    with pytest.raises(ValueError, match="finite"):
+        model.fit(X, targets)
+    if estimator is TabMClassifierMother:
+        with pytest.raises(ValueError, match="only binary"):
+            model.fit(X, np.column_stack([np.arange(len(y)) % 3, np.arange(len(y)) % 2]))
+        with pytest.raises(ValueError, match="at least two classes"):
+            model.fit(X, np.column_stack([np.zeros(len(y)), np.arange(len(y)) % 2]))
+
+
+@pytest.mark.parametrize("estimator", [TabMRegressorMother, TabMClassifierMother])
+def test_multitarget_settings_cv_and_tuning(data, small_params, estimator):
+    X, y = data
+    targets = np.column_stack([y, y * 2]).astype(np.float64)
+    if estimator is TabMClassifierMother:
+        targets = (targets > 0).astype(float)
+    targets[::4, 0] = np.nan
+    targets[1::4, 1] = np.nan
+    targets = pd.DataFrame(targets, columns=["a", "b"])
+    settings = MotherSettings.create()
+    settings.model.algorithm = "tabm"
+    settings.model.model_type = "regression" if estimator is TabMRegressorMother else "classification_binary"
+    settings.model.target_type = "multi_target"
+    settings.model.parameters = small_params
+    model = get_model(settings)
+    assert isinstance(model, estimator)
+    assert model.target_type == "multi_target"
+    assert model.__sklearn_tags__().target_tags.multi_output
+    scores = cross_val_score(model, X, targets, cv=KFold(2))
+    assert np.isfinite(scores).all()
+    result = mother_cv(model, X=X, y=targets, cv=KFold(2))
+    assert len(result) == len(X)
+    for task in range(2):
+        assert result[f"pred_target_{task}_pred"].notna().all()
+        assert result[f"pred_target_{task}_knowledge_uncertainty"].notna().all()
+    pipeline = PipelineWithHyperparameterRooting([("model", model)])
+    tuner = MotherTuner(
+        scorer=lambda fitted, features, labels: fitted.score(features, labels),
+        n_trials_optuna=1,
+        n_startup_trials=1,
+    )
+    fitted = tuner.optimize(pipeline, X, targets, cross_validation=KFold(2))
+    assert fitted.predict(X[:5]).shape == (5, 2)
+    assert np.isfinite(fitted.score(X, targets))
+    settings.model.model_type = "classification_multiclass"
+    with pytest.raises(ValueError, match="only binary"):
+        get_model(settings)
+
+
+@pytest.mark.parametrize("estimator", [TabMRegressorMother, TabMClassifierMother])
+def test_multitarget_learning_with_missing_labels(data, estimator):
+    X, y = data
+    targets = np.column_stack([y, -y]).astype(np.float64)
+    if estimator is TabMClassifierMother:
+        targets = (targets > 0).astype(float)
+    targets[::3, 0] = np.nan
+    targets[1::3, 1] = np.nan
+    model = estimator(
+        target_type="multi_target",
+        n_blocks=1,
+        d_block=32,
+        k=4,
+        max_epochs=50,
+        batch_size=60,
+        lr=0.03,
+        dropout=0,
+    ).fit(X, targets)
+    assert model.score(X, targets) > 0.8
+    assert model.net_.history[-1]["train_loss"] < model.net_.history[0]["train_loss"]
+
+
+def test_multitarget_uncertainty_known_predictions(data, small_params, monkeypatch):
+    X, y = data
+    targets = np.column_stack([y, y * 100 + 1e8])
+    model = TabMRegressorMother(**small_params, target_type="multi_target").fit(X, targets)
+    members = torch.tensor([[[1.0, -2.0], [3.0, 2.0]]], dtype=torch.float32)
+    monkeypatch.setattr(model, "_member_predictions", lambda inputs: members)
+    result = model.predict_uncertainty(X.iloc[:1])
+    expected = model.target_scaler_.inverse_transform(np.array([[2.0, 0.0]]))
+    for task, spread in enumerate([1.0, 2.0]):
+        assert result[f"target_{task}_pred"].iloc[0] == pytest.approx(expected[0, task])
+        assert result[f"target_{task}_knowledge_uncertainty"].iloc[0] == pytest.approx(
+            spread * model.target_scaler_.scale_[task]
+        )
+    classifier = TabMClassifierMother(**small_params, target_type="multi_target").fit(X, (targets > targets.mean(0)))
+    logits = torch.tensor([[[10.0, 0.0], [-10.0, 0.0]]])
+    monkeypatch.setattr(classifier, "_member_predictions", lambda inputs: logits)
+    result = classifier.predict_uncertainty(X.iloc[:1])
+    assert result["target_0_knowledge_uncertainty"].iloc[0] > 0.69
+    assert result["target_0_data_uncertainty"].iloc[0] < 0.001
+    assert result["target_1_knowledge_uncertainty"].iloc[0] == pytest.approx(0)
+    assert result["target_1_data_uncertainty"].iloc[0] == pytest.approx(np.log(2))
+
+
 def test_prediction_aggregation(data, small_params, monkeypatch):
     X, y = data
     classifier = TabMClassifierMother(**small_params).fit(X, (y > 0).astype(int))
