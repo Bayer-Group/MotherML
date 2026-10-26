@@ -545,7 +545,10 @@ def get_model(settings: Union[MotherSettings, Dict]) -> ml.AbstractMotherPipelin
             algorithm=model_settings["algorithm"],
             model_type=model_settings["model_type"],
         )
-        estimator = model_class(target_type=model_settings["target_type"], **model_settings["parameters"])
+        parameters = dict(model_settings["parameters"])
+        if model_settings["algorithm"] == "tabm":
+            parameters.setdefault("model_type", model_settings["model_type"])
+        estimator = model_class(target_type=model_settings["target_type"], **parameters)
     else:
         try:
             estimator = ml.get_model_class_by_algorithm_and_type(

@@ -152,6 +152,12 @@ For classification, each task column must contain exactly two observed classes.
 Labels are encoded independently per task; different tasks may use different
 label sets. Single-target classification still supports more than two classes.
 
+Like the CatBoost estimators, both TabM classes accept `model_type`
+(`"regression"`, `"classification_binary"`, or `"classification_multiclass"`).
+The default `None` infers the task from the class and labels; an explicit
+`"classification_binary"` rejects labels with more than two classes.
+`get_model` passes `model.model_type` from MotherSettings automatically.
+
 ```python
 from mother.ml.models.m_tabm import TabMRegressorMother, TabMClassifierMother
 
@@ -303,7 +309,8 @@ Choose an embedding based on the kinds of patterns you expect:
 
 These are options to try, not guarantees that one representation will work
 better. If you are unsure, keep embeddings disabled or use
-`num_emb_type="auto"` with MotherTuner to compare the four embedding types.
+`num_emb_type="auto"` with MotherTuner to compare no embedding with the four
+embedding types.
 
 For example, PWL uses the same configuration as
 [pytabkit's TabM adapter](https://github.com/dholzmueller/pytabkit/blob/main/pytabkit/models/alg_interfaces/tabm_interface.py):
@@ -359,8 +366,9 @@ With a fixed embedding type, MotherTuner tunes its settings: `d_embedding`
 logarithmic sampling), and `num_emb_activation` for periodic embeddings. The
 periodic defaults are 48 frequencies, scale 0.01, and activation enabled.
 
-Set `num_emb_type="auto"` to let MotherTuner choose among `"linear"`,
-`"linear_relu"`, `"periodic"`, and `"pwl"`, then tune that type's settings. The
+Set `num_emb_type="auto"` to let MotherTuner choose among `"none"` (no
+embedding), `"linear"`, `"linear_relu"`, `"periodic"`, and `"pwl"`, then tune
+that type's settings. The
 default first trial uses PWL with width 16 and 48 bins. `"auto"` is for tuning;
 direct `.fit()` requires a specific embedding type. Embeddings remain opt-in:
 `num_emb_type="none"` does not search or enable them. Rooted pipelines

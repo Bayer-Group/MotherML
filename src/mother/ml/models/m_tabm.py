@@ -14,6 +14,7 @@ from sklearn.utils import Tags
 from sklearn.utils.multiclass import check_classification_targets
 from sklearn.utils.validation import check_is_fitted, column_or_1d, validate_data
 
+import mother.ml.properties as props
 from mother.errors import ExtrasDependencyImportError
 from mother.ml.core import AbstractMotherPipeline
 
@@ -124,6 +125,7 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
         self,
         *,
         target_type: Literal["single_target", "multi_target"] = "single_target",
+        model_type: props.ModelType | None = None,
         n_blocks: int | None = None,
         d_block: int = 256,
         dropout: float = 0.1,
@@ -154,6 +156,13 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
                 A target vector is treated as a one-column matrix in
                 multitarget mode, retaining multitarget output shapes.
                 Both modes allow missing target labels, but not missing inputs.
+            model_type: Task type, matching the other Mother estimators.
+                Regressors accept ``"regression"``; classifiers accept
+                ``"classification_binary"`` or ``"classification_multiclass"``.
+                ``None`` (default) infers the task from the estimator class and
+                training labels. ``"classification_binary"`` requires exactly
+                two classes per task; ``"classification_multiclass"`` requires
+                ``target_type="single_target"``.
             n_blocks: Number of blocks in the MLP backbone. ``None`` (default)
                 follows pytabkit's depth heuristic: two blocks when PWL
                 embeddings are active on numeric features, otherwise three.
@@ -181,7 +190,8 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
                 learns a representation across value intervals, which can
                 capture different effects in different parts of a feature's
                 range. These are alternative representations, not new data.
-                ``"auto"`` lets MotherTuner compare the four embedding types;
+                ``"auto"`` lets MotherTuner compare no embedding and the four
+                embedding types;
                 choose a specific type for direct fitting.
             d_embedding: Embedding width per numeric feature when embeddings
                 are enabled.
@@ -205,6 +215,7 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             verbose: Verbosity level passed to skorch.
         """
         self.target_type = target_type
+        self.model_type = model_type
         self.n_blocks = n_blocks
         self.d_block = d_block
         self.dropout = dropout
@@ -259,6 +270,18 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
         """Raise ``ValueError`` when a constructor parameter is unsupported."""
         if self.target_type not in ("single_target", "multi_target"):
             raise ValueError("target_type must be 'single_target' or 'multi_target'.")
+        allowed_model_types = (
+            ("classification_binary", "classification_multiclass")
+            if isinstance(self, ClassifierMixin)
+            else ("regression",)
+        )
+        if self.model_type is not None and self.model_type not in allowed_model_types:
+            raise ValueError(
+                f"model_type for {type(self).__name__} must be None or one of {allowed_model_types}, "
+                f"got {self.model_type!r}."
+            )
+        if self.model_type == "classification_multiclass" and self.target_type == "multi_target":
+            raise ValueError("TabM multitarget classification supports only binary tasks.")
         for name in (
             "n_blocks",
             "d_block",
@@ -490,6 +513,11 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
                 raise ValueError(f"Classification task {task} requires at least two classes.")
             if self.target_type == "multi_target" and len(encoder.classes_) != 2:
                 raise ValueError("Multitarget classification supports only binary tasks (two classes per column).")
+            if self.model_type == "classification_binary" and len(encoder.classes_) != 2:
+                raise ValueError(
+                    f"model_type='classification_binary' requires two classes, but task {task} has "
+                    f"{len(encoder.classes_)}. Use model_type='classification_multiclass' or None."
+                )
             encoded[~missing[:, task], task] = encoder.transform(labels)
             self.label_encoders_.append(encoder)
         if self.target_type == "single_target":
@@ -561,7 +589,7 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             parameters[prefix + "arch_type"] = trial.suggest_categorical(prefix + "arch_type", ["tabm", "tabm-mini"])
         embedding_type = self.num_emb_type
         if embedding_type == "auto":
-            embedding_type = trial.suggest_categorical(prefix + "num_emb_type", list(_EMBEDDING_TYPES))
+            embedding_type = trial.suggest_categorical(prefix + "num_emb_type", ["none", *_EMBEDDING_TYPES])
             parameters[prefix + "num_emb_type"] = embedding_type
         if embedding_type in _EMBEDDING_TYPES:
             parameters[prefix + "d_embedding"] = trial.suggest_int(prefix + "d_embedding", 4, 64, log=True)

@@ -794,9 +794,27 @@ def test_registry_and_settings_builder(small_params, model_type):
     assert isinstance(estimator, expected)
     assert ml.get_model_class_by_algorithm_and_type("tabm", model_type) is expected
     assert estimator.get_params()["k"] == 4
+    assert estimator.model_type == model_type
     assert estimator.num_emb_type == "pwl"
     assert estimator.d_embedding == 8
     assert estimator.num_emb_n_bins == 12
+
+
+def test_model_type_validation(data, small_params):
+    X, y = data
+    assert TabMRegressorMother(**small_params, model_type="regression").fit(X, y).model_type == "regression"
+    with pytest.raises(ValueError, match="model_type for TabMRegressorMother"):
+        TabMRegressorMother(**small_params, model_type="classification_binary").fit(X, y)
+    with pytest.raises(ValueError, match="model_type for TabMClassifierMother"):
+        TabMClassifierMother(**small_params, model_type="regression").fit(X, (y > 0).astype(int))
+    multiclass = np.arange(len(X)) % 3
+    with pytest.raises(ValueError, match="requires two classes"):
+        TabMClassifierMother(**small_params, model_type="classification_binary").fit(X, multiclass)
+    TabMClassifierMother(**small_params, model_type="classification_multiclass").fit(X, multiclass)
+    with pytest.raises(ValueError, match="only binary"):
+        TabMClassifierMother(**small_params, model_type="classification_multiclass", target_type="multi_target").fit(
+            X, np.column_stack([y > 0, y > 1])
+        )
 
 
 @pytest.mark.parametrize("num_emb_type", ["none", "pwl", "auto"])
@@ -871,7 +889,7 @@ def test_auto_embedding_type_tuning(data, small_params, embedding_type, extra_pa
     suggested = model.get_hyperparameter_space(X, y, trial)
     assert suggested["num_emb_type"] == embedding_type
     assert suggested["d_embedding"] == 7
-    assert trial.distributions["num_emb_type"].choices == ("linear", "linear_relu", "periodic", "pwl")
+    assert trial.distributions["num_emb_type"].choices == ("none", "linear", "linear_relu", "periodic", "pwl")
     fitted = clone(model).set_params(**suggested).fit(X, y)
     assert fitted.net_.module_.num_module.__class__.__name__ == expected_module
     assert fitted.predict(X[:5]).shape == (5,)
@@ -886,6 +904,20 @@ def test_auto_embedding_type_tuning(data, small_params, embedding_type, extra_pa
         assert suggested["num_emb_n_bins"] == 12
     else:
         assert "num_emb_n_bins" not in suggested
+
+
+def test_auto_embedding_tuning_can_select_none(data, small_params):
+    X, y = data
+    model = TabMRegressorMother(**small_params, num_emb_type="auto")
+    defaults = model.default_parameters()
+    values = {name: defaults[name] for name in ("lr", "weight_decay", "n_blocks", "d_block", "dropout", "k")}
+    trial = FixedTrial(values | {"num_emb_type": "none"})
+    suggested = model.get_hyperparameter_space(X, y, trial)
+    assert suggested["num_emb_type"] == "none"
+    assert {"d_embedding", "num_emb_n_bins", "num_emb_n_frequencies"}.isdisjoint(suggested)
+    fitted = clone(model).set_params(**suggested).fit(X, y)
+    assert fitted.net_.module_.num_module is None
+    assert fitted.predict(X[:5]).shape == (5,)
 
 
 def test_mother_cv(data, small_params):
