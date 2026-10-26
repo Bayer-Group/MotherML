@@ -386,6 +386,46 @@ automatically prefix these parameters like the other model hyperparameters.
   fixed during tuning. Like embedding `"auto"`, architecture `"auto"` is for
   tuning; direct `.fit()` requires a specific variant. Architecture and
   embedding selection can be tuned together.
+- `loss_function=None` (default) trains with squared error for regression and
+  cross-entropy for classification. The alternatives mirror the losses
+  MotherTuner searches for CatBoost. Regressors also accept `"mae"`,
+  `"logcosh"`, and `"tweedie"` (`tweedie_variance_power` in (1, 2), default
+  1.5). Tweedie needs nonnegative targets with a positive value per task, such
+  as skewed counts or amounts. Targets are then rescaled without centering, and
+  member outputs are log means that are exponentiated before averaging.
+  Classifiers also accept `"focal"` (`focal_alpha` in (0, 1), default 0.5, and
+  positive `focal_gamma`, default 2.0) for binary tasks, which down-weights
+  well-classified samples.
+- As with CatBoost, `loss_function="auto"` lets MotherTuner choose among
+  `"mse"`, `"mae"`, `"logcosh"`, and `"tweedie"` for regression, or
+  `"cross_entropy"` and `"focal"` for classification. It uses CatBoost's ranges:
+  variance power 1.000001 to 1.999999, `focal_alpha` 0.000001 to 0.999999, and
+  `focal_gamma` 0.000001 to 7. Tweedie is offered only for valid nonnegative
+  targets and focal only
+  when every task is binary. The first default trial uses the default loss;
+  direct `.fit()` requires a specific loss.
+- `loss_function` also accepts your own callable `loss(predictions, targets)`.
+  A custom loss is used as given and is not tuned. It must return one loss per
+  target element, like PyTorch losses with `reduction="none"`; Mother then
+  masks missing labels, applies class weights, and averages over members and
+  tasks. Regression and multitarget classification pass
+  `(rows, members, tasks)` outputs with float targets (standardized for
+  regression); single-target classification passes `(rows * members, classes)`
+  logits with integer class targets. Custom losses get no class weighting by
+  default. Use a module-level function or `functools.partial` so fitted models
+  can be pickled, for example
+  `TabMRegressorMother(loss_function=partial(functional.huber_loss, reduction="none", delta=0.5))`
+  with `from torch.nn import functional`.
+- `TabMClassifierMother` accepts CatBoost's `auto_class_weights` (regressors
+  do not offer it): `"Balanced"` weights each
+  class by the largest class count divided by its count, `"SqrtBalanced"` uses
+  the square root of that ratio, and `None` or `"None"` disables weighting.
+  As with Mother's CatBoost classifier, omitting the option (the `"default"`
+  value) uses `"Balanced"` for single-target cross-entropy and no weighting
+  for focal loss or multitarget models. When
+  tuning selects focal loss, class weighting is turned off, as for CatBoost.
+  Explicit multitarget weights are computed per task. Weighting shifts
+  predicted probabilities toward rarer classes.
 - Each member is trained against the target separately. Regression predictions
   are averaged; single-target classification applies softmax to each member,
   while multitarget binary classification applies a sigmoid per task.

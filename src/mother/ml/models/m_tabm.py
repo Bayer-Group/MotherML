@@ -1,7 +1,7 @@
 """Mother estimators for TabM, trained with skorch."""
 
 import logging
-from typing import Any, Literal, Sequence, TypeAlias
+from typing import Any, Callable, Literal, Sequence, TypeAlias
 
 import numpy as np
 import numpy.typing as npt
@@ -29,6 +29,7 @@ from mother.ml.models.tabm_network import Model, make_parameter_groups
 from mother.ml.models.tabm_utils import compute_bins
 
 Features: TypeAlias = pd.DataFrame | npt.NDArray[Any]
+CustomLoss: TypeAlias = Callable[["Tensor", "Tensor"], "Tensor"]
 module_logger = logging.getLogger(__name__)
 _EMBEDDING_TYPES = ("linear", "linear_relu", "periodic", "pwl")
 _EMBEDDING_DEFAULTS = {
@@ -48,17 +49,41 @@ class _EnsembleLoss(nn.Module):
     task, then across tasks present in the batch.
     """
 
-    def __init__(self, classification: bool, multitarget: bool = False) -> None:
+    def __init__(
+        self,
+        classification: bool,
+        multitarget: bool = False,
+        loss: str | CustomLoss | None = None,
+        tweedie_variance_power: float = 1.5,
+        focal_alpha: float = 0.5,
+        focal_gamma: float = 2.0,
+        class_weights: Tensor | None = None,
+    ) -> None:
         """Create the regression or classification loss.
 
         Args:
             classification: Use cross-entropy when true, otherwise mean
                 squared error.
             multitarget: Use binary cross-entropy for multitarget classification.
+            loss: ``"mse"``, ``"mae"``, ``"logcosh"``, ``"tweedie"``,
+                ``"cross_entropy"``, ``"focal"``, or a callable returning
+                unreduced losses. ``None`` selects MSE or cross-entropy.
+            tweedie_variance_power: Tweedie power in (1, 2); predictions are
+                log means.
+            focal_alpha: Focal weight of the positive class.
+            focal_gamma: Focal down-weighting of well-classified samples.
+            class_weights: Optional per-class weights, shaped ``(classes,)``
+                for single-target or ``(tasks, 2)`` for multitarget
+                classification. Losses become weighted means.
         """
         super().__init__()
         self.classification = classification
         self.multitarget = multitarget
+        self.loss = loss if loss is not None else ("cross_entropy" if classification else "mse")
+        self.tweedie_variance_power = tweedie_variance_power
+        self.focal_alpha = focal_alpha
+        self.focal_gamma = focal_gamma
+        self.register_buffer("class_weights", class_weights)
 
     def forward(self, predictions: Tensor, targets: Tensor) -> Tensor:
         """Compute equally weighted observed task losses across members.
@@ -77,19 +102,62 @@ class _EnsembleLoss(nn.Module):
             if not observed.any():
                 raise ValueError("A training batch must contain at least one observed target.")
             repeated = targets[observed].repeat_interleave(predictions.shape[1], dim=0)
-            return nn.functional.cross_entropy(predictions[observed].flatten(0, 1), repeated)
+            logits = predictions[observed].flatten(0, 1)
+            weights = None if self.class_weights is None else self.class_weights.to(logits.dtype)
+            if callable(self.loss):
+                losses = self._custom_losses(logits, repeated)
+            elif self.loss != "focal":
+                return nn.functional.cross_entropy(logits, repeated, weight=weights)
+            else:
+                log_pt = logits.log_softmax(dim=-1).gather(1, repeated[:, None]).squeeze(1)
+                alpha = torch.where(repeated == 1, self.focal_alpha, 1 - self.focal_alpha)
+                losses = -alpha * (1 - log_pt.exp()).pow(self.focal_gamma) * log_pt
+            if weights is None:
+                return losses.mean()
+            return (weights[repeated] * losses).sum() / weights[repeated].sum()
         observed = torch.isfinite(targets)
         present = observed.any(dim=0)
         if not present.any():
             raise ValueError("A training batch must contain at least one observed target.")
         safe_targets = torch.where(observed, targets, 0).unsqueeze(1).expand_as(predictions)
-        if self.classification:
+        if callable(self.loss):
+            losses = self._custom_losses(predictions, safe_targets)
+        elif self.classification:
             losses = nn.functional.binary_cross_entropy_with_logits(predictions, safe_targets, reduction="none")
+            if self.loss == "focal":
+                probabilities = predictions.sigmoid()
+                pt = probabilities * safe_targets + (1 - probabilities) * (1 - safe_targets)
+                alpha = self.focal_alpha * safe_targets + (1 - self.focal_alpha) * (1 - safe_targets)
+                losses = alpha * (1 - pt).pow(self.focal_gamma) * losses
+        elif self.loss == "tweedie":
+            power = self.tweedie_variance_power
+            losses = -safe_targets * torch.exp((1 - power) * predictions) / (1 - power) + torch.exp(
+                (2 - power) * predictions
+            ) / (2 - power)
+        elif self.loss == "mae":
+            losses = (predictions - safe_targets).abs()
+        elif self.loss == "logcosh":
+            residuals = predictions - safe_targets
+            # Stable log(cosh(x)) = |x| + log1p(exp(-2|x|)) - log(2).
+            losses = residuals.abs() + nn.functional.softplus(-2 * residuals.abs()) - np.log(2)
         else:
             losses = (predictions - safe_targets).square()
-        masked = torch.where(observed.unsqueeze(1), losses, 0)
-        counts = observed.sum(dim=0).clamp_min(1) * predictions.shape[1]
-        return (masked.sum(dim=(0, 1)) / counts)[present].mean()
+        weights = observed.unsqueeze(1).expand_as(predictions).to(losses.dtype)
+        if self.class_weights is not None:
+            task_weights = self.class_weights.to(losses.dtype)
+            weights = weights * torch.where(safe_targets == 1, task_weights[:, 1], task_weights[:, 0])
+        weighted = torch.where(observed.unsqueeze(1), losses * weights, 0).sum(dim=(0, 1))
+        return (weighted[present] / weights.sum(dim=(0, 1))[present]).mean()
+
+    def _custom_losses(self, predictions: Tensor, targets: Tensor) -> Tensor:
+        """Apply a user loss, which must return one loss per target element."""
+        losses = self.loss(predictions, targets)
+        if not isinstance(losses, Tensor) or losses.shape != targets.shape:
+            raise ValueError(
+                f"A custom loss_function must return unreduced losses with shape {tuple(targets.shape)}, "
+                f"got {getattr(losses, 'shape', type(losses))}; use reduction='none' for PyTorch losses."
+            )
+        return losses
 
 
 class _TabMNet(NeuralNet):
@@ -137,6 +205,12 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
         num_emb_n_frequencies: int = 48,
         num_emb_frequency_init_scale: float = 0.01,
         num_emb_activation: bool = True,
+        loss_function: Literal["auto", "mse", "mae", "logcosh", "tweedie", "cross_entropy", "focal"]
+        | CustomLoss
+        | None = None,
+        tweedie_variance_power: float = 1.5,
+        focal_alpha: float = 0.5,
+        focal_gamma: float = 2.0,
         lr: float = 0.002,
         weight_decay: float = 0.0003,
         max_epochs: int = 100,
@@ -202,6 +276,37 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
                 periodic embedding frequencies.
             num_emb_activation: Whether to apply ReLU after periodic
                 embeddings.
+            loss_function: Training loss, mirroring the losses MotherTuner
+                searches for CatBoost. ``None`` (default) uses ``"mse"`` for
+                regression and ``"cross_entropy"`` for classification.
+                Regressors also accept ``"mae"``, ``"logcosh"``, and
+                ``"tweedie"``; Tweedie needs nonnegative targets with a
+                positive value per task and predicts through a log link.
+                Classifiers also accept ``"focal"`` for binary tasks.
+                ``"auto"`` lets MotherTuner choose between the task's losses,
+                offering Tweedie and focal only when the data allow them;
+                choose a specific loss for direct fitting.
+                A callable ``loss(predictions, targets)`` supplies a custom
+                loss and is never tuned. It must return unreduced losses with
+                the targets' shape, like PyTorch losses with
+                ``reduction="none"``; Mother then masks missing labels,
+                applies class weights, and averages over members and tasks.
+                Regression and multitarget classification pass
+                ``(rows, members, tasks)`` outputs and float targets, using
+                standardized targets for regression. Custom regression
+                outputs are treated as standardized predictions and mapped
+                back with the target scaler, so the loss must compare them
+                with targets directly (identity link); log-link losses such as
+                Poisson are unsupported. Scale parameters such as Huber's
+                ``delta`` are in target standard deviations. Single-target
+                classification passes ``(rows * members, classes)`` logits and
+                integer class targets. Use a module-level function or
+                ``functools.partial`` so fitted models can be pickled.
+            tweedie_variance_power: Tweedie variance power, in (1, 2).
+            focal_alpha: Focal loss weight of the positive class, in (0, 1).
+                ``0.5`` weights both classes equally.
+            focal_gamma: Positive focal loss exponent; larger values
+                down-weight well-classified samples more strongly.
             lr: AdamW learning rate.
             weight_decay: AdamW weight decay for parameters not excluded by
                 TabM's parameter-group rules.
@@ -227,6 +332,10 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
         self.num_emb_n_frequencies = num_emb_n_frequencies
         self.num_emb_frequency_init_scale = num_emb_frequency_init_scale
         self.num_emb_activation = num_emb_activation
+        self.loss_function = loss_function
+        self.tweedie_variance_power = tweedie_variance_power
+        self.focal_alpha = focal_alpha
+        self.focal_gamma = focal_gamma
         self.lr = lr
         self.weight_decay = weight_decay
         self.max_epochs = max_epochs
@@ -306,6 +415,29 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             raise ValueError("num_emb_frequency_init_scale must be positive and finite.")
         if not isinstance(self.num_emb_activation, bool):
             raise ValueError("num_emb_activation must be a boolean.")
+        allowed_losses = self._task_losses()
+        if (
+            self.loss_function is not None
+            and not callable(self.loss_function)
+            and self.loss_function not in ("auto", *allowed_losses)
+        ):
+            raise ValueError(
+                f"loss_function for {type(self).__name__} must be None, 'auto', a callable, or one of {allowed_losses}."
+            )
+        if not 1 < self.tweedie_variance_power < 2:
+            raise ValueError("tweedie_variance_power must be in (1, 2).")
+        if not 0 < self.focal_alpha < 1:
+            raise ValueError("focal_alpha must be in (0, 1).")
+        if not np.isfinite(self.focal_gamma) or self.focal_gamma <= 0:
+            raise ValueError("focal_gamma must be positive and finite.")
+        if isinstance(self, ClassifierMixin) and self.auto_class_weights not in (
+            "default",
+            None,
+            "Balanced",
+            "SqrtBalanced",
+            "None",
+        ):
+            raise ValueError("auto_class_weights must be 'default', None, 'Balanced', 'SqrtBalanced', or 'None'.")
         if not 0 <= self.dropout < 1:
             raise ValueError("dropout must be in [0, 1).")
         if not np.isfinite(self.lr) or self.lr <= 0:
@@ -401,6 +533,9 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             raise ValueError("arch_type='auto' is only supported during MotherTuner optimization.")
         if self.num_emb_type == "auto":
             raise ValueError("num_emb_type='auto' is only supported during MotherTuner optimization.")
+        if self.loss_function == "auto":
+            raise ValueError("loss_function='auto' is only supported during MotherTuner optimization.")
+        loss = self.loss_ = self._resolved_loss()
         targets = self._target_array(y)
         if len(targets) != len(X):
             raise ValueError("X and y must contain the same number of samples.")
@@ -408,6 +543,9 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
         self.n_outputs_ = targets.shape[1]
         if classification:
             prepared_targets, output_dim = self._prepare_classification_targets(targets)
+            if loss == "focal" and output_dim > 2:
+                raise ValueError("Focal loss supports only binary classification tasks.")
+            self.class_weights_ = self._class_weights(prepared_targets, output_dim, loss)
             observed_rows = (~pd.isna(targets)).any(axis=1)
         else:
             numeric_targets = np.asarray(np.where(pd.isna(targets), np.nan, targets), dtype=np.float64)
@@ -416,7 +554,13 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             observed_rows = np.isfinite(numeric_targets).any(axis=1)
             if not np.isfinite(numeric_targets).any(axis=0).all():
                 raise ValueError("Each regression task requires at least one observed finite target.")
-            self.target_scaler_ = StandardScaler().fit(numeric_targets)
+            if loss == "tweedie":
+                if not self._tweedie_compatible(numeric_targets):
+                    raise ValueError("Tweedie loss requires nonnegative targets with a positive value per task.")
+                # Rescaling without centering keeps targets nonnegative for the log link.
+                self.target_scaler_ = StandardScaler(with_mean=False).fit(numeric_targets)
+            else:
+                self.target_scaler_ = StandardScaler().fit(numeric_targets)
             prepared_targets = self.target_scaler_.transform(numeric_targets).astype(np.float32)
             output_dim = self.n_outputs_
         if not observed_rows.all():
@@ -457,6 +601,15 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             criterion=_EnsembleLoss,
             criterion__classification=classification,
             criterion__multitarget=self.target_type == "multi_target",
+            criterion__loss=loss,
+            criterion__tweedie_variance_power=self.tweedie_variance_power,
+            criterion__focal_alpha=self.focal_alpha,
+            criterion__focal_gamma=self.focal_gamma,
+            criterion__class_weights=(
+                torch.as_tensor(self.class_weights_, dtype=torch.float32)
+                if classification and self.class_weights_ is not None
+                else None
+            ),
             optimizer=torch.optim.AdamW,
             optimizer__weight_decay=self.weight_decay,
             lr=self.lr,
@@ -481,6 +634,39 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             net.fit(inputs, prepared_targets)
         self.net_ = net
         return self
+
+    def _class_weights(
+        self, prepared_targets: npt.NDArray[Any], output_dim: int, loss: str
+    ) -> npt.NDArray[np.float64] | None:
+        """Compute CatBoost-style class weights from the observed training labels."""
+        mode = self.auto_class_weights
+        if mode == "default":
+            mode = "Balanced" if self.target_type == "single_target" and loss == "cross_entropy" else None
+        if mode in (None, "None"):
+            return None
+        if self.target_type == "single_target":
+            counts = np.bincount(prepared_targets[prepared_targets >= 0], minlength=output_dim).astype(np.float64)
+        else:
+            positives = np.nansum(prepared_targets, axis=0)
+            counts = np.column_stack([np.isfinite(prepared_targets).sum(axis=0) - positives, positives])
+        weights = counts.max(axis=-1, keepdims=True) / counts
+        return np.sqrt(weights) if mode == "SqrtBalanced" else weights
+
+    def _task_losses(self) -> tuple[str, ...]:
+        """Return the task's losses: the default first, the data-dependent one last."""
+        if isinstance(self, ClassifierMixin):
+            return ("cross_entropy", "focal")
+        return ("mse", "mae", "logcosh", "tweedie")
+
+    def _resolved_loss(self) -> str:
+        """Return the configured loss, resolving ``None`` to the task default."""
+        return self.loss_function if self.loss_function is not None else self._task_losses()[0]
+
+    @staticmethod
+    def _tweedie_compatible(targets: npt.NDArray[np.float64]) -> bool:
+        """Check for nonnegative observed targets with a positive value per task."""
+        observed = np.isfinite(targets)
+        return bool((targets[observed] >= 0).all() and np.where(observed, targets, 0).max(axis=0).min() > 0)
 
     def _target_array(self, y: Any) -> npt.NDArray[Any]:
         """Validate target dimensions without replacing missing labels."""
@@ -570,7 +756,8 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
         Args:
             X: Training features required by Mother's tuning interface; not
                 accessed by this implementation.
-            y: Training targets required by the interface; not accessed here.
+            y: Training targets, used to decide whether Tweedie or focal loss
+                is applicable when ``loss_function="auto"``.
             trial: Optuna trial used to suggest parameter values.
             prefix: Prefix for parameter names, used by rooted pipelines.
 
@@ -605,7 +792,33 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             )
         elif embedding_type == "pwl":
             parameters[prefix + "num_emb_n_bins"] = trial.suggest_int(prefix + "num_emb_n_bins", 2, 128, log=True)
+        loss = self._resolved_loss()
+        if loss == "auto":
+            losses = list(self._task_losses())
+            if not self._alternative_loss_applicable(y):
+                losses.pop()
+            loss = trial.suggest_categorical(prefix + "loss_function", losses)
+            parameters[prefix + "loss_function"] = loss
+        # Ranges match CatBoost's Tweedie and focal tuning in m_catboost.py.
+        if loss == "tweedie":
+            parameters[prefix + "tweedie_variance_power"] = trial.suggest_float(
+                prefix + "tweedie_variance_power", 1.000001, 1.999999
+            )
+        elif loss == "focal":
+            if self.loss_function == "auto":
+                # CatBoost disables class weights when tuning selects focal loss.
+                parameters[prefix + "auto_class_weights"] = "None"
+            parameters[prefix + "focal_alpha"] = trial.suggest_float(prefix + "focal_alpha", 0.000001, 0.999999)
+            parameters[prefix + "focal_gamma"] = trial.suggest_float(prefix + "focal_gamma", 0.000001, 7)
         return parameters
+
+    def _alternative_loss_applicable(self, y: Any) -> bool:
+        """Whether ``y`` allows Tweedie (regression) or focal (classification) loss."""
+        targets = self._target_array(y)
+        if isinstance(self, ClassifierMixin):
+            return all(pd.Series(targets[:, task]).dropna().nunique() == 2 for task in range(targets.shape[1]))
+        numeric = np.asarray(np.where(pd.isna(targets), np.nan, targets), dtype=np.float64)
+        return self._tweedie_compatible(numeric)
 
     def default_parameters(self, prefix: str = "") -> dict[str, Any]:
         """Return Mother's default tuning values with an optional prefix.
@@ -645,6 +858,15 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             )
         elif embedding_type == "pwl":
             parameters[prefix + "num_emb_n_bins"] = _EMBEDDING_DEFAULTS["num_emb_n_bins"]
+        loss = self._resolved_loss()
+        if loss == "auto":
+            loss = self._task_losses()[0]
+            parameters[prefix + "loss_function"] = loss
+        if loss == "tweedie":
+            parameters[prefix + "tweedie_variance_power"] = 1.5
+        elif loss == "focal":
+            parameters[prefix + "focal_alpha"] = 0.5
+            parameters[prefix + "focal_gamma"] = 2.0
         return parameters
 
 
@@ -652,12 +874,19 @@ class TabMRegressorMother(RegressorMixin, _BaseTabMMother):
     """Single- or multitarget TabM regressor with missing-label support.
 
     Numeric targets are standardized during fitting and converted back to
-    their original units for predictions. The final prediction is the mean
-    across the ensemble members trained by the skorch network.
+    their original units for predictions. Tweedie loss only rescales targets
+    and maps member outputs through ``exp`` before averaging. The final
+    prediction is the mean across the ensemble members trained by the skorch
+    network.
     Use ``target_type="multi_target"`` for a two-dimensional target matrix.
     Missing labels are masked; each task needs an observed finite training
     value. Input features must still be nonmissing.
     """
+
+    def _regression_members(self, X: Features) -> Tensor:
+        """Return float64 member predictions in scaled target units."""
+        members = self._member_predictions(X).double()
+        return members.exp() if self.loss_ == "tweedie" else members
 
     def predict(self, X: Features) -> npt.NDArray[np.float64]:
         """Predict target values in their original scale.
@@ -669,7 +898,7 @@ class TabMRegressorMother(RegressorMixin, _BaseTabMMother):
             Float64 predictions in original target units: a vector for
             single-target mode, or a matrix with one column per task.
         """
-        predictions = self._member_predictions(X).double().mean(dim=1).numpy()
+        predictions = self._regression_members(X).mean(dim=1).numpy()
         restored = self.target_scaler_.inverse_transform(predictions)
         return restored.ravel() if self.target_type == "single_target" else restored
 
@@ -709,7 +938,7 @@ class TabMRegressorMother(RegressorMixin, _BaseTabMMother):
             knowledge uncertainty when ``uncertainty_for_opt`` is true.
             Multitarget columns use ``target_i_`` prefixes in task order.
         """
-        members = self._member_predictions(X).double()
+        members = self._regression_members(X)
         predictions = self.target_scaler_.inverse_transform(members.mean(dim=1).numpy())
         knowledge = members.std(dim=1, correction=0).numpy() * self.target_scaler_.scale_
         index = X.index if isinstance(X, pd.DataFrame) else pd.RangeIndex(len(predictions))
@@ -736,6 +965,82 @@ class TabMClassifierMother(ClassifierMixin, _BaseTabMMother):
     classes per task; single-target mode uses softmax and also supports
     multiclass labels. Missing labels are masked in either mode.
     """
+
+    def __init__(
+        self,
+        *,
+        target_type: Literal["single_target", "multi_target"] = "single_target",
+        model_type: props.ModelType | None = None,
+        n_blocks: int | None = None,
+        d_block: int = 256,
+        dropout: float = 0.1,
+        k: int = 32,
+        arch_type: Literal["tabm", "tabm-mini", "auto"] = "tabm",
+        num_emb_type: Literal["none", "auto", "linear", "linear_relu", "periodic", "pwl"] = "none",
+        d_embedding: int = 16,
+        num_emb_n_bins: int = 48,
+        num_emb_n_frequencies: int = 48,
+        num_emb_frequency_init_scale: float = 0.01,
+        num_emb_activation: bool = True,
+        loss_function: Literal["auto", "cross_entropy", "focal"] | CustomLoss | None = None,
+        tweedie_variance_power: float = 1.5,
+        focal_alpha: float = 0.5,
+        focal_gamma: float = 2.0,
+        auto_class_weights: Literal["default", "Balanced", "SqrtBalanced", "None"] | None = "default",
+        lr: float = 0.002,
+        weight_decay: float = 0.0003,
+        max_epochs: int = 100,
+        batch_size: int = 256,
+        cat_features: Sequence[str | int] | None = None,
+        scale_features: bool = True,
+        random_state: int = 42,
+        device: str = "cpu",
+        verbose: int = 0,
+    ) -> None:
+        """Configure a TabM classifier.
+
+        Parameters other than ``auto_class_weights`` are described in
+        ``_BaseTabMMother.__init__``.
+
+        Args:
+            auto_class_weights: Class weighting, matching CatBoost's option.
+                ``"Balanced"`` weights each class by the largest class count
+                divided by its own count; ``"SqrtBalanced"`` uses the square
+                root of that ratio; and ``None`` or ``"None"`` disables
+                weighting. Multitarget weights are computed per task.
+                ``"default"`` mirrors Mother's CatBoost classifier when the
+                option is omitted: ``"Balanced"`` for single-target
+                cross-entropy, otherwise no weighting.
+        """
+        super().__init__(
+            target_type=target_type,
+            model_type=model_type,
+            n_blocks=n_blocks,
+            d_block=d_block,
+            dropout=dropout,
+            k=k,
+            arch_type=arch_type,
+            num_emb_type=num_emb_type,
+            d_embedding=d_embedding,
+            num_emb_n_bins=num_emb_n_bins,
+            num_emb_n_frequencies=num_emb_n_frequencies,
+            num_emb_frequency_init_scale=num_emb_frequency_init_scale,
+            num_emb_activation=num_emb_activation,
+            loss_function=loss_function,
+            tweedie_variance_power=tweedie_variance_power,
+            focal_alpha=focal_alpha,
+            focal_gamma=focal_gamma,
+            lr=lr,
+            weight_decay=weight_decay,
+            max_epochs=max_epochs,
+            batch_size=batch_size,
+            cat_features=cat_features,
+            scale_features=scale_features,
+            random_state=random_state,
+            device=device,
+            verbose=verbose,
+        )
+        self.auto_class_weights = auto_class_weights
 
     def predict_proba(self, X: Features) -> npt.NDArray[np.float32] | list[npt.NDArray[np.float32]]:
         """Predict class probabilities by averaging member probabilities.

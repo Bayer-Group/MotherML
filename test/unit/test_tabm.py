@@ -1,6 +1,7 @@
 import pickle
 import subprocess
 import sys
+from functools import partial
 
 import numpy as np
 import pandas as pd
@@ -462,6 +463,32 @@ def test_masked_multitarget_loss_and_gradients(classification):
         _EnsembleLoss(classification=classification, multitarget=True)(predictions, torch.full((2, 3), float("nan")))
 
 
+def test_alternative_losses_match_reference_formulas():
+    log_mean = torch.tensor([[[0.5], [-0.2]], [[1.0], [0.1]]])
+    targets = torch.tensor([[2.0], [0.0]])
+    power = 1.3
+    expanded = targets.unsqueeze(1).expand_as(log_mean)
+    expected = (
+        -expanded * torch.exp((1 - power) * log_mean) / (1 - power) + torch.exp((2 - power) * log_mean) / (2 - power)
+    ).mean()
+    loss = _EnsembleLoss(classification=False, loss="tweedie", tweedie_variance_power=power)(log_mean, targets)
+    torch.testing.assert_close(loss, expected)
+
+    logits = torch.tensor([[[2.0, -1.0], [-1.0, 2.0]], [[0.0, 1.0], [1.0, 0.0]]])
+    labels = torch.tensor([0, 1])
+    focal = _EnsembleLoss(classification=True, loss="focal", focal_alpha=0.5, focal_gamma=0.0)(logits, labels)
+    cross_entropy = _EnsembleLoss(classification=True)(logits, labels)
+    torch.testing.assert_close(focal, 0.5 * cross_entropy)
+    sharper = _EnsembleLoss(classification=True, loss="focal", focal_alpha=0.5, focal_gamma=2.0)(logits, labels)
+    assert sharper < focal
+
+    binary_logits = logits[..., :1]
+    binary_targets = torch.tensor([[1.0], [0.0]])
+    focal = _EnsembleLoss(classification=True, multitarget=True, loss="focal", focal_alpha=0.5, focal_gamma=0.0)
+    cross_entropy = _EnsembleLoss(classification=True, multitarget=True)
+    torch.testing.assert_close(focal(binary_logits, binary_targets), 0.5 * cross_entropy(binary_logits, binary_targets))
+
+
 @pytest.mark.parametrize("estimator", [TabMRegressorMother, TabMClassifierMother])
 @pytest.mark.parametrize("as_frame", [False, True])
 @pytest.mark.parametrize("arch_type", ["tabm", "tabm-mini"])
@@ -920,6 +947,152 @@ def test_auto_embedding_tuning_can_select_none(data, small_params):
     assert fitted.predict(X[:5]).shape == (5,)
 
 
+def _base_values(model):
+    defaults = model.default_parameters()
+    return {name: defaults[name] for name in ("lr", "weight_decay", "n_blocks", "d_block", "dropout", "k")}
+
+
+@pytest.mark.parametrize("target_type", ["single_target", "multi_target"])
+def test_auto_loss_tuning_selects_tweedie(data, small_params, target_type):
+    X, y = data
+    y = np.exp(y / 2)
+    if target_type == "multi_target":
+        y = np.column_stack([y, 2 * y])
+        y[::4, 1] = np.nan
+    model = TabMRegressorMother(**small_params, target_type=target_type, loss_function="auto")
+    assert model.default_parameters()["loss_function"] == "mse"
+    trial = FixedTrial(_base_values(model) | {"loss_function": "tweedie", "tweedie_variance_power": 1.4})
+    suggested = model.get_hyperparameter_space(X, y, trial)
+    assert trial.distributions["loss_function"].choices == ("mse", "mae", "logcosh", "tweedie")
+    assert suggested["tweedie_variance_power"] == 1.4
+    fitted = clone(model).set_params(**suggested).fit(X, y)
+    assert fitted.net_.criterion_.loss == "tweedie"
+    predictions = fitted.predict(X[:5])
+    assert (predictions > 0).all()
+    result = fitted.predict_uncertainty(X[:5])
+    prefix = "" if target_type == "single_target" else "target_0_"
+    np.testing.assert_allclose(result[prefix + "pred"], predictions if predictions.ndim == 1 else predictions[:, 0])
+    assert (result[prefix + "knowledge_uncertainty"] >= 0).all()
+
+
+def test_tweedie_requires_nonnegative_targets(data, small_params):
+    X, y = data
+    model = TabMRegressorMother(**small_params, loss_function="auto")
+    trial = FixedTrial(_base_values(model) | {"loss_function": "mse"})
+    model.get_hyperparameter_space(X, y, trial)
+    assert trial.distributions["loss_function"].choices == ("mse", "mae", "logcosh")
+    with pytest.raises(ValueError, match="nonnegative"):
+        TabMRegressorMother(**small_params, loss_function="tweedie").fit(X, y)
+    with pytest.raises(ValueError, match="only supported during MotherTuner"):
+        model.fit(X, y)
+    with pytest.raises(ValueError, match="loss_function for TabMRegressorMother"):
+        TabMRegressorMother(**small_params, loss_function="focal").fit(X, y)
+    with pytest.raises(ValueError, match="tweedie_variance_power"):
+        TabMRegressorMother(**small_params, tweedie_variance_power=2.0).fit(X, y)
+
+
+@pytest.mark.parametrize("target_type", ["single_target", "multi_target"])
+def test_auto_loss_tuning_selects_focal(data, small_params, target_type):
+    X, y = data
+    labels = (y > 0).astype(int)
+    if target_type == "multi_target":
+        labels = np.column_stack([labels, (X["c"] > 0).astype(int)])
+    model = TabMClassifierMother(**small_params, target_type=target_type, loss_function="auto")
+    assert model.default_parameters()["loss_function"] == "cross_entropy"
+    values = {"loss_function": "focal", "focal_alpha": 0.3, "focal_gamma": 1.5}
+    trial = FixedTrial(_base_values(model) | values)
+    suggested = model.get_hyperparameter_space(X, labels, trial)
+    assert trial.distributions["loss_function"].choices == ("cross_entropy", "focal")
+    assert {name: suggested[name] for name in values} == values
+    assert suggested["auto_class_weights"] == "None"
+    fitted = clone(model).set_params(**suggested).fit(X, labels)
+    assert fitted.net_.criterion_.loss == "focal"
+    assert fitted.predict(X[:5]).shape == labels[:5].shape
+
+
+def test_focal_requires_binary_labels(data, small_params):
+    X, _ = data
+    labels = np.arange(len(X)) % 3
+    model = TabMClassifierMother(**small_params, loss_function="auto")
+    trial = FixedTrial(_base_values(model) | {"loss_function": "cross_entropy"})
+    model.get_hyperparameter_space(X, labels, trial)
+    assert trial.distributions["loss_function"].choices == ("cross_entropy",)
+    with pytest.raises(ValueError, match="Focal loss supports only binary"):
+        TabMClassifierMother(**small_params, loss_function="focal").fit(X, labels)
+    with pytest.raises(ValueError, match="focal_alpha"):
+        TabMClassifierMother(**small_params, focal_alpha=1.0).fit(X, labels)
+    with pytest.raises(ValueError, match="focal_gamma"):
+        TabMClassifierMother(**small_params, focal_gamma=0.0).fit(X, labels)
+
+
+@pytest.mark.parametrize("loss_function", ["mae", "logcosh"])
+def test_robust_regression_losses(data, small_params, loss_function):
+    X, y = data
+    model = TabMRegressorMother(**small_params, loss_function="auto")
+    trial = FixedTrial(_base_values(model) | {"loss_function": loss_function})
+    suggested = model.get_hyperparameter_space(X, y, trial)
+    assert {"tweedie_variance_power", "focal_alpha", "focal_gamma"}.isdisjoint(suggested)
+    fitted = clone(model).set_params(**suggested).fit(X, y)
+    assert fitted.net_.criterion_.loss == loss_function
+    assert np.isfinite(fitted.predict(X[:5])).all()
+
+
+def test_robust_regression_loss_values():
+    predictions = torch.tensor([[[0.0], [3.0]], [[50.0], [-2.0]]], dtype=torch.float64)
+    targets = torch.tensor([[1.0], [0.0]], dtype=torch.float64)
+    residuals = predictions - targets.unsqueeze(1)
+    mae = _EnsembleLoss(classification=False, loss="mae")(predictions, targets)
+    torch.testing.assert_close(mae, residuals.abs().mean())
+    logcosh = _EnsembleLoss(classification=False, loss="logcosh")(predictions, targets)
+    torch.testing.assert_close(logcosh, torch.log(torch.cosh(residuals)).mean())
+
+
+def test_custom_regression_loss_is_used_and_not_tuned(data, small_params):
+    X, y = data
+    huber = partial(nn.functional.huber_loss, reduction="none", delta=0.5)
+    model = TabMRegressorMother(**small_params, loss_function=huber, target_type="multi_target")
+    targets = np.column_stack([y, -y])
+    targets[::3, 1] = np.nan
+    defaults = model.default_parameters()
+    assert {"loss_function", "tweedie_variance_power"}.isdisjoint(defaults)
+    trial = FixedTrial(defaults)
+    assert model.get_hyperparameter_space(X, targets, trial) == defaults
+    assert "loss_function" not in trial.distributions
+    fitted = clone(model).fit(X, targets)
+    assert fitted.net_.criterion_.loss is fitted.loss_function
+    predictions = fitted.predict(X[:5])
+    np.testing.assert_allclose(pickle.loads(pickle.dumps(fitted)).predict(X[:5]), predictions)
+
+    predictions = torch.tensor([[[0.0], [3.0]], [[2.0], [-2.0]]], dtype=torch.float64)
+    loss_targets = torch.tensor([[1.0], [0.0]], dtype=torch.float64)
+    expected = huber(predictions, loss_targets.unsqueeze(1).expand_as(predictions)).mean()
+    torch.testing.assert_close(_EnsembleLoss(classification=False, loss=huber)(predictions, loss_targets), expected)
+
+
+@pytest.mark.parametrize("target_type", ["single_target", "multi_target"])
+def test_custom_classification_loss(data, small_params, target_type):
+    X, y = data
+    labels = (y > 0).astype(int)
+    if target_type == "single_target":
+        custom = partial(nn.functional.cross_entropy, reduction="none", label_smoothing=0.1)
+    else:
+        custom = partial(nn.functional.binary_cross_entropy_with_logits, reduction="none")
+        labels = np.column_stack([labels, (X["c"] > 0).astype(int)])
+    model = TabMClassifierMother(**small_params, target_type=target_type, loss_function=custom)
+    assert "loss_function" not in model.default_parameters()
+    fitted = model.fit(X, labels)
+    assert fitted.net_.criterion_.loss is custom
+    assert fitted.class_weights_ is None
+    assert fitted.predict(X[:5]).shape == labels[:5].shape
+
+
+def test_custom_loss_must_be_unreduced(data, small_params):
+    X, y = data
+    model = TabMRegressorMother(**small_params, loss_function=nn.functional.mse_loss)
+    with pytest.raises(ValueError, match="reduction='none'"):
+        model.fit(X, y)
+
+
 def test_mother_cv(data, small_params):
     X, y = data
     result = mother_cv(
@@ -948,6 +1121,78 @@ def test_classification_uncertainty_mother_cv(data, small_params):
     terms = result[["pred_knowledge_uncertainty", "pred_data_uncertainty", "pred_total_uncertainty"]]
     assert np.isfinite(terms).all().all()
     np.testing.assert_allclose(terms.iloc[:, 2], terms.iloc[:, 0] + terms.iloc[:, 1], atol=1e-12)
+
+
+@pytest.mark.parametrize(
+    "mode, expected",
+    [
+        ("Balanced", [1.0, 3.5, 7.0]),
+        ("SqrtBalanced", np.sqrt([1.0, 3.5, 7.0])),
+        ("None", None),
+        (None, None),
+        ("default", [1.0, 3.5, 7.0]),
+    ],
+)
+def test_class_weights_match_catboost(small_params, mode, expected):
+    # Expected values are CatBoost's class_weights for 70/20/10 class counts.
+    X = np.random.default_rng(0).normal(size=(100, 2))
+    labels = np.repeat([0, 1, 2], [70, 20, 10])
+    model = TabMClassifierMother(**small_params, auto_class_weights=mode).fit(X, labels)
+    if expected is None:
+        assert model.class_weights_ is None
+        assert model.net_.criterion_.class_weights is None
+    else:
+        np.testing.assert_allclose(model.class_weights_, expected)
+        np.testing.assert_allclose(model.net_.criterion_.class_weights.numpy(), expected, rtol=1e-6)
+
+
+def test_default_class_weights_follow_catboost(data, small_params):
+    X, y = data
+    labels = (y > 1).astype(int)
+    assert TabMClassifierMother().auto_class_weights == "default"
+    assert TabMClassifierMother(**small_params).fit(X, labels).class_weights_ is not None
+    assert TabMClassifierMother(**small_params, loss_function="focal").fit(X, labels).class_weights_ is None
+    multitarget = np.column_stack([labels, (X["c"] > 0).astype(int)])
+    model = TabMClassifierMother(**small_params, target_type="multi_target")
+    assert model.fit(X, multitarget).class_weights_ is None
+    weighted = model.set_params(auto_class_weights="Balanced").fit(X, multitarget).class_weights_
+    counts = np.stack([(multitarget == 0).sum(axis=0), (multitarget == 1).sum(axis=0)], axis=1)
+    np.testing.assert_allclose(weighted, counts.max(axis=1, keepdims=True) / counts)
+    assert "auto_class_weights" not in TabMRegressorMother().get_params()
+    with pytest.raises(TypeError, match="auto_class_weights"):
+        TabMRegressorMother(**small_params, auto_class_weights="Balanced")
+    with pytest.raises(ValueError, match="auto_class_weights must be"):
+        TabMClassifierMother(**small_params, auto_class_weights="balanced").fit(X, labels)
+
+
+def test_class_weighted_losses_are_weighted_means():
+    logits = torch.tensor([[[2.0, -1.0], [-1.0, 2.0]], [[0.0, 1.0], [1.0, 0.0]]], dtype=torch.float64)
+    labels = torch.tensor([0, 1])
+    weights = torch.tensor([1.0, 3.0], dtype=torch.float64)
+    sample_weights = weights[labels].repeat_interleave(2)
+    per_sample = nn.functional.cross_entropy(logits.flatten(0, 1), labels.repeat_interleave(2), reduction="none")
+    expected = (sample_weights * per_sample).sum() / sample_weights.sum()
+    torch.testing.assert_close(_EnsembleLoss(classification=True, class_weights=weights)(logits, labels), expected)
+
+    focal = _EnsembleLoss(classification=True, loss="focal", class_weights=weights)(logits, labels)
+    log_pt = logits.flatten(0, 1).log_softmax(-1).gather(1, labels.repeat_interleave(2)[:, None]).squeeze(1)
+    focal_terms = -0.5 * (1 - log_pt.exp()).pow(2.0) * log_pt
+    torch.testing.assert_close(focal, (sample_weights * focal_terms).sum() / sample_weights.sum())
+
+    binary_logits = torch.tensor([[[0.5, 1.0]], [[-0.5, 2.0]], [[1.5, 0.0]]], dtype=torch.float64)
+    binary_targets = torch.tensor([[1.0, 0.0], [0.0, float("nan")], [0.0, 1.0]], dtype=torch.float64)
+    task_weights = torch.tensor([[1.0, 2.0], [4.0, 1.0]], dtype=torch.float64)
+    loss = _EnsembleLoss(classification=True, multitarget=True, class_weights=task_weights)
+    task_losses = []
+    for task in range(2):
+        observed = binary_targets[:, task].isfinite()
+        target = binary_targets[observed, task]
+        terms = nn.functional.binary_cross_entropy_with_logits(
+            binary_logits[observed, 0, task], target, reduction="none"
+        )
+        sample = torch.where(target == 1, task_weights[task, 1], task_weights[task, 0])
+        task_losses.append((sample * terms).sum() / sample.sum())
+    torch.testing.assert_close(loss(binary_logits, binary_targets), torch.stack(task_losses).mean())
 
 
 @pytest.mark.parametrize("arch_type", ["tabm", "tabm-mini", "auto"])
