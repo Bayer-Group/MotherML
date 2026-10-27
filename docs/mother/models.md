@@ -264,13 +264,27 @@ Impute missing numeric and categorical values upstream.
 The estimator fits its numeric scaler, category encoder, and regression-target
 scaler on the data supplied to each `fit()` call. Prediction reuses those fitted
 transforms; unseen categories use the network's all-zero unknown-category
-encoding. Numeric scaling is enabled by default and can be disabled with
-`scale_features=False`. Regression targets are standardized internally and
-predictions are converted back to the original target scale.
+encoding. Numeric features are preprocessed with `scale_features`:
+
+- `"quantile"` (default, as in the official TabM pipeline) maps each feature to
+  a normal distribution with sklearn's `QuantileTransformer`. It uses about 30
+  training rows per quantile (10 to 1000 quantiles) and adds tiny noise before
+  fitting so ties in discrete features spread across quantiles. Outliers and
+  values outside the training range stay within about ±5, so a single extreme
+  row cannot make the network extrapolate wildly. Without this, one row with a
+  standardized value of about 1600 in California housing raised log-cosh and
+  MSE fold RMSE from about 0.6 to 3 and Tweedie predictions to about 1e91.
+- `"standard"` (or `True`) standardizes to zero mean and unit variance.
+- `False` leaves numeric features unchanged.
+
+Regression targets are standardized internally and predictions are converted
+back to the original target scale. With Tweedie loss, the predicted log mean is
+capped so predictions cannot exceed twice the largest training target of each
+task.
 
 Numeric feature scaling and regression-target scaling use float64 precision
 before converting the prepared training arrays to float32 for the network.
-This preserves small differences around large offsets during standardization.
+This preserves small differences around large offsets during scaling.
 Regression predictions, including the prediction columns in uncertainty
 outputs, are restored to original units in float64. With feature scaling
 disabled, numeric inputs are still converted to float32 for the network, so

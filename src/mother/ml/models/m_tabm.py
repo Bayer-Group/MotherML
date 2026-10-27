@@ -9,7 +9,12 @@ import pandas as pd
 from optuna.trial import Trial
 from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin
 from sklearn.metrics import accuracy_score, r2_score
-from sklearn.preprocessing import LabelEncoder, OrdinalEncoder, StandardScaler
+from sklearn.preprocessing import (
+    LabelEncoder,
+    OrdinalEncoder,
+    QuantileTransformer,
+    StandardScaler,
+)
 from sklearn.utils import Tags
 from sklearn.utils.multiclass import check_classification_targets
 from sklearn.utils.validation import check_is_fitted, column_or_1d, validate_data
@@ -302,7 +307,7 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
         max_epochs: int = 100,
         batch_size: int = 256,
         cat_features: Sequence[str | int] | None = None,
-        scale_features: bool = True,
+        scale_features: Literal["quantile", "standard"] | bool = "quantile",
         random_state: int = 42,
         device: str = "cpu",
         verbose: int = 0,
@@ -415,7 +420,13 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             batch_size: Number of samples per training mini-batch.
             cat_features: Categorical DataFrame column names or array column
                 indices. All other columns are treated as numeric.
-            scale_features: Standardize numeric features using training data.
+            scale_features: Numeric feature preprocessing, fitted on the
+                training data. ``"quantile"`` (default, as in the official
+                TabM pipeline) maps each feature to a normal distribution with
+                sklearn's ``QuantileTransformer``, which bounds heavy-tailed
+                features and outliers. ``"standard"`` (or ``True``)
+                standardizes to zero mean and unit variance; ``False``
+                leaves features unchanged.
             random_state: Seed used for model initialization and training.
             device: PyTorch device, such as ``"cpu"`` or ``"cuda"``.
             verbose: Verbosity level passed to skorch.
@@ -518,6 +529,8 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             raise ValueError("num_emb_frequency_init_scale must be positive and finite.")
         if not isinstance(self.num_emb_activation, bool):
             raise ValueError("num_emb_activation must be a boolean.")
+        if self.scale_features not in ("quantile", "standard") and not isinstance(self.scale_features, bool):
+            raise ValueError("scale_features must be 'quantile', 'standard', True, or False.")
         allowed_losses = self._task_losses()
         if (
             self.loss_function is not None
@@ -551,6 +564,21 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             raise ValueError("lr must be positive and finite.")
         if not np.isfinite(self.weight_decay) or self.weight_decay < 0:
             raise ValueError("weight_decay must be nonnegative and finite.")
+
+    def _fit_feature_scaler(self, numeric: npt.NDArray[np.float64]) -> StandardScaler | QuantileTransformer | None:
+        """Fit the numeric preprocessing selected by ``scale_features``."""
+        if self.scale_features is False:
+            return None
+        if self.scale_features != "quantile":
+            return StandardScaler().fit(numeric)
+        # Settings follow the official TabM pipeline: about 30 rows per quantile,
+        # and tiny noise so ties in discrete features spread across quantiles.
+        n_quantiles = min(max(min(len(numeric) // 30, 1000), 10), len(numeric))
+        rng = np.random.default_rng(self.random_state)
+        noise = rng.normal(0.0, 1e-5, numeric.shape) * np.where(numeric.std(axis=0) > 0, numeric.std(axis=0), 1.0)
+        return QuantileTransformer(
+            n_quantiles=n_quantiles, output_distribution="normal", subsample=10**9, random_state=self.random_state
+        ).fit(numeric + noise)
 
     def _prepare_features(self, X: Features, *, fitting: bool) -> dict[str, npt.NDArray[Any]]:
         """Validate and encode features into the inputs expected by TabM.
@@ -593,9 +621,7 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             if not np.isfinite(numeric).all():
                 raise ValueError("TabM numeric features must be finite; impute missing values before fitting.")
             if fitting:
-                self.scaler_ = StandardScaler() if self.scale_features else None
-                if self.scaler_ is not None:
-                    self.scaler_.fit(numeric)
+                self.scaler_ = self._fit_feature_scaler(numeric)
             if self.scaler_ is not None:
                 numeric = self.scaler_.transform(numeric)
             result["x_num"] = np.asarray(numeric, dtype=np.float32)
@@ -665,6 +691,11 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
                     raise ValueError("Tweedie loss requires nonnegative targets with a positive value per task.")
                 # Rescaling without centering keeps targets nonnegative for the log link.
                 self.target_scaler_ = StandardScaler(with_mean=False).fit(numeric_targets)
+                # Cap log-mean predictions at twice the largest training target so an
+                # extreme input row cannot make exp() return astronomically large values.
+                self.tweedie_log_mean_max_ = np.log(
+                    2 * np.nanmax(self.target_scaler_.transform(numeric_targets), axis=0)
+                )
             else:
                 self.target_scaler_ = StandardScaler().fit(numeric_targets)
             prepared_targets = self.target_scaler_.transform(numeric_targets).astype(np.float32)
@@ -1035,7 +1066,9 @@ class TabMRegressorMother(RegressorMixin, _BaseTabMMother):
     def _regression_members(self, X: Features) -> Tensor:
         """Return float64 member predictions in scaled target units."""
         members = self._member_predictions(X).double()
-        return members.exp() if self.loss_ == "tweedie" else members
+        if self.loss_ != "tweedie":
+            return members
+        return members.clamp(max=torch.from_numpy(self.tweedie_log_mean_max_)).exp()
 
     def predict(self, X: Features) -> npt.NDArray[np.float64]:
         """Predict target values in their original scale.
@@ -1143,7 +1176,7 @@ class TabMClassifierMother(ClassifierMixin, _BaseTabMMother):
         max_epochs: int = 100,
         batch_size: int = 256,
         cat_features: Sequence[str | int] | None = None,
-        scale_features: bool = True,
+        scale_features: Literal["quantile", "standard"] | bool = "quantile",
         random_state: int = 42,
         device: str = "cpu",
         verbose: int = 0,

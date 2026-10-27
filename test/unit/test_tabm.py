@@ -12,7 +12,7 @@ from sklearn.exceptions import NotFittedError
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import KFold, cross_val_score, cross_validate
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import QuantileTransformer, StandardScaler
 
 pytest.importorskip("torch")
 pytest.importorskip("skorch")
@@ -99,7 +99,7 @@ def test_regression_fit_prediction_and_serialization(data, small_params, as_fram
 def test_feature_scaling_preserves_large_offset_variation(small_params, estimator, num_emb_type, as_frame):
     values = np.array([[100000001.0], [100000002.0], [100000003.0]])
     X = pd.DataFrame(values, columns=["offset"]) if as_frame else values
-    model = estimator(**small_params, num_emb_type=num_emb_type).fit(X, np.array([0, 1, 0]))
+    model = estimator(**small_params, num_emb_type=num_emb_type, scale_features="standard").fit(X, np.array([0, 1, 0]))
     expected = StandardScaler().fit(values)
     np.testing.assert_array_equal(model.scaler_.mean_, expected.mean_)
     np.testing.assert_array_equal(model.scaler_.scale_, expected.scale_)
@@ -206,7 +206,7 @@ def test_piecewise_embeddings(data, small_params, estimator, arch_type, scale_fe
 
 def test_piecewise_bins_are_fold_local_and_capped(data, small_params):
     X, y = data
-    model = TabMRegressorMother(**small_params, num_emb_type="pwl", num_emb_n_bins=48)
+    model = TabMRegressorMother(**small_params, num_emb_type="pwl", num_emb_n_bins=48, scale_features="standard")
     splitter = KFold(2)
     results = cross_validate(model, X, y, cv=splitter, return_estimator=True)
     for fitted, (train, _) in zip(results["estimator"], splitter.split(X)):
@@ -515,9 +515,9 @@ def test_multitarget_missing_labels(data, small_params, estimator, as_frame, arc
     targets[1::3, 1] = np.nan
     targets[-1] = np.nan
     input_targets = pd.DataFrame(targets, columns=["task_a", "task_b"]) if as_frame else targets
-    model = estimator(**small_params, target_type="multi_target", num_emb_type="pwl", arch_type=arch_type).fit(
-        X, input_targets
-    )
+    model = estimator(
+        **small_params, target_type="multi_target", num_emb_type="pwl", arch_type=arch_type, scale_features="standard"
+    ).fit(X, input_targets)
     assert "no observed target labels" in caplog.text
     observed_rows = np.isfinite(targets).any(axis=1)
     np.testing.assert_allclose(model.scaler_.mean_, X.loc[observed_rows].mean(), atol=1e-12)
@@ -1401,9 +1401,43 @@ def test_invalid_data_and_feature_schema(data, small_params):
         model.predict(X)
 
 
-def test_preprocessing_is_training_only_and_refit_resets(data, small_params):
+@pytest.mark.parametrize(
+    ("scale_features", "scaler_type"),
+    [("quantile", QuantileTransformer), ("standard", StandardScaler), (True, StandardScaler), (False, type(None))],
+)
+def test_scale_features_options(data, small_params, scale_features, scaler_type):
+    X, y = data
+    model = TabMRegressorMother(**small_params, scale_features=scale_features).fit(X, y)
+    assert type(model.scaler_) is scaler_type
+    assert TabMRegressorMother().scale_features == "quantile"
+    with pytest.raises(ValueError, match="scale_features"):
+        TabMRegressorMother(**small_params, scale_features="minmax").fit(X, y)
+
+
+def test_quantile_scaling_bounds_extreme_feature_values(data, small_params):
     X, y = data
     model = TabMRegressorMother(**small_params).fit(X, y)
+    extreme = X.iloc[:2].copy()
+    extreme["a"] = [1e6, -1e6]
+    prepared = model._prepare_features(extreme, fitting=False)["x_num"]
+    assert np.abs(prepared).max() < 6
+    assert np.isfinite(model.predict(extreme)).all()
+
+
+def test_tweedie_predictions_are_capped(data, small_params, monkeypatch):
+    X, y = data
+    targets = np.column_stack([np.exp(y / 2), 3 * np.exp(y / 2)])
+    model = TabMRegressorMother(**small_params, target_type="multi_target", loss_function="tweedie").fit(X, targets)
+    monkeypatch.setattr(model, "_member_predictions", lambda X: torch.full((len(X), 4, 2), 1000.0))
+    predictions = model.predict(X[:3])
+    np.testing.assert_allclose(predictions, np.broadcast_to(2 * targets.max(axis=0), (3, 2)), rtol=1e-6)
+    uncertainty = model.predict_uncertainty(X[:3])
+    np.testing.assert_allclose(uncertainty[["target_0_pred", "target_1_pred"]].to_numpy(), predictions)
+
+
+def test_preprocessing_is_training_only_and_refit_resets(data, small_params):
+    X, y = data
+    model = TabMRegressorMother(**small_params, scale_features="standard").fit(X, y)
     np.testing.assert_allclose(model.scaler_.mean_, X.mean(), atol=1e-6)
     predictions = model.predict(X[:5])
     model.predict(X + 1000)
