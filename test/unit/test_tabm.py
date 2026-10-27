@@ -979,7 +979,7 @@ def test_loss_tuning_selects_tweedie(data, small_params, target_type):
     assert model.default_parameters()["loss_function"] == "mse"
     trial = FixedTrial(_base_values(model) | {"loss_function": "tweedie", "tweedie_variance_power": 1.4})
     suggested = model.get_hyperparameter_space(X, y, trial)
-    assert trial.distributions["loss_function"].choices == ("mse", "mae", "logcosh", "tweedie")
+    assert trial.distributions["loss_function"].choices == ("mse", "logcosh", "huber", "tweedie")
     assert suggested["tweedie_variance_power"] == 1.4
     fitted = clone(model).set_params(**suggested).fit(X, y)
     assert fitted.net_.criterion_.loss == "tweedie"
@@ -996,7 +996,7 @@ def test_tweedie_requires_nonnegative_targets(data, small_params):
     model = TabMRegressorMother(**small_params)
     trial = FixedTrial(_base_values(model) | {"loss_function": "mse"})
     model.get_hyperparameter_space(X, y, trial)
-    assert trial.distributions["loss_function"].choices == ("mse", "mae", "logcosh")
+    assert trial.distributions["loss_function"].choices == ("mse", "logcosh", "huber")
     with pytest.raises(ValueError, match="nonnegative"):
         TabMRegressorMother(**small_params, loss_function="tweedie").fit(X, y)
     with pytest.raises(ValueError, match="loss_function for TabMRegressorMother"):
@@ -1005,6 +1005,8 @@ def test_tweedie_requires_nonnegative_targets(data, small_params):
         TabMRegressorMother(**small_params, loss_function="focal").fit(X, y)
     with pytest.raises(ValueError, match="tweedie_variance_power"):
         TabMRegressorMother(**small_params, tweedie_variance_power=2.0).fit(X, y)
+    with pytest.raises(ValueError, match="huber_delta"):
+        TabMRegressorMother(**small_params, huber_delta=0.0).fit(X, y)
 
 
 @pytest.mark.parametrize("target_type", ["single_target", "multi_target"])
@@ -1042,15 +1044,20 @@ def test_focal_requires_binary_labels(data, small_params):
         TabMClassifierMother(**small_params, focal_gamma=0.0).fit(X, labels)
 
 
-@pytest.mark.parametrize("loss_function", ["mae", "logcosh"])
-def test_robust_regression_losses(data, small_params, loss_function):
+@pytest.mark.parametrize(
+    ("loss_function", "loss_params"), [("mae", {}), ("logcosh", {}), ("huber", {"huber_delta": 0.5})]
+)
+def test_robust_regression_losses(data, small_params, loss_function, loss_params):
     X, y = data
-    model = TabMRegressorMother(**small_params)
-    trial = FixedTrial(_base_values(model) | {"loss_function": loss_function})
+    model = TabMRegressorMother(**small_params, loss_function=loss_function)
+    trial = FixedTrial(_base_values(model) | loss_params)
     suggested = model.get_hyperparameter_space(X, y, trial)
     assert {"tweedie_variance_power", "focal_alpha", "focal_gamma"}.isdisjoint(suggested)
+    assert {name: suggested[name] for name in loss_params} == loss_params
     fitted = clone(model).set_params(**suggested).fit(X, y)
     assert fitted.net_.criterion_.loss == loss_function
+    if loss_params:
+        assert fitted.net_.criterion_.huber_delta == loss_params["huber_delta"]
     assert np.isfinite(fitted.predict(X[:5])).all()
 
 
@@ -1059,6 +1066,7 @@ def test_robust_regression_losses(data, small_params, loss_function):
     [
         (TabMRegressorMother, "mae", {}),
         (TabMRegressorMother, "tweedie", {"tweedie_variance_power": 1.3}),
+        (TabMRegressorMother, "huber", {"huber_delta": 2.0}),
         (TabMClassifierMother, "focal", {"focal_alpha": 0.4, "focal_gamma": 1.0}),
     ],
 )
@@ -1080,10 +1088,32 @@ def test_tune_loss_function_false_keeps_default_loss(data, small_params, estimat
     model = estimator(**small_params, tune_loss_function=False)
     trial = FixedTrial(_base_values(model))
     suggested = model.get_hyperparameter_space(X, targets, trial)
-    assert not {"loss_function", "tweedie_variance_power", "focal_alpha", "focal_gamma"} & set(trial.distributions)
+    assert not {"loss_function", "tweedie_variance_power", "huber_delta", "focal_alpha", "focal_gamma"} & set(
+        trial.distributions
+    )
     assert "loss_function" not in suggested
     with pytest.raises(ValueError, match="tune_loss_function must be a boolean"):
         estimator(**small_params, tune_loss_function="yes").fit(X, targets)
+
+
+@pytest.mark.parametrize(
+    ("estimator", "loss_function", "loss_params"),
+    [
+        (TabMRegressorMother, "huber", {"huber_delta": 0.3}),
+        (TabMRegressorMother, "tweedie", {"tweedie_variance_power": 1.2}),
+        (TabMClassifierMother, "focal", {"focal_alpha": 0.25, "focal_gamma": 3.0}),
+    ],
+)
+def test_explicit_loss_with_tuning_off_keeps_its_parameters(data, small_params, estimator, loss_function, loss_params):
+    X, y = data
+    targets = np.abs(y) if estimator is TabMRegressorMother else (y > 0).astype(int)
+    model = estimator(**small_params, loss_function=loss_function, tune_loss_function=False, **loss_params)
+    trial = FixedTrial(_base_values(model))
+    suggested = model.get_hyperparameter_space(X, targets, trial)
+    assert not {"loss_function", *loss_params} & set(trial.distributions)
+    fitted = clone(model).set_params(**suggested).fit(X, targets)
+    assert fitted.net_.criterion_.loss == loss_function
+    assert {name: getattr(fitted.net_.criterion_, name) for name in loss_params} == loss_params
 
 
 def test_robust_regression_loss_values():
@@ -1094,6 +1124,10 @@ def test_robust_regression_loss_values():
     torch.testing.assert_close(mae, residuals.abs().mean())
     logcosh = _EnsembleLoss(classification=False, loss="logcosh")(predictions, targets)
     torch.testing.assert_close(logcosh, torch.log(torch.cosh(residuals)).mean())
+    huber = _EnsembleLoss(classification=False, loss="huber", huber_delta=1.5)(predictions, targets)
+    abs_residuals = residuals.abs()
+    expected = torch.where(abs_residuals <= 1.5, 0.5 * residuals.square(), 1.5 * (abs_residuals - 0.75))
+    torch.testing.assert_close(huber, expected.mean())
 
 
 def test_custom_regression_loss_is_used_and_not_tuned(data, small_params):
