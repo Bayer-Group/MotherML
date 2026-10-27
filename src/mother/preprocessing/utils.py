@@ -109,7 +109,7 @@ def create_rdkit_logger() -> tuple[logging.Logger, StringIO]:
     return rdkit_logger, logger_sio
 
 
-def generate_input_molecule(mol: str | Chem.rdchem.Mol, **kwargs) -> Chem.rdchem.Mol | None:
+def generate_input_molecule(mol: str | Chem.rdchem.Mol | None, **kwargs) -> Chem.rdchem.Mol | None:
     """
     Generate an RDKit molecule from a SMILES string or an existing RDKit molecule.
 

@@ -86,11 +86,9 @@ tabicl = [
 [dependency-groups]
 dev = [
   "ipykernel",
-  "isort",
   "mypy>0.981",
   "poethepoet",
   "pre-commit",
-  "pylint",
   "pytest",
   "pytest-cov",
   "ruff>=0.9.2,<1",
@@ -134,49 +132,6 @@ log_cli_format = "%(asctime)s | %(name)30s | %(levelname)8s | %(message)s"
 #testpaths = [
 #    "test/unit",
 #]
-
-
-[tool.pylint.main]
-
-extension-pkg-allow-list = "rdkit"
-# Specify a score threshold under which the program will exit with error.
-fail-under = 8
-
-[tool.pylint."MESSAGES CONTROL"]
-
-disable = "too-few-public-methods"
-
-[tool.pylint.basic]
-variable-naming-style = "snake_case"
-# Naming style matching correct class attribute names.
-class-attribute-naming-style = "any"
-function-naming-style = "any"
-
-# Naming style matching correct class names.
-class-naming-style = "PascalCase"
-method-naming-style = "any"
-# Naming style matching correct module names.
-module-naming-style = "any"
-
-[tool.pylint.format]
-# Number of spaces of indent required inside a hanging or continued line.
-indent-after-paren = 4
-
-# String used as indentation unit. This is usually "    " (4 spaces) or "\t" (1
-# tab).
-indent-string = "    "
-
-# Maximum number of characters on a single line.
-max-line-length = 100
-
-[tool.pylint.logging]
-# The type of string formatting that logging methods do. `old` means using %
-# formatting, `new` is for `{}` formatting.
-logging-format-style = "new"
-
-# Logging modules to check that the string format arguments are in logging
-# function parameter format.
-logging-modules = ["logging"]
 
 
 [tool.ruff]
@@ -247,9 +202,6 @@ follow_imports = "skip"
 no_implicit_optional = true
 show_column_numbers = true
 warn_no_return = true
-
-[tool.isort]
-extend_skip = [".gitignore", ".pylintrc"]
 
 [tool.semantic_release]
 version_toml = ["pyproject.toml:project.version"]
@@ -334,7 +286,7 @@ build = "uv build"
 check-format = { cmd = "ruff format --check src test examples", help = "Check code format compliance" }
 check-hook = "pre-commit run --all-files"
 check-lint = { cmd = "ruff check src test ", help = "run static analysis checks" }
-check-sort-imports = { cmd = "isort . --sg=old --check-only --profile black", help = "check imports are sorted" }
+check-sort-imports = { cmd = "ruff check . --select I", help = "check imports are sorted" }
 check-static-analysis = ["check-lint", "check-types"]
 check-style = ["check-sort-imports", "check-format"]
 check-types = { cmd = "mypy -p src --ignore-missing-imports", help = "check type hint annotations" }
@@ -353,7 +305,7 @@ serve-coverage = [
   { shell = "coverage html -d coverage-html && cd coverage-html; python -m http.server --bind 127.0.0.1", help = "Generate coverage html report" },
 ]
 serve-docs = { cmd = "zensical serve", help = "Serve project html documentation" }
-sort-imports = { cmd = "isort . --sg=old --profile black", help = "apply import sort ordering" }
+sort-imports = { cmd = "ruff check . --select I --fix", help = "apply import sort ordering" }
 style = ["sort-imports", "format"]
 test-unit = { shell = "pytest test -m 'not slow and not serial' -n auto && pytest test -m 'serial and not slow' -n 0" }
 test-slow = { shell = "pytest test -m 'slow' -n auto" }

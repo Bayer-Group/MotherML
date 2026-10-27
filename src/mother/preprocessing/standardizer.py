@@ -25,8 +25,7 @@ data_dir: Path = Path(__file__).parent.joinpath("data")
 rm_pattern: str = r"(Removed .*)\n"
 
 
-# pylint: disable=too-many-public-methods
-class Standardizer:  # type: ignore
+class Standardizer:
     """Configurable standardization pipeline interface to facilitate usage
     and to provide some useful defaults.
 

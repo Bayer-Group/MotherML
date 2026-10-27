@@ -2,7 +2,7 @@ fail_fast: false
 exclude: ^(test/)
 repos:
   - repo: https://github.com/astral-sh/uv-pre-commit
-    rev: "0.12.5"
+    rev: "0.13.5"
     hooks:
       - id: uv-lock
 
@@ -52,8 +52,8 @@ repos:
       #   pass_filenames: false
       #   language: system
       #   types_or: [python, pyi]
-      - id: isort
-        name: isort
+      - id: sort
+        name: ruff sort
         description: "Sort imports"
         entry: uv run poe sort-imports
         pass_filenames: false

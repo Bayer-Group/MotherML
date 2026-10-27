@@ -28,9 +28,8 @@ from sklearn.metrics import make_scorer
 from sklearn.pipeline import Pipeline
 
 from mother import cv as cv_module
-from mother import errors
+from mother import errors, ml
 from mother import feature_generation as fg
-from mother import ml
 from mother import preprocessing as prep
 from mother import utils as mother_utils
 from mother.feature_generation import config as fg_config
