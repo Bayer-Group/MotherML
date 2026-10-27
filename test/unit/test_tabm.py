@@ -23,12 +23,8 @@ from torch import nn
 
 from mother import ml
 from mother.ml.core import PipelineWithHyperparameterRooting
-from mother.ml.models.m_tabm import (
-    TabMClassifierMother,
-    TabMRegressorMother,
-    _EnsembleLoss,
-    _TabMNet,
-)
+from mother.ml.models.m_tabm import TabMClassifierMother, TabMRegressorMother, _TabMNet
+from mother.ml.models.nn_losses import EnsembleLoss, inverse_frequency_alpha
 from mother.ml.models.tabm_utils import PiecewiseLinearEmbeddings
 from mother.optimization.core import MotherTuner
 from mother.pipeline_utils import get_model, mother_cv
@@ -99,7 +95,7 @@ def test_regression_fit_prediction_and_serialization(data, small_params, as_fram
 def test_feature_scaling_preserves_large_offset_variation(small_params, estimator, num_emb_type, as_frame):
     values = np.array([[100000001.0], [100000002.0], [100000003.0]])
     X = pd.DataFrame(values, columns=["offset"]) if as_frame else values
-    model = estimator(**small_params, num_emb_type=num_emb_type, scale_features="standard").fit(X, np.array([0, 1, 0]))
+    model = estimator(**small_params, num_emb_type=num_emb_type, quantile_transform=False).fit(X, np.array([0, 1, 0]))
     expected = StandardScaler().fit(values)
     np.testing.assert_array_equal(model.scaler_.mean_, expected.mean_)
     np.testing.assert_array_equal(model.scaler_.scale_, expected.scale_)
@@ -178,9 +174,11 @@ def test_piecewise_embeddings(data, small_params, estimator, arch_type, scale_fe
     state = torch.random.get_rng_state().clone()
     model.fit(X, y)
     assert isinstance(model.net_.module_.num_module, PiecewiseLinearEmbeddings)
-    numeric = X[["a", "b", "c"]].to_numpy(dtype=np.float32)
+    # Mirror the estimator: transform in float64, then convert to float32.
+    numeric = X[["a", "b", "c"]].to_numpy(dtype=np.float64)
     if model.scaler_ is not None:
         numeric = model.scaler_.transform(numeric)
+    numeric = numeric.astype(np.float32)
     expected = torch.quantile(torch.from_numpy(numeric), torch.linspace(0, 1, 9), dim=0).T
     for actual, edges in zip(model.bins_, expected):
         torch.testing.assert_close(actual, edges.unique())
@@ -206,7 +204,7 @@ def test_piecewise_embeddings(data, small_params, estimator, arch_type, scale_fe
 
 def test_piecewise_bins_are_fold_local_and_capped(data, small_params):
     X, y = data
-    model = TabMRegressorMother(**small_params, num_emb_type="pwl", num_emb_n_bins=48, scale_features="standard")
+    model = TabMRegressorMother(**small_params, num_emb_type="pwl", num_emb_n_bins=48, quantile_transform=False)
     splitter = KFold(2)
     results = cross_validate(model, X, y, cv=splitter, return_estimator=True)
     for fitted, (train, _) in zip(results["estimator"], splitter.split(X)):
@@ -423,7 +421,7 @@ def test_categorical_indices_for_arrays(data, small_params):
 def test_ensemble_loss_trains_each_member():
     predictions = torch.tensor([[[0.0], [2.0]], [[1.0], [3.0]]], requires_grad=True)
     targets = torch.tensor([[1.0], [2.0]])
-    loss = _EnsembleLoss(classification=False)(predictions, targets)
+    loss = EnsembleLoss(classification=False)(predictions, targets)
     assert loss.item() == pytest.approx(1.0)
     assert nn.functional.mse_loss(predictions.mean(dim=1), targets).item() == 0
     loss.backward()
@@ -432,7 +430,7 @@ def test_ensemble_loss_trains_each_member():
     logits = torch.tensor([[[2.0, -1.0], [-1.0, 2.0]], [[0.0, 1.0], [1.0, 0.0]]])
     labels = torch.tensor([0, 1])
     expected = torch.stack([nn.functional.cross_entropy(logits[:, i], labels) for i in range(2)]).mean()
-    torch.testing.assert_close(_EnsembleLoss(classification=True)(logits, labels), expected)
+    torch.testing.assert_close(EnsembleLoss(classification=True)(logits, labels), expected)
 
 
 @pytest.mark.parametrize("classification", [False, True])
@@ -442,7 +440,7 @@ def test_masked_multitarget_loss_and_gradients(classification):
         requires_grad=True,
     )
     targets = torch.tensor([[1.0, 0.0, float("nan")], [0.0, float("nan"), float("nan")]])
-    loss = _EnsembleLoss(classification=classification, multitarget=True)(predictions, targets)
+    loss = EnsembleLoss(classification=classification, multitarget=True)(predictions, targets)
     task_losses = []
     for task in range(2):
         observed = targets[:, task].isfinite()
@@ -460,7 +458,7 @@ def test_masked_multitarget_loss_and_gradients(classification):
     assert (predictions.grad[1, :, 1] == 0).all()
     assert (predictions.grad[:, :, 0] != 0).all()
     with pytest.raises(ValueError, match="at least one observed"):
-        _EnsembleLoss(classification=classification, multitarget=True)(predictions, torch.full((2, 3), float("nan")))
+        EnsembleLoss(classification=classification, multitarget=True)(predictions, torch.full((2, 3), float("nan")))
 
 
 def test_alternative_losses_match_reference_formulas():
@@ -471,21 +469,21 @@ def test_alternative_losses_match_reference_formulas():
     expected = (
         -expanded * torch.exp((1 - power) * log_mean) / (1 - power) + torch.exp((2 - power) * log_mean) / (2 - power)
     ).mean()
-    loss = _EnsembleLoss(classification=False, loss="tweedie", tweedie_variance_power=power)(log_mean, targets)
+    loss = EnsembleLoss(classification=False, loss="tweedie", tweedie_variance_power=power)(log_mean, targets)
     torch.testing.assert_close(loss, expected)
 
     logits = torch.tensor([[[2.0, -1.0], [-1.0, 2.0]], [[0.0, 1.0], [1.0, 0.0]]])
     labels = torch.tensor([0, 1])
-    focal = _EnsembleLoss(classification=True, loss="focal", focal_alpha=0.5, focal_gamma=0.0)(logits, labels)
-    cross_entropy = _EnsembleLoss(classification=True)(logits, labels)
+    focal = EnsembleLoss(classification=True, loss="focal", focal_alpha=0.5, focal_gamma=0.0)(logits, labels)
+    cross_entropy = EnsembleLoss(classification=True)(logits, labels)
     torch.testing.assert_close(focal, 0.5 * cross_entropy)
-    sharper = _EnsembleLoss(classification=True, loss="focal", focal_alpha=0.5, focal_gamma=2.0)(logits, labels)
+    sharper = EnsembleLoss(classification=True, loss="focal", focal_alpha=0.5, focal_gamma=2.0)(logits, labels)
     assert sharper < focal
 
     binary_logits = logits[..., :1]
     binary_targets = torch.tensor([[1.0], [0.0]])
-    focal = _EnsembleLoss(classification=True, multitarget=True, loss="focal", focal_alpha=0.5, focal_gamma=0.0)
-    cross_entropy = _EnsembleLoss(classification=True, multitarget=True)
+    focal = EnsembleLoss(classification=True, multitarget=True, loss="focal", focal_alpha=0.5, focal_gamma=0.0)
+    cross_entropy = EnsembleLoss(classification=True, multitarget=True)
     torch.testing.assert_close(focal(binary_logits, binary_targets), 0.5 * cross_entropy(binary_logits, binary_targets))
 
 
@@ -498,7 +496,7 @@ def test_focal_loss_gradients_finite_for_small_gamma(multitarget):
     else:
         logits = torch.tensor([[[-60.0, 60.0]], [[60.0, -60.0]]], requires_grad=True)
         targets = torch.tensor([1, 0])
-    loss = _EnsembleLoss(classification=True, multitarget=multitarget, loss="focal", focal_alpha=0.9, focal_gamma=0.5)
+    loss = EnsembleLoss(classification=True, multitarget=multitarget, loss="focal", focal_alpha=0.9, focal_gamma=0.5)
     loss(logits, targets).backward()
     assert torch.isfinite(logits.grad).all()
 
@@ -516,7 +514,7 @@ def test_multitarget_missing_labels(data, small_params, estimator, as_frame, arc
     targets[-1] = np.nan
     input_targets = pd.DataFrame(targets, columns=["task_a", "task_b"]) if as_frame else targets
     model = estimator(
-        **small_params, target_type="multi_target", num_emb_type="pwl", arch_type=arch_type, scale_features="standard"
+        **small_params, target_type="multi_target", num_emb_type="pwl", arch_type=arch_type, quantile_transform=False
     ).fit(X, input_targets)
     assert "no observed target labels" in caplog.text
     observed_rows = np.isfinite(targets).any(axis=1)
@@ -587,7 +585,7 @@ def test_missing_multiclass_labels_and_masked_loss(data, small_params):
     assert model.predict_proba(X).shape == (len(X), 3)
     assert np.isfinite(model.score(X, targets))
     logits = torch.tensor([[[2.0, 0.0], [1.0, 0.0]], [[0.0, 0.0], [0.0, 0.0]]], requires_grad=True)
-    loss = _EnsembleLoss(classification=True)(logits, torch.tensor([0, -1]))
+    loss = EnsembleLoss(classification=True)(logits, torch.tensor([0, -1]))
     torch.testing.assert_close(loss, nn.functional.cross_entropy(logits[0], torch.tensor([0, 0])))
     loss.backward()
     assert (logits.grad[1] == 0).all()
@@ -1017,11 +1015,12 @@ def test_loss_tuning_selects_focal(data, small_params, target_type):
         labels = np.column_stack([labels, (X["c"] > 0).astype(int)])
     model = TabMClassifierMother(**small_params, target_type=target_type)
     assert model.default_parameters()["loss_function"] == "cross_entropy"
-    values = {"loss_function": "focal", "focal_alpha": 0.3, "focal_gamma": 1.5}
+    values = {"loss_function": "focal", "focal_gamma": 1.5}
     trial = FixedTrial(_base_values(model) | values)
     suggested = model.get_hyperparameter_space(X, labels, trial)
     assert trial.distributions["loss_function"].choices == ("cross_entropy", "focal")
     assert {name: suggested[name] for name in values} == values
+    assert "focal_alpha" not in trial.distributions
     assert suggested["auto_class_weights"] == "None"
     fitted = clone(model).set_params(**suggested).fit(X, labels)
     assert fitted.net_.criterion_.loss == "focal"
@@ -1033,7 +1032,7 @@ def test_focal_loss_with_three_binary_tasks(data, small_params):
     labels = np.column_stack([(y > 0), (X["a"] > 0), (X["c"] > 0)]).astype(float)
     labels[::5, 2] = np.nan
     model = TabMClassifierMother(**small_params, target_type="multi_target")
-    trial = FixedTrial(_base_values(model) | {"loss_function": "focal", "focal_alpha": 0.3, "focal_gamma": 2.0})
+    trial = FixedTrial(_base_values(model) | {"loss_function": "focal", "focal_gamma": 2.0})
     suggested = model.get_hyperparameter_space(X, labels, trial)
     assert trial.distributions["loss_function"].choices == ("cross_entropy", "focal")
     fitted = clone(model).set_params(**suggested).fit(X, labels)
@@ -1041,6 +1040,27 @@ def test_focal_loss_with_three_binary_tasks(data, small_params):
     assert fitted.predict(X[:5]).shape == (5, 3)
     explicit = TabMClassifierMother(**small_params, target_type="multi_target", loss_function="focal").fit(X, labels)
     assert explicit.predict_proba(X[:5])[2].shape == (5, 2)
+
+
+def test_inverse_frequency_alpha_matches_focal_paper():
+    # Lin et al. (2017): alpha by inverse class frequency gives the negative-class fraction.
+    assert inverse_frequency_alpha(np.array([1, 0, 0, 0, -1])) == 0.75
+    labels = np.array([[1.0, 0.0], [0.0, 1.0], [0.0, np.nan], [0.0, 1.0]])
+    np.testing.assert_allclose(inverse_frequency_alpha(labels), [0.75, 1 / 3])
+
+
+@pytest.mark.parametrize("target_type", ["single_target", "multi_target"])
+def test_balanced_focal_alpha_is_computed_per_task(data, small_params, target_type):
+    X, y = data
+    labels = (y > 1).astype(float)
+    if target_type == "multi_target":
+        labels = np.column_stack([labels, (X["c"] > -1).astype(float)])
+        labels[::5, 1] = np.nan
+    model = TabMClassifierMother(**small_params, target_type=target_type, loss_function="focal").fit(X, labels)
+    expected = 1 - np.nanmean(labels, axis=0)
+    np.testing.assert_allclose(model.net_.criterion_.focal_alpha.numpy(), expected, rtol=1e-6)
+    fixed = clone(model).set_params(focal_alpha=0.3).fit(X, labels)
+    np.testing.assert_allclose(fixed.net_.criterion_.focal_alpha.numpy(), 0.3, rtol=1e-6)
 
 
 def test_focal_requires_binary_labels(data, small_params):
@@ -1082,7 +1102,7 @@ def test_robust_regression_losses(data, small_params, loss_function, loss_params
         (TabMRegressorMother, "mae", {}),
         (TabMRegressorMother, "tweedie", {"tweedie_variance_power": 1.3}),
         (TabMRegressorMother, "huber", {"huber_delta": 2.0}),
-        (TabMClassifierMother, "focal", {"focal_alpha": 0.4, "focal_gamma": 1.0}),
+        (TabMClassifierMother, "focal", {"focal_gamma": 1.0}),
     ],
 )
 def test_explicit_loss_is_fixed_but_its_parameters_are_tuned(data, small_params, estimator, loss_function, loss_params):
@@ -1135,11 +1155,11 @@ def test_robust_regression_loss_values():
     predictions = torch.tensor([[[0.0], [3.0]], [[50.0], [-2.0]]], dtype=torch.float64)
     targets = torch.tensor([[1.0], [0.0]], dtype=torch.float64)
     residuals = predictions - targets.unsqueeze(1)
-    mae = _EnsembleLoss(classification=False, loss="mae")(predictions, targets)
+    mae = EnsembleLoss(classification=False, loss="mae")(predictions, targets)
     torch.testing.assert_close(mae, residuals.abs().mean())
-    logcosh = _EnsembleLoss(classification=False, loss="logcosh")(predictions, targets)
+    logcosh = EnsembleLoss(classification=False, loss="logcosh")(predictions, targets)
     torch.testing.assert_close(logcosh, torch.log(torch.cosh(residuals)).mean())
-    huber = _EnsembleLoss(classification=False, loss="huber", huber_delta=1.5)(predictions, targets)
+    huber = EnsembleLoss(classification=False, loss="huber", huber_delta=1.5)(predictions, targets)
     abs_residuals = residuals.abs()
     expected = torch.where(abs_residuals <= 1.5, 0.5 * residuals.square(), 1.5 * (abs_residuals - 0.75))
     torch.testing.assert_close(huber, expected.mean())
@@ -1164,7 +1184,7 @@ def test_custom_regression_loss_is_used_and_not_tuned(data, small_params):
     predictions = torch.tensor([[[0.0], [3.0]], [[2.0], [-2.0]]], dtype=torch.float64)
     loss_targets = torch.tensor([[1.0], [0.0]], dtype=torch.float64)
     expected = huber(predictions, loss_targets.unsqueeze(1).expand_as(predictions)).mean()
-    torch.testing.assert_close(_EnsembleLoss(classification=False, loss=huber)(predictions, loss_targets), expected)
+    torch.testing.assert_close(EnsembleLoss(classification=False, loss=huber)(predictions, loss_targets), expected)
 
 
 @pytest.mark.parametrize("target_type", ["single_target", "multi_target"])
@@ -1270,9 +1290,9 @@ def test_class_weighted_losses_are_weighted_means():
     sample_weights = weights[labels].repeat_interleave(2)
     per_sample = nn.functional.cross_entropy(logits.flatten(0, 1), labels.repeat_interleave(2), reduction="none")
     expected = (sample_weights * per_sample).sum() / sample_weights.sum()
-    torch.testing.assert_close(_EnsembleLoss(classification=True, class_weights=weights)(logits, labels), expected)
+    torch.testing.assert_close(EnsembleLoss(classification=True, class_weights=weights)(logits, labels), expected)
 
-    focal = _EnsembleLoss(classification=True, loss="focal", class_weights=weights)(logits, labels)
+    focal = EnsembleLoss(classification=True, loss="focal", class_weights=weights)(logits, labels)
     log_pt = logits.flatten(0, 1).log_softmax(-1).gather(1, labels.repeat_interleave(2)[:, None]).squeeze(1)
     focal_terms = -0.5 * (1 - log_pt.exp()).pow(2.0) * log_pt
     torch.testing.assert_close(focal, (sample_weights * focal_terms).sum() / sample_weights.sum())
@@ -1280,7 +1300,7 @@ def test_class_weighted_losses_are_weighted_means():
     binary_logits = torch.tensor([[[0.5, 1.0]], [[-0.5, 2.0]], [[1.5, 0.0]]], dtype=torch.float64)
     binary_targets = torch.tensor([[1.0, 0.0], [0.0, float("nan")], [0.0, 1.0]], dtype=torch.float64)
     task_weights = torch.tensor([[1.0, 2.0], [4.0, 1.0]], dtype=torch.float64)
-    loss = _EnsembleLoss(classification=True, multitarget=True, class_weights=task_weights)
+    loss = EnsembleLoss(classification=True, multitarget=True, class_weights=task_weights)
     task_losses = []
     for task in range(2):
         observed = binary_targets[:, task].isfinite()
@@ -1402,16 +1422,24 @@ def test_invalid_data_and_feature_schema(data, small_params):
 
 
 @pytest.mark.parametrize(
-    ("scale_features", "scaler_type"),
-    [("quantile", QuantileTransformer), ("standard", StandardScaler), (True, StandardScaler), (False, type(None))],
+    ("scale_features", "quantile_transform", "scaler_type"),
+    [
+        (True, True, QuantileTransformer),
+        (True, False, StandardScaler),
+        (False, True, type(None)),
+        (False, False, type(None)),
+    ],
 )
-def test_scale_features_options(data, small_params, scale_features, scaler_type):
+def test_feature_preprocessing_options(data, small_params, scale_features, quantile_transform, scaler_type):
     X, y = data
-    model = TabMRegressorMother(**small_params, scale_features=scale_features).fit(X, y)
+    params = {"scale_features": scale_features, "quantile_transform": quantile_transform}
+    model = TabMRegressorMother(**small_params, **params).fit(X, y)
     assert type(model.scaler_) is scaler_type
-    assert TabMRegressorMother().scale_features == "quantile"
-    with pytest.raises(ValueError, match="scale_features"):
-        TabMRegressorMother(**small_params, scale_features="minmax").fit(X, y)
+    defaults = TabMRegressorMother().get_params()
+    assert defaults["scale_features"] is True and defaults["quantile_transform"] is True
+    for name in params:
+        with pytest.raises(ValueError, match=name):
+            TabMRegressorMother(**small_params, **{name: "standard"}).fit(X, y)
 
 
 def test_quantile_scaling_bounds_extreme_feature_values(data, small_params):
@@ -1437,7 +1465,7 @@ def test_tweedie_predictions_are_capped(data, small_params, monkeypatch):
 
 def test_preprocessing_is_training_only_and_refit_resets(data, small_params):
     X, y = data
-    model = TabMRegressorMother(**small_params, scale_features="standard").fit(X, y)
+    model = TabMRegressorMother(**small_params, quantile_transform=False).fit(X, y)
     np.testing.assert_allclose(model.scaler_.mean_, X.mean(), atol=1e-6)
     predictions = model.predict(X[:5])
     model.predict(X + 1000)

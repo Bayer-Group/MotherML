@@ -264,9 +264,10 @@ Impute missing numeric and categorical values upstream.
 The estimator fits its numeric scaler, category encoder, and regression-target
 scaler on the data supplied to each `fit()` call. Prediction reuses those fitted
 transforms; unseen categories use the network's all-zero unknown-category
-encoding. Numeric features are preprocessed with `scale_features`:
+encoding. Numeric features are preprocessed with `scale_features` and
+`quantile_transform` (both default `True`):
 
-- `"quantile"` (default, as in the official TabM pipeline) maps each feature to
+- `quantile_transform=True` (default, as in the official TabM pipeline) maps each feature to
   a normal distribution with sklearn's `QuantileTransformer`. It uses about 30
   training rows per quantile (10 to 1000 quantiles) and adds tiny noise before
   fitting so ties in discrete features spread across quantiles. Outliers and
@@ -274,8 +275,9 @@ encoding. Numeric features are preprocessed with `scale_features`:
   row cannot make the network extrapolate wildly. Without this, one row with a
   standardized value of about 1600 in California housing raised log-cosh and
   MSE fold RMSE from about 0.6 to 3 and Tweedie predictions to about 1e91.
-- `"standard"` (or `True`) standardizes to zero mean and unit variance.
-- `False` leaves numeric features unchanged.
+- `quantile_transform=False` standardizes to zero mean and unit variance.
+- `scale_features=False` leaves numeric features unchanged, whatever
+  `quantile_transform` is.
 
 Regression targets are standardized internally and predictions are converted
 back to the original target scale. With Tweedie loss, the predicted log mean is
@@ -409,9 +411,16 @@ automatically prefix these parameters like the other model hyperparameters.
   default 1.5). Tweedie needs nonnegative targets with a positive value per
   task, such as skewed counts or amounts. Targets are then rescaled without
   centering, and member outputs are log means that are exponentiated before
-  averaging. Classifiers also accept `"focal"` (`focal_alpha` in (0, 1),
-  default 0.5, and positive `focal_gamma`, default 2.0) for binary tasks, which
-  down-weights well-classified samples.
+  averaging. Classifiers also accept `"focal"` for binary tasks, which
+  down-weights well-classified samples with a positive `focal_gamma` (default
+  2.0, shared by all tasks). `focal_alpha` weights the positive class. The
+  default `"balanced"` uses the rule from the focal loss paper (Lin et al.,
+  2017, Section 3.1, "α may be set by inverse class frequency"), which
+  gives each task its own alpha equal to its fraction of negative labels, so
+  tasks with very different class balance are each weighted appropriately. A
+  number in (0, 1) sets one alpha for all tasks. Note that the paper found the
+  best alpha decreases as gamma grows (gamma 2 worked best with alpha 0.25
+  on its detection task), so a fixed alpha can still be worth comparing.
 - Loss tuning follows CatBoost. The shared `get_hyperparameter_space` calls
     `suggested_params_loss`, which `TabMRegressorMother` and
     `TabMClassifierMother` each implement. What MotherTuner tunes depends on
@@ -433,7 +442,9 @@ automatically prefix these parameters like the other model hyperparameters.
     train neural networks poorly; Huber with a small delta covers that robust
     regime. The Tweedie variance power uses CatBoost's range, 1.000001 to
     1.999999. Ranges for the other losses suit neural networks: `huber_delta`
-    0.1 to 3 (log scale), `focal_alpha` 0.05 to 0.95, and `focal_gamma` 0.5 to 5.
+    0.1 to 3 (log scale) and `focal_gamma` 0.5 to 5. `focal_alpha` is not
+    tuned: it is computed per task (`"balanced"`) or fixed by the user, which
+    keeps one shared tuned parameter however many tasks there are.
     Tweedie is offered only for valid nonnegative targets and focal only when
     every task is binary (multiclass always uses cross-entropy). When tuning
     selects focal loss, class weighting is turned off. `default_parameters()`
@@ -451,6 +462,9 @@ automatically prefix these parameters like the other model hyperparameters.
   can be pickled, for example
   `TabMRegressorMother(loss_function=partial(functional.huber_loss, reduction="none", delta=0.5))`
   with `from torch.nn import functional`.
+- The losses live in `mother.ml.models.nn_losses` (`EnsembleLoss` and
+  `inverse_frequency_alpha`) so other PyTorch estimators can reuse them.
+  Models without ensemble members pass a members axis of size 1.
 - `TabMClassifierMother` accepts CatBoost's `auto_class_weights` (regressors
   do not offer it): `"Balanced"` weights each
   class by the largest class count divided by its count, `"SqrtBalanced"` uses
