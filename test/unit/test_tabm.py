@@ -1028,6 +1028,21 @@ def test_loss_tuning_selects_focal(data, small_params, target_type):
     assert fitted.predict(X[:5]).shape == labels[:5].shape
 
 
+def test_focal_loss_with_three_binary_tasks(data, small_params):
+    X, y = data
+    labels = np.column_stack([(y > 0), (X["a"] > 0), (X["c"] > 0)]).astype(float)
+    labels[::5, 2] = np.nan
+    model = TabMClassifierMother(**small_params, target_type="multi_target")
+    trial = FixedTrial(_base_values(model) | {"loss_function": "focal", "focal_alpha": 0.3, "focal_gamma": 2.0})
+    suggested = model.get_hyperparameter_space(X, labels, trial)
+    assert trial.distributions["loss_function"].choices == ("cross_entropy", "focal")
+    fitted = clone(model).set_params(**suggested).fit(X, labels)
+    assert fitted.net_.criterion_.loss == "focal"
+    assert fitted.predict(X[:5]).shape == (5, 3)
+    explicit = TabMClassifierMother(**small_params, target_type="multi_target", loss_function="focal").fit(X, labels)
+    assert explicit.predict_proba(X[:5])[2].shape == (5, 2)
+
+
 def test_focal_requires_binary_labels(data, small_params):
     X, _ = data
     labels = np.arange(len(X)) % 3

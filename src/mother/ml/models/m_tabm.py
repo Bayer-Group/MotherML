@@ -648,7 +648,8 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
         self.n_outputs_ = targets.shape[1]
         if classification:
             prepared_targets, output_dim = self._prepare_classification_targets(targets)
-            if loss == "focal" and output_dim > 2:
+            # Multitarget output_dim counts tasks, which are already validated as binary.
+            if loss == "focal" and self.target_type == "single_target" and output_dim > 2:
                 raise ValueError("Focal loss supports only binary classification tasks.")
             self.class_weights_ = self._class_weights(prepared_targets, output_dim, loss)
             observed_rows = (~pd.isna(targets)).any(axis=1)
