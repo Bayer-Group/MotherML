@@ -386,24 +386,32 @@ automatically prefix these parameters like the other model hyperparameters.
   fixed during tuning. Like embedding `"auto"`, architecture `"auto"` is for
   tuning; direct `.fit()` requires a specific variant. Architecture and
   embedding selection can be tuned together.
-- `loss_function=None` (default) trains with squared error for regression and
-  cross-entropy for classification. The alternatives mirror the losses
-  MotherTuner searches for CatBoost. Regressors also accept `"mae"`,
-  `"logcosh"`, and `"tweedie"` (`tweedie_variance_power` in (1, 2), default
-  1.5). Tweedie needs nonnegative targets with a positive value per task, such
-  as skewed counts or amounts. Targets are then rescaled without centering, and
-  member outputs are log means that are exponentiated before averaging.
-  Classifiers also accept `"focal"` (`focal_alpha` in (0, 1), default 0.5, and
-  positive `focal_gamma`, default 2.0) for binary tasks, which down-weights
-  well-classified samples.
-- As with CatBoost, `loss_function="auto"` lets MotherTuner choose among
-  `"mse"`, `"mae"`, `"logcosh"`, and `"tweedie"` for regression, or
-  `"cross_entropy"` and `"focal"` for classification. It uses CatBoost's ranges:
-  variance power 1.000001 to 1.999999, `focal_alpha` 0.000001 to 0.999999, and
-  `focal_gamma` 0.000001 to 7. Tweedie is offered only for valid nonnegative
-  targets and focal only
-  when every task is binary. The first default trial uses the default loss;
-  direct `.fit()` requires a specific loss.
+- `loss_function=None` (default) means you have not chosen a loss. Direct
+  `.fit()` then trains with squared error for regression and cross-entropy for
+  classification, and MotherTuner tunes the loss (see below). The alternatives
+  mirror the losses MotherTuner searches for CatBoost. Regressors also accept
+  `"mae"`, `"logcosh"`, and `"tweedie"` (`tweedie_variance_power` in (1, 2),
+  default 1.5). Tweedie needs nonnegative targets with a positive value per
+  task, such as skewed counts or amounts. Targets are then rescaled without
+  centering, and member outputs are log means that are exponentiated before
+  averaging. Classifiers also accept `"focal"` (`focal_alpha` in (0, 1),
+  default 0.5, and positive `focal_gamma`, default 2.0) for binary tasks, which
+  down-weights well-classified samples.
+- Loss tuning follows CatBoost. The shared `get_hyperparameter_space` calls
+  `suggested_params_loss`, which `TabMRegressorMother` and
+  `TabMClassifierMother` each implement. When `loss_function=None` and
+  `tune_loss_function=True` (default), each trial first picks a loss —
+  `"mse"`, `"mae"`, `"logcosh"`, or `"tweedie"` for regression, and
+  `"cross_entropy"` or `"focal"` for classification — and then tunes only that
+  loss's parameters, using CatBoost's ranges: variance power 1.000001 to
+  1.999999, `focal_alpha` 0.000001 to 0.999999, and `focal_gamma` 0.000001 to
+  7. Tweedie is offered only for valid nonnegative targets and focal only when
+  every task is binary (multiclass always uses cross-entropy). When tuning
+  selects focal loss, class weighting is turned off. `default_parameters()`
+  always includes `loss_function`, so the first default trial uses the default
+  loss. An explicit loss stays fixed, but its Tweedie or focal parameters are
+  still tuned. `tune_loss_function=False` keeps the loss and its parameters
+  fixed.
 - `loss_function` also accepts your own callable `loss(predictions, targets)`.
   A custom loss is used as given and is not tuned. It must return one loss per
   target element, like PyTorch losses with `reduction="none"`; Mother then

@@ -273,9 +273,8 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
         num_emb_n_frequencies: int = 48,
         num_emb_frequency_init_scale: float = 0.01,
         num_emb_activation: bool = True,
-        loss_function: Literal["auto", "mse", "mae", "logcosh", "tweedie", "cross_entropy", "focal"]
-        | CustomLoss
-        | None = None,
+        loss_function: Literal["mse", "mae", "logcosh", "tweedie", "cross_entropy", "focal"] | CustomLoss | None = None,
+        tune_loss_function: bool = True,
         tweedie_variance_power: float = 1.5,
         focal_alpha: float = 0.5,
         focal_gamma: float = 2.0,
@@ -345,15 +344,16 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             num_emb_activation: Whether to apply ReLU after periodic
                 embeddings.
             loss_function: Training loss, mirroring the losses MotherTuner
-                searches for CatBoost. ``None`` (default) uses ``"mse"`` for
-                regression and ``"cross_entropy"`` for classification.
+                searches for CatBoost. ``None`` (default) means "not chosen by
+                the user": direct fitting uses ``"mse"`` for regression and
+                ``"cross_entropy"`` for classification, and MotherTuner tunes
+                the loss when ``tune_loss_function`` is true.
                 Regressors also accept ``"mae"``, ``"logcosh"``, and
                 ``"tweedie"``; Tweedie needs nonnegative targets with a
                 positive value per task and predicts through a log link.
                 Classifiers also accept ``"focal"`` for binary tasks.
-                ``"auto"`` lets MotherTuner choose between the task's losses,
-                offering Tweedie and focal only when the data allow them;
-                choose a specific loss for direct fitting.
+                An explicit loss stays fixed during tuning, although the
+                Tweedie power or focal parameters are still tuned.
                 A callable ``loss(predictions, targets)`` supplies a custom
                 loss and is never tuned. It must return unreduced losses with
                 the targets' shape, like PyTorch losses with
@@ -370,6 +370,12 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
                 classification passes ``(rows * members, classes)`` logits and
                 integer class targets. Use a module-level function or
                 ``functools.partial`` so fitted models can be pickled.
+            tune_loss_function: Let MotherTuner search the loss when
+                ``loss_function`` is ``None``, like CatBoost's option of the
+                same name. Each trial picks a loss from the task's losses
+                (Tweedie and focal only when the data allow them) and then
+                tunes that loss's own parameters. ``False`` keeps the loss and
+                its parameters fixed.
             tweedie_variance_power: Tweedie variance power, in (1, 2).
             focal_alpha: Focal loss weight of the positive class, in (0, 1).
                 ``0.5`` weights both classes equally.
@@ -401,6 +407,7 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
         self.num_emb_frequency_init_scale = num_emb_frequency_init_scale
         self.num_emb_activation = num_emb_activation
         self.loss_function = loss_function
+        self.tune_loss_function = tune_loss_function
         self.tweedie_variance_power = tweedie_variance_power
         self.focal_alpha = focal_alpha
         self.focal_gamma = focal_gamma
@@ -487,11 +494,13 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
         if (
             self.loss_function is not None
             and not callable(self.loss_function)
-            and self.loss_function not in ("auto", *allowed_losses)
+            and self.loss_function not in allowed_losses
         ):
             raise ValueError(
-                f"loss_function for {type(self).__name__} must be None, 'auto', a callable, or one of {allowed_losses}."
+                f"loss_function for {type(self).__name__} must be None, a callable, or one of {allowed_losses}."
             )
+        if not isinstance(self.tune_loss_function, bool):
+            raise ValueError("tune_loss_function must be a boolean.")
         if not 1 < self.tweedie_variance_power < 2:
             raise ValueError("tweedie_variance_power must be in (1, 2).")
         if not 0 < self.focal_alpha < 1:
@@ -601,8 +610,6 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             raise ValueError("arch_type='auto' is only supported during MotherTuner optimization.")
         if self.num_emb_type == "auto":
             raise ValueError("num_emb_type='auto' is only supported during MotherTuner optimization.")
-        if self.loss_function == "auto":
-            raise ValueError("loss_function='auto' is only supported during MotherTuner optimization.")
         loss = self.loss_ = self._resolved_loss()
         targets = self._target_array(y)
         if len(targets) != len(X):
@@ -824,8 +831,8 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
         Args:
             X: Training features required by Mother's tuning interface; not
                 accessed by this implementation.
-            y: Training targets, used to decide whether Tweedie or focal loss
-                is applicable when ``loss_function="auto"``.
+            y: Training targets, passed to :meth:`suggested_params_loss` to
+                decide which losses apply.
             trial: Optuna trial used to suggest parameter values.
             prefix: Prefix for parameter names, used by rooted pipelines.
 
@@ -860,33 +867,31 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             )
         elif embedding_type == "pwl":
             parameters[prefix + "num_emb_n_bins"] = trial.suggest_int(prefix + "num_emb_n_bins", 2, 128, log=True)
-        loss = self._resolved_loss()
-        if loss == "auto":
-            losses = list(self._task_losses())
-            if not self._alternative_loss_applicable(y):
-                losses.pop()
-            loss = trial.suggest_categorical(prefix + "loss_function", losses)
-            parameters[prefix + "loss_function"] = loss
-        # Ranges match CatBoost's Tweedie and focal tuning in m_catboost.py.
-        if loss == "tweedie":
-            parameters[prefix + "tweedie_variance_power"] = trial.suggest_float(
-                prefix + "tweedie_variance_power", 1.000001, 1.999999
-            )
-        elif loss == "focal":
-            if self.loss_function == "auto":
-                # CatBoost disables class weights when tuning selects focal loss.
-                parameters[prefix + "auto_class_weights"] = "None"
-            parameters[prefix + "focal_alpha"] = trial.suggest_float(prefix + "focal_alpha", 0.000001, 0.999999)
-            parameters[prefix + "focal_gamma"] = trial.suggest_float(prefix + "focal_gamma", 0.000001, 7)
+        if self.tune_loss_function:
+            parameters = self.suggested_params_loss(trial, parameters, y, prefix)
         return parameters
 
-    def _alternative_loss_applicable(self, y: Any) -> bool:
-        """Whether ``y`` allows Tweedie (regression) or focal (classification) loss."""
-        targets = self._target_array(y)
-        if isinstance(self, ClassifierMixin):
-            return all(pd.Series(targets[:, task]).dropna().nunique() == 2 for task in range(targets.shape[1]))
-        numeric = np.asarray(np.where(pd.isna(targets), np.nan, targets), dtype=np.float64)
-        return self._tweedie_compatible(numeric)
+    def suggested_params_loss(
+        self, trial: Trial, suggested_params: dict[str, Any], y: Any, prefix: str
+    ) -> dict[str, Any]:
+        """Add the loss and its parameters to a trial's suggestions.
+
+        Called by :meth:`get_hyperparameter_space` when
+        ``tune_loss_function`` is true. Regressors and classifiers override
+        this, like the CatBoost estimators: with ``loss_function=None`` they
+        pick a loss suited to ``y`` and then suggest that loss's own
+        parameters, so the search space depends on the chosen loss.
+
+        Args:
+            trial: Optuna trial used to suggest parameter values.
+            suggested_params: Parameters suggested so far.
+            y: Training targets, used to decide which losses apply.
+            prefix: Prefix for parameter names, used by rooted pipelines.
+
+        Returns:
+            The updated suggested parameters.
+        """
+        return suggested_params
 
     def default_parameters(self, prefix: str = "") -> dict[str, Any]:
         """Return Mother's default tuning values with an optional prefix.
@@ -927,8 +932,7 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
         elif embedding_type == "pwl":
             parameters[prefix + "num_emb_n_bins"] = _EMBEDDING_DEFAULTS["num_emb_n_bins"]
         loss = self._resolved_loss()
-        if loss == "auto":
-            loss = self._task_losses()[0]
+        if not callable(loss):
             parameters[prefix + "loss_function"] = loss
         if loss == "tweedie":
             parameters[prefix + "tweedie_variance_power"] = 1.5
@@ -950,6 +954,41 @@ class TabMRegressorMother(RegressorMixin, _BaseTabMMother):
     Missing labels are masked; each task needs an observed finite training
     value. Input features must still be nonmissing.
     """
+
+    def suggested_params_loss(
+        self, trial: Trial, suggested_params: dict[str, Any], y: Any, prefix: str
+    ) -> dict[str, Any]:
+        """Suggest a regression loss and the parameters that loss needs.
+
+        With ``loss_function=None`` the trial chooses between MSE, MAE and
+        log-cosh, plus Tweedie when every observed target is nonnegative and
+        each task has a positive value. An explicit loss stays fixed. Tweedie,
+        whether chosen or fixed, also gets a tuned variance power.
+
+        Args:
+            trial: Optuna trial used to suggest parameter values.
+            suggested_params: Parameters suggested so far.
+            y: Training targets.
+            prefix: Prefix for parameter names, used by rooted pipelines.
+
+        Returns:
+            The updated suggested parameters.
+        """
+        loss = self.loss_function
+        if loss is None:
+            losses = ["mse", "mae", "logcosh"]
+            targets = self._target_array(y)
+            numeric = np.asarray(np.where(pd.isna(targets), np.nan, targets), dtype=np.float64)
+            if self._tweedie_compatible(numeric):
+                losses.append("tweedie")
+            loss = trial.suggest_categorical(prefix + "loss_function", losses)
+            suggested_params[prefix + "loss_function"] = loss
+        # Range matches CatBoost's Tweedie tuning in m_catboost.py.
+        if loss == "tweedie":
+            suggested_params[prefix + "tweedie_variance_power"] = trial.suggest_float(
+                prefix + "tweedie_variance_power", 1.000001, 1.999999
+            )
+        return suggested_params
 
     def _regression_members(self, X: Features) -> Tensor:
         """Return float64 member predictions in scaled target units."""
@@ -1050,7 +1089,8 @@ class TabMClassifierMother(ClassifierMixin, _BaseTabMMother):
         num_emb_n_frequencies: int = 48,
         num_emb_frequency_init_scale: float = 0.01,
         num_emb_activation: bool = True,
-        loss_function: Literal["auto", "cross_entropy", "focal"] | CustomLoss | None = None,
+        loss_function: Literal["cross_entropy", "focal"] | CustomLoss | None = None,
+        tune_loss_function: bool = True,
         tweedie_variance_power: float = 1.5,
         focal_alpha: float = 0.5,
         focal_gamma: float = 2.0,
@@ -1095,6 +1135,7 @@ class TabMClassifierMother(ClassifierMixin, _BaseTabMMother):
             num_emb_frequency_init_scale=num_emb_frequency_init_scale,
             num_emb_activation=num_emb_activation,
             loss_function=loss_function,
+            tune_loss_function=tune_loss_function,
             tweedie_variance_power=tweedie_variance_power,
             focal_alpha=focal_alpha,
             focal_gamma=focal_gamma,
@@ -1109,6 +1150,46 @@ class TabMClassifierMother(ClassifierMixin, _BaseTabMMother):
             verbose=verbose,
         )
         self.auto_class_weights = auto_class_weights
+
+    def suggested_params_loss(
+        self, trial: Trial, suggested_params: dict[str, Any], y: Any, prefix: str
+    ) -> dict[str, Any]:
+        """Suggest a classification loss and the parameters that loss needs.
+
+        With ``loss_function=None`` binary tasks choose between cross-entropy
+        and focal loss; multiclass tasks always use cross-entropy because
+        focal loss is binary-only. An explicit loss stays fixed. Focal loss,
+        whether chosen or fixed, also gets tuned ``focal_alpha`` and
+        ``focal_gamma``.
+
+        Args:
+            trial: Optuna trial used to suggest parameter values.
+            suggested_params: Parameters suggested so far.
+            y: Training labels.
+            prefix: Prefix for parameter names, used by rooted pipelines.
+
+        Returns:
+            The updated suggested parameters.
+        """
+        loss = self.loss_function
+        if loss is None:
+            targets = self._target_array(y)
+            binary = self.model_type != "classification_multiclass" and all(
+                pd.Series(targets[:, task]).dropna().nunique() == 2 for task in range(targets.shape[1])
+            )
+            if not binary:
+                suggested_params[prefix + "loss_function"] = "cross_entropy"
+                return suggested_params
+            loss = trial.suggest_categorical(prefix + "loss_function", ["cross_entropy", "focal"])
+            suggested_params[prefix + "loss_function"] = loss
+            if loss == "focal":
+                # CatBoost disables class weights when tuning selects focal loss.
+                suggested_params[prefix + "auto_class_weights"] = "None"
+        # Ranges match CatBoost's focal tuning in m_catboost.py.
+        if loss == "focal":
+            suggested_params[prefix + "focal_alpha"] = trial.suggest_float(prefix + "focal_alpha", 0.000001, 0.999999)
+            suggested_params[prefix + "focal_gamma"] = trial.suggest_float(prefix + "focal_gamma", 0.000001, 7)
+        return suggested_params
 
     def predict_proba(self, X: Features) -> npt.NDArray[np.float32] | list[npt.NDArray[np.float32]]:
         """Predict class probabilities by averaging member probabilities.

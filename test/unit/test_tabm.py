@@ -909,7 +909,8 @@ def test_auto_embedding_type_tuning(data, small_params, embedding_type, extra_pa
     X, y = data
     model = TabMRegressorMother(**small_params, num_emb_type="auto")
     defaults = model.default_parameters()
-    values = {name: defaults[name] for name in ("lr", "weight_decay", "n_blocks", "d_block", "dropout", "k")}
+    names = ("lr", "weight_decay", "n_blocks", "d_block", "dropout", "k", "loss_function")
+    values = {name: defaults[name] for name in names}
     values.update({"num_emb_type": embedding_type, "d_embedding": 7} | extra_params)
 
     trial = FixedTrial(values)
@@ -937,7 +938,8 @@ def test_auto_embedding_tuning_can_select_none(data, small_params):
     X, y = data
     model = TabMRegressorMother(**small_params, num_emb_type="auto")
     defaults = model.default_parameters()
-    values = {name: defaults[name] for name in ("lr", "weight_decay", "n_blocks", "d_block", "dropout", "k")}
+    names = ("lr", "weight_decay", "n_blocks", "d_block", "dropout", "k", "loss_function")
+    values = {name: defaults[name] for name in names}
     trial = FixedTrial(values | {"num_emb_type": "none"})
     suggested = model.get_hyperparameter_space(X, y, trial)
     assert suggested["num_emb_type"] == "none"
@@ -953,13 +955,13 @@ def _base_values(model):
 
 
 @pytest.mark.parametrize("target_type", ["single_target", "multi_target"])
-def test_auto_loss_tuning_selects_tweedie(data, small_params, target_type):
+def test_loss_tuning_selects_tweedie(data, small_params, target_type):
     X, y = data
     y = np.exp(y / 2)
     if target_type == "multi_target":
         y = np.column_stack([y, 2 * y])
         y[::4, 1] = np.nan
-    model = TabMRegressorMother(**small_params, target_type=target_type, loss_function="auto")
+    model = TabMRegressorMother(**small_params, target_type=target_type)
     assert model.default_parameters()["loss_function"] == "mse"
     trial = FixedTrial(_base_values(model) | {"loss_function": "tweedie", "tweedie_variance_power": 1.4})
     suggested = model.get_hyperparameter_space(X, y, trial)
@@ -977,14 +979,14 @@ def test_auto_loss_tuning_selects_tweedie(data, small_params, target_type):
 
 def test_tweedie_requires_nonnegative_targets(data, small_params):
     X, y = data
-    model = TabMRegressorMother(**small_params, loss_function="auto")
+    model = TabMRegressorMother(**small_params)
     trial = FixedTrial(_base_values(model) | {"loss_function": "mse"})
     model.get_hyperparameter_space(X, y, trial)
     assert trial.distributions["loss_function"].choices == ("mse", "mae", "logcosh")
     with pytest.raises(ValueError, match="nonnegative"):
         TabMRegressorMother(**small_params, loss_function="tweedie").fit(X, y)
-    with pytest.raises(ValueError, match="only supported during MotherTuner"):
-        model.fit(X, y)
+    with pytest.raises(ValueError, match="loss_function for TabMRegressorMother"):
+        TabMRegressorMother(**small_params, loss_function="auto").fit(X, y)
     with pytest.raises(ValueError, match="loss_function for TabMRegressorMother"):
         TabMRegressorMother(**small_params, loss_function="focal").fit(X, y)
     with pytest.raises(ValueError, match="tweedie_variance_power"):
@@ -992,12 +994,12 @@ def test_tweedie_requires_nonnegative_targets(data, small_params):
 
 
 @pytest.mark.parametrize("target_type", ["single_target", "multi_target"])
-def test_auto_loss_tuning_selects_focal(data, small_params, target_type):
+def test_loss_tuning_selects_focal(data, small_params, target_type):
     X, y = data
     labels = (y > 0).astype(int)
     if target_type == "multi_target":
         labels = np.column_stack([labels, (X["c"] > 0).astype(int)])
-    model = TabMClassifierMother(**small_params, target_type=target_type, loss_function="auto")
+    model = TabMClassifierMother(**small_params, target_type=target_type)
     assert model.default_parameters()["loss_function"] == "cross_entropy"
     values = {"loss_function": "focal", "focal_alpha": 0.3, "focal_gamma": 1.5}
     trial = FixedTrial(_base_values(model) | values)
@@ -1013,10 +1015,11 @@ def test_auto_loss_tuning_selects_focal(data, small_params, target_type):
 def test_focal_requires_binary_labels(data, small_params):
     X, _ = data
     labels = np.arange(len(X)) % 3
-    model = TabMClassifierMother(**small_params, loss_function="auto")
-    trial = FixedTrial(_base_values(model) | {"loss_function": "cross_entropy"})
-    model.get_hyperparameter_space(X, labels, trial)
-    assert trial.distributions["loss_function"].choices == ("cross_entropy",)
+    model = TabMClassifierMother(**small_params)
+    trial = FixedTrial(_base_values(model))
+    suggested = model.get_hyperparameter_space(X, labels, trial)
+    assert suggested["loss_function"] == "cross_entropy"
+    assert "loss_function" not in trial.distributions
     with pytest.raises(ValueError, match="Focal loss supports only binary"):
         TabMClassifierMother(**small_params, loss_function="focal").fit(X, labels)
     with pytest.raises(ValueError, match="focal_alpha"):
@@ -1028,13 +1031,45 @@ def test_focal_requires_binary_labels(data, small_params):
 @pytest.mark.parametrize("loss_function", ["mae", "logcosh"])
 def test_robust_regression_losses(data, small_params, loss_function):
     X, y = data
-    model = TabMRegressorMother(**small_params, loss_function="auto")
+    model = TabMRegressorMother(**small_params)
     trial = FixedTrial(_base_values(model) | {"loss_function": loss_function})
     suggested = model.get_hyperparameter_space(X, y, trial)
     assert {"tweedie_variance_power", "focal_alpha", "focal_gamma"}.isdisjoint(suggested)
     fitted = clone(model).set_params(**suggested).fit(X, y)
     assert fitted.net_.criterion_.loss == loss_function
     assert np.isfinite(fitted.predict(X[:5])).all()
+
+
+@pytest.mark.parametrize(
+    ("estimator", "loss_function", "loss_params"),
+    [
+        (TabMRegressorMother, "mae", {}),
+        (TabMRegressorMother, "tweedie", {"tweedie_variance_power": 1.3}),
+        (TabMClassifierMother, "focal", {"focal_alpha": 0.4, "focal_gamma": 1.0}),
+    ],
+)
+def test_explicit_loss_is_fixed_but_its_parameters_are_tuned(data, small_params, estimator, loss_function, loss_params):
+    X, y = data
+    model = estimator(**small_params, loss_function=loss_function)
+    assert model.default_parameters()["loss_function"] == loss_function
+    trial = FixedTrial(_base_values(model) | loss_params)
+    targets = np.abs(y) if estimator is TabMRegressorMother else (y > 0).astype(int)
+    suggested = model.get_hyperparameter_space(X, targets, trial)
+    assert "loss_function" not in trial.distributions
+    assert {name: suggested[name] for name in loss_params} == loss_params
+
+
+@pytest.mark.parametrize("estimator", [TabMRegressorMother, TabMClassifierMother])
+def test_tune_loss_function_false_keeps_default_loss(data, small_params, estimator):
+    X, y = data
+    targets = y if estimator is TabMRegressorMother else (y > 0).astype(int)
+    model = estimator(**small_params, tune_loss_function=False)
+    trial = FixedTrial(_base_values(model))
+    suggested = model.get_hyperparameter_space(X, targets, trial)
+    assert not {"loss_function", "tweedie_variance_power", "focal_alpha", "focal_gamma"} & set(trial.distributions)
+    assert "loss_function" not in suggested
+    with pytest.raises(ValueError, match="tune_loss_function must be a boolean"):
+        estimator(**small_params, tune_loss_function="yes").fit(X, targets)
 
 
 def test_robust_regression_loss_values():
