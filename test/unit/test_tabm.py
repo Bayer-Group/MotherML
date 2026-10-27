@@ -1096,6 +1096,26 @@ def test_tune_loss_function_false_keeps_default_loss(data, small_params, estimat
         estimator(**small_params, tune_loss_function="yes").fit(X, targets)
 
 
+@pytest.mark.parametrize(
+    ("estimator", "loss_function", "loss_params"),
+    [
+        (TabMRegressorMother, "huber", {"huber_delta": 0.3}),
+        (TabMRegressorMother, "tweedie", {"tweedie_variance_power": 1.2}),
+        (TabMClassifierMother, "focal", {"focal_alpha": 0.25, "focal_gamma": 3.0}),
+    ],
+)
+def test_explicit_loss_with_tuning_off_keeps_its_parameters(data, small_params, estimator, loss_function, loss_params):
+    X, y = data
+    targets = np.abs(y) if estimator is TabMRegressorMother else (y > 0).astype(int)
+    model = estimator(**small_params, loss_function=loss_function, tune_loss_function=False, **loss_params)
+    trial = FixedTrial(_base_values(model))
+    suggested = model.get_hyperparameter_space(X, targets, trial)
+    assert not {"loss_function", *loss_params} & set(trial.distributions)
+    fitted = clone(model).set_params(**suggested).fit(X, targets)
+    assert fitted.net_.criterion_.loss == loss_function
+    assert {name: getattr(fitted.net_.criterion_, name) for name in loss_params} == loss_params
+
+
 def test_robust_regression_loss_values():
     predictions = torch.tensor([[[0.0], [3.0]], [[50.0], [-2.0]]], dtype=torch.float64)
     targets = torch.tensor([[1.0], [0.0]], dtype=torch.float64)

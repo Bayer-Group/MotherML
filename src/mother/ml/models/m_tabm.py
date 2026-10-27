@@ -390,12 +390,16 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
                 classification passes ``(rows * members, classes)`` logits and
                 integer class targets. Use a module-level function or
                 ``functools.partial`` so fitted models can be pickled.
-            tune_loss_function: Let MotherTuner search the loss when
-                ``loss_function`` is ``None``, like CatBoost's option of the
-                same name. Each trial picks a loss from the task's losses
-                (Tweedie and focal only when the data allow them) and then
-                tunes that loss's own parameters. ``False`` keeps the loss and
-                its parameters fixed.
+            tune_loss_function: Whether MotherTuner tunes the loss. With
+                ``True`` (default) and ``loss_function=None``, each trial picks
+                a loss type from the task's losses (Tweedie and focal only
+                when the data allow them) and then tunes that loss's own
+                parameters. With ``True`` and an explicit loss, the loss type
+                stays fixed and only its own parameters are tuned (Tweedie
+                power, Huber delta, or focal alpha and gamma; MSE, MAE,
+                log-cosh and cross-entropy have none). ``False`` keeps the
+                loss and its parameters at their given values, so use it to
+                pin e.g. ``huber_delta``. Custom callables are never tuned.
             tweedie_variance_power: Tweedie variance power, in (1, 2).
             huber_delta: Positive residual size, in target standard
                 deviations, where Huber loss turns from quadratic to linear.
@@ -907,7 +911,8 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
         ``tune_loss_function`` is true. Regressors and classifiers override
         this, like the CatBoost estimators: with ``loss_function=None`` they
         pick a loss suited to ``y`` and then suggest that loss's own
-        parameters, so the search space depends on the chosen loss.
+        parameters, so the search space depends on the chosen loss. With an
+        explicit loss they suggest only that loss's own parameters.
 
         Args:
             trial: Optuna trial used to suggest parameter values.

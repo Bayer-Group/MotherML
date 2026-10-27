@@ -399,23 +399,32 @@ automatically prefix these parameters like the other model hyperparameters.
   default 0.5, and positive `focal_gamma`, default 2.0) for binary tasks, which
   down-weights well-classified samples.
 - Loss tuning follows CatBoost. The shared `get_hyperparameter_space` calls
-  `suggested_params_loss`, which `TabMRegressorMother` and
-  `TabMClassifierMother` each implement. When `loss_function=None` and
-  `tune_loss_function=True` (default), each trial first picks a loss —
-  `"mse"`, `"logcosh"`, `"huber"`, or `"tweedie"` for regression, and
-  `"cross_entropy"` or `"focal"` for classification — and then tunes only that
-  loss's parameters. MAE is not searched because its constant-size gradients
-  train neural networks poorly; Huber with a small delta covers that robust
-  regime. The Tweedie variance power uses CatBoost's range, 1.000001 to
-  1.999999. Ranges for the other losses suit neural networks: `huber_delta`
-  0.1 to 3 (log scale), `focal_alpha` 0.05 to 0.95, and `focal_gamma` 0.5 to 5.
-  Tweedie is offered only for valid nonnegative targets and focal only when
-  every task is binary (multiclass always uses cross-entropy). When tuning
-  selects focal loss, class weighting is turned off. `default_parameters()`
-  always includes `loss_function`, so the first default trial uses the default
-  loss. An explicit loss stays fixed, but its Tweedie, Huber, or focal
-  parameters are still tuned. `tune_loss_function=False` keeps the loss and its
-  parameters fixed.
+    `suggested_params_loss`, which `TabMRegressorMother` and
+    `TabMClassifierMother` each implement. What MotherTuner tunes depends on
+    `loss_function` and `tune_loss_function`:
+
+    | `loss_function` | `tune_loss_function=True` (default) | `tune_loss_function=False` |
+    |---|---|---|
+    | `None` (default) | Loss type **and** its parameters are tuned | Default loss (MSE / cross-entropy), nothing tuned |
+    | Explicit, e.g. `"huber"` | Loss type fixed, only its own parameters tuned | Loss and its parameters fixed at the given values |
+    | Custom callable | Used as given, never tuned | Used as given, never tuned |
+
+    So setting a loss explicitly picks the loss but still tunes what it needs,
+    and `tune_loss_function=False` pins a parameter such as `huber_delta`.
+    When the type is tuned, each trial first picks a loss —
+    `"mse"`, `"logcosh"`, `"huber"`, or `"tweedie"` for regression, and
+    `"cross_entropy"` or `"focal"` for classification — and then tunes only that
+    loss's parameters. MSE, MAE, log-cosh and cross-entropy have no parameters.
+    MAE is not searched because its constant-size gradients
+    train neural networks poorly; Huber with a small delta covers that robust
+    regime. The Tweedie variance power uses CatBoost's range, 1.000001 to
+    1.999999. Ranges for the other losses suit neural networks: `huber_delta`
+    0.1 to 3 (log scale), `focal_alpha` 0.05 to 0.95, and `focal_gamma` 0.5 to 5.
+    Tweedie is offered only for valid nonnegative targets and focal only when
+    every task is binary (multiclass always uses cross-entropy). When tuning
+    selects focal loss, class weighting is turned off. `default_parameters()`
+    always includes `loss_function`, so the first default trial uses the default
+    loss.
 - `loss_function` also accepts your own callable `loss(predictions, targets)`.
   A custom loss is used as given and is not tuned. It must return one loss per
   target element, like PyTorch losses with `reduction="none"`; Mother then
