@@ -24,7 +24,11 @@ from torch import nn
 from mother import ml
 from mother.ml.core import PipelineWithHyperparameterRooting
 from mother.ml.models.m_tabm import TabMClassifierMother, TabMRegressorMother, _TabMNet
-from mother.ml.models.nn_losses import EnsembleLoss, inverse_frequency_alpha
+from mother.ml.models.nn_losses import (
+    EnsembleLoss,
+    focal_alpha_from_strength,
+    inverse_frequency_alpha,
+)
 from mother.ml.models.tabm_utils import PiecewiseLinearEmbeddings
 from mother.optimization.core import MotherTuner
 from mother.pipeline_utils import get_model, mother_cv
@@ -1015,7 +1019,7 @@ def test_loss_tuning_selects_focal(data, small_params, target_type):
         labels = np.column_stack([labels, (X["c"] > 0).astype(int)])
     model = TabMClassifierMother(**small_params, target_type=target_type)
     assert model.default_parameters()["loss_function"] == "cross_entropy"
-    values = {"loss_function": "focal", "focal_gamma": 1.5}
+    values = {"loss_function": "focal", "focal_gamma": 1.5, "focal_alpha_strength": -0.3}
     trial = FixedTrial(_base_values(model) | values)
     suggested = model.get_hyperparameter_space(X, labels, trial)
     assert trial.distributions["loss_function"].choices == ("cross_entropy", "focal")
@@ -1032,7 +1036,9 @@ def test_focal_loss_with_three_binary_tasks(data, small_params):
     labels = np.column_stack([(y > 0), (X["a"] > 0), (X["c"] > 0)]).astype(float)
     labels[::5, 2] = np.nan
     model = TabMClassifierMother(**small_params, target_type="multi_target")
-    trial = FixedTrial(_base_values(model) | {"loss_function": "focal", "focal_gamma": 2.0})
+    trial = FixedTrial(
+        _base_values(model) | {"loss_function": "focal", "focal_gamma": 2.0, "focal_alpha_strength": 0.5}
+    )
     suggested = model.get_hyperparameter_space(X, labels, trial)
     assert trial.distributions["loss_function"].choices == ("cross_entropy", "focal")
     fitted = clone(model).set_params(**suggested).fit(X, labels)
@@ -1049,18 +1055,34 @@ def test_inverse_frequency_alpha_matches_focal_paper():
     np.testing.assert_allclose(inverse_frequency_alpha(labels), [0.75, 1 / 3])
 
 
+def test_focal_alpha_from_strength():
+    labels = np.array([[1.0, 0.0], [0.0, 1.0], [0.0, np.nan], [0.0, 1.0]])
+    np.testing.assert_allclose(focal_alpha_from_strength(labels, 1.0), [0.75, 1 / 3])
+    np.testing.assert_allclose(focal_alpha_from_strength(labels, 0.0), [0.5, 0.5])
+    np.testing.assert_allclose(focal_alpha_from_strength(labels, -0.5), [0.375, 7 / 12])
+
+
 @pytest.mark.parametrize("target_type", ["single_target", "multi_target"])
-def test_balanced_focal_alpha_is_computed_per_task(data, small_params, target_type):
+def test_focal_alpha_is_computed_per_task(data, small_params, target_type):
     X, y = data
     labels = (y > 1).astype(float)
     if target_type == "multi_target":
         labels = np.column_stack([labels, (X["c"] > -1).astype(float)])
         labels[::5, 1] = np.nan
     model = TabMClassifierMother(**small_params, target_type=target_type, loss_function="focal").fit(X, labels)
-    expected = 1 - np.nanmean(labels, axis=0)
+    assert model.default_parameters()["focal_alpha_strength"] == -0.5
+    negatives = 1 - np.nanmean(labels, axis=0)
+    expected = 0.5 - 0.5 * (negatives - 0.5)
     np.testing.assert_allclose(model.net_.criterion_.focal_alpha.numpy(), expected, rtol=1e-6)
+    inverse = clone(model).set_params(focal_alpha_strength=1.0).fit(X, labels)
+    np.testing.assert_allclose(inverse.net_.criterion_.focal_alpha.numpy(), negatives, rtol=1e-6)
     fixed = clone(model).set_params(focal_alpha=0.3).fit(X, labels)
     np.testing.assert_allclose(fixed.net_.criterion_.focal_alpha.numpy(), 0.3, rtol=1e-6)
+    assert "focal_alpha_strength" not in fixed.default_parameters()
+    trial = FixedTrial(_base_values(fixed) | {"focal_gamma": 2.0})
+    assert "focal_alpha_strength" not in fixed.get_hyperparameter_space(X, labels, trial)
+    with pytest.raises(ValueError, match="focal_alpha_strength"):
+        clone(model).set_params(focal_alpha_strength=1.5).fit(X, labels)
 
 
 def test_focal_requires_binary_labels(data, small_params):
@@ -1102,7 +1124,7 @@ def test_robust_regression_losses(data, small_params, loss_function, loss_params
         (TabMRegressorMother, "mae", {}),
         (TabMRegressorMother, "tweedie", {"tweedie_variance_power": 1.3}),
         (TabMRegressorMother, "huber", {"huber_delta": 2.0}),
-        (TabMClassifierMother, "focal", {"focal_gamma": 1.0}),
+        (TabMClassifierMother, "focal", {"focal_gamma": 1.0, "focal_alpha_strength": 0.2}),
     ],
 )
 def test_explicit_loss_is_fixed_but_its_parameters_are_tuned(data, small_params, estimator, loss_function, loss_params):

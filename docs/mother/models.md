@@ -413,14 +413,18 @@ automatically prefix these parameters like the other model hyperparameters.
   centering, and member outputs are log means that are exponentiated before
   averaging. Classifiers also accept `"focal"` for binary tasks, which
   down-weights well-classified samples with a positive `focal_gamma` (default
-  2.0, shared by all tasks). `focal_alpha` weights the positive class. The
-  default `"balanced"` uses the rule from the focal loss paper (Lin et al.,
-  2017, Section 3.1, "α may be set by inverse class frequency"), which
-  gives each task its own alpha equal to its fraction of negative labels, so
-  tasks with very different class balance are each weighted appropriately. A
-  number in (0, 1) sets one alpha for all tasks. Note that the paper found the
-  best alpha decreases as gamma grows (gamma 2 worked best with alpha 0.25
-  on its detection task), so a fixed alpha can still be worth comparing.
+  2.0, shared by all tasks). Alpha weights the positive class, and each task
+  gets its own alpha from one shared `focal_alpha_strength` s in [-1, 1]:
+  `alpha = 0.5 + s * (negative fraction - 0.5)`. With s = 1 this is the
+  inverse class frequency that the focal loss paper (Lin et al., 2017,
+  Section 3.1) mentions for weighted cross-entropy; s = 0 weights both classes
+  equally; negative s down-weights the rare class. For focal loss itself the
+  paper tuned alpha together with gamma and, perhaps counterintuitively, found
+  the rare class works best down-weighted (alpha 0.25 with gamma 2, Section
+  4.1), because the focal term already removes most loss from the easy,
+  frequent class. The default s = -0.5 follows that finding. Set
+  `focal_alpha` to a number in (0, 1) to use one fixed alpha for all tasks
+  instead.
 - Loss tuning follows CatBoost. The shared `get_hyperparameter_space` calls
     `suggested_params_loss`, which `TabMRegressorMother` and
     `TabMClassifierMother` each implement. What MotherTuner tunes depends on
@@ -442,9 +446,10 @@ automatically prefix these parameters like the other model hyperparameters.
     train neural networks poorly; Huber with a small delta covers that robust
     regime. The Tweedie variance power uses CatBoost's range, 1.000001 to
     1.999999. Ranges for the other losses suit neural networks: `huber_delta`
-    0.1 to 3 (log scale) and `focal_gamma` 0.5 to 5. `focal_alpha` is not
-    tuned: it is computed per task (`"balanced"`) or fixed by the user, which
-    keeps one shared tuned parameter however many tasks there are.
+    0.1 to 3 (log scale), `focal_gamma` 0.5 to 5, and `focal_alpha_strength`
+    -1 to 1, tuned together as in the paper. Both are shared by all tasks, so
+    the search space does not grow with the task count. A fixed `focal_alpha`
+    is not tuned.
     Tweedie is offered only for valid nonnegative targets and focal only when
     every task is binary (multiclass always uses cross-entropy). When tuning
     selects focal loss, class weighting is turned off. `default_parameters()`

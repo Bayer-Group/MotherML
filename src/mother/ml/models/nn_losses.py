@@ -43,6 +43,28 @@ def inverse_frequency_alpha(targets: npt.NDArray[Any]) -> float | npt.NDArray[np
     return 1 - np.nanmean(targets, axis=0)
 
 
+def focal_alpha_from_strength(targets: npt.NDArray[Any], strength: float) -> float | npt.NDArray[np.float64]:
+    """Return per-task focal alpha, moved from 0.5 by ``strength`` toward or away from inverse frequency.
+
+    ``alpha = 0.5 + strength * (inverse_frequency_alpha - 0.5)``. ``strength``
+    ``1`` is inverse class frequency, ``0`` weights both classes equally, and
+    negative values give the rare class less weight. Lin et al. (2017) tuned
+    alpha jointly with gamma and found that with gamma 2 the rare class works
+    best down-weighted (alpha 0.25, Section 4.1), because the focal term
+    already removes most loss from the easy, frequent class. One shared
+    strength keeps each task's alpha tied to its own class balance while
+    tuning a single parameter.
+
+    Args:
+        targets: Encoded binary labels, as for :func:`inverse_frequency_alpha`.
+        strength: Value in [-1, 1].
+
+    Returns:
+        One alpha for a label vector, or one alpha per task for a matrix.
+    """
+    return 0.5 + strength * (inverse_frequency_alpha(targets) - 0.5)
+
+
 class EnsembleLoss(nn.Module):
     """Train every ensemble member against the same targets.
 

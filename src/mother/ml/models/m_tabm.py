@@ -30,7 +30,11 @@ try:
 except ImportError as error:
     raise ExtrasDependencyImportError("tabm", error) from error
 
-from mother.ml.models.nn_losses import CustomLoss, EnsembleLoss, inverse_frequency_alpha
+from mother.ml.models.nn_losses import (
+    CustomLoss,
+    EnsembleLoss,
+    focal_alpha_from_strength,
+)
 from mother.ml.models.tabm_network import Model, make_parameter_groups
 from mother.ml.models.tabm_utils import compute_bins
 
@@ -97,7 +101,8 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
         tune_loss_function: bool = True,
         tweedie_variance_power: float = 1.5,
         huber_delta: float = 1.0,
-        focal_alpha: float | Literal["balanced"] = "balanced",
+        focal_alpha: float | None = None,
+        focal_alpha_strength: float = -0.5,
         focal_gamma: float = 2.0,
         lr: float = 0.002,
         weight_decay: float = 0.0003,
@@ -207,12 +212,17 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             huber_delta: Positive residual size, in target standard
                 deviations, where Huber loss turns from quadratic to linear.
                 Small values behave like MAE, large values like MSE.
-            focal_alpha: Focal loss weight of the positive class.
-                ``"balanced"`` (default) follows the focal loss paper's
-                inverse-class-frequency rule and sets each task's alpha to its
-                fraction of negative labels, so every task gets its own
-                weight. A number in (0, 1) is used for all tasks; ``0.5``
-                weights both classes equally. Alpha is never tuned.
+            focal_alpha: Fixed focal weight of the positive class, in (0, 1),
+                shared by all tasks; ``0.5`` weights both classes equally.
+                ``None`` (default) derives a per-task alpha from
+                ``focal_alpha_strength``.
+            focal_alpha_strength: Used when ``focal_alpha`` is ``None``. Each
+                task gets ``alpha = 0.5 + strength * (negative fraction -
+                0.5)``: ``1`` is inverse class frequency, ``0`` equal
+                weighting, and negative values down-weight the rare class.
+                The default ``-0.5`` follows the focal loss paper, whose best
+                setting with gamma 2 down-weighted its rare class (alpha
+                0.25). In [-1, 1]; tuned together with ``focal_gamma``.
             focal_gamma: Positive focal loss exponent, shared by all tasks;
                 larger values down-weight well-classified samples more
                 strongly. Tuned when focal loss is used.
@@ -253,6 +263,7 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
         self.tweedie_variance_power = tweedie_variance_power
         self.huber_delta = huber_delta
         self.focal_alpha = focal_alpha
+        self.focal_alpha_strength = focal_alpha_strength
         self.focal_gamma = focal_gamma
         self.lr = lr
         self.weight_decay = weight_decay
@@ -353,10 +364,10 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             raise ValueError("tweedie_variance_power must be in (1, 2).")
         if not np.isfinite(self.huber_delta) or self.huber_delta <= 0:
             raise ValueError("huber_delta must be positive and finite.")
-        if self.focal_alpha != "balanced" and (
-            isinstance(self.focal_alpha, (bool, str)) or not 0 < self.focal_alpha < 1
-        ):
-            raise ValueError("focal_alpha must be 'balanced' or a number in (0, 1).")
+        if self.focal_alpha is not None and (isinstance(self.focal_alpha, (bool, str)) or not 0 < self.focal_alpha < 1):
+            raise ValueError("focal_alpha must be None or a number in (0, 1).")
+        if isinstance(self.focal_alpha_strength, (bool, str)) or not -1 <= self.focal_alpha_strength <= 1:
+            raise ValueError("focal_alpha_strength must be in [-1, 1].")
         if not np.isfinite(self.focal_gamma) or self.focal_gamma <= 0:
             raise ValueError("focal_gamma must be positive and finite.")
         if isinstance(self, ClassifierMixin) and self.auto_class_weights not in (
@@ -487,9 +498,9 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             if loss == "focal" and self.target_type == "single_target" and output_dim > 2:
                 raise ValueError("Focal loss supports only binary classification tasks.")
             self.focal_alpha_ = (
-                inverse_frequency_alpha(prepared_targets)
-                if loss == "focal" and self.focal_alpha == "balanced"
-                else (0.5 if self.focal_alpha == "balanced" else self.focal_alpha)
+                focal_alpha_from_strength(prepared_targets, self.focal_alpha_strength)
+                if loss == "focal" and self.focal_alpha is None
+                else (0.5 if self.focal_alpha is None else self.focal_alpha)
             )
             self.class_weights_ = self._class_weights(prepared_targets, output_dim, loss)
             observed_rows = (~pd.isna(targets)).any(axis=1)
@@ -818,6 +829,8 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             parameters[prefix + "huber_delta"] = 1.0
         elif loss == "focal":
             parameters[prefix + "focal_gamma"] = 2.0
+            if self.focal_alpha is None:
+                parameters[prefix + "focal_alpha_strength"] = -0.5
         return parameters
 
 
@@ -981,7 +994,8 @@ class TabMClassifierMother(ClassifierMixin, _BaseTabMMother):
         tune_loss_function: bool = True,
         tweedie_variance_power: float = 1.5,
         huber_delta: float = 1.0,
-        focal_alpha: float | Literal["balanced"] = "balanced",
+        focal_alpha: float | None = None,
+        focal_alpha_strength: float = -0.5,
         focal_gamma: float = 2.0,
         auto_class_weights: Literal["default", "Balanced", "SqrtBalanced", "None"] | None = "default",
         lr: float = 0.002,
@@ -1029,6 +1043,7 @@ class TabMClassifierMother(ClassifierMixin, _BaseTabMMother):
             tweedie_variance_power=tweedie_variance_power,
             huber_delta=huber_delta,
             focal_alpha=focal_alpha,
+            focal_alpha_strength=focal_alpha_strength,
             focal_gamma=focal_gamma,
             lr=lr,
             weight_decay=weight_decay,
@@ -1051,8 +1066,10 @@ class TabMClassifierMother(ClassifierMixin, _BaseTabMMother):
         With ``loss_function=None`` binary tasks choose between cross-entropy
         and focal loss; multiclass tasks always use cross-entropy because
         focal loss is binary-only. An explicit loss stays fixed. Focal loss,
-        whether chosen or fixed, also gets one tuned ``focal_gamma`` shared by
-        all tasks; ``focal_alpha`` is not tuned (see ``focal_alpha``).
+        whether chosen or fixed, also gets ``focal_gamma`` and, unless a fixed
+        ``focal_alpha`` is set, ``focal_alpha_strength`` tuned together, as
+        the focal loss paper tunes alpha and gamma together. Both are shared
+        by all tasks, so the search space does not grow with the task count.
 
         Args:
             trial: Optuna trial used to suggest parameter values.
@@ -1081,6 +1098,10 @@ class TabMClassifierMother(ClassifierMixin, _BaseTabMMother):
         # gradient for networks, and gamma near 0 is plain cross-entropy.
         if loss == "focal":
             suggested_params[prefix + "focal_gamma"] = trial.suggest_float(prefix + "focal_gamma", 0.5, 5.0)
+            if self.focal_alpha is None:
+                suggested_params[prefix + "focal_alpha_strength"] = trial.suggest_float(
+                    prefix + "focal_alpha_strength", -1.0, 1.0
+                )
         return suggested_params
 
     def predict_proba(self, X: Features) -> npt.NDArray[np.float32] | list[npt.NDArray[np.float32]]:
