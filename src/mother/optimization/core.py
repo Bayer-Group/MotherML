@@ -119,6 +119,14 @@ class ObjectiveContext:
     groups: typing.Optional[np.ndarray]
     extras: dict[str, typing.Any] = field(default_factory=dict)
 
+    def __getattr__(self, name: str) -> typing.Any:
+        # for direct access to the key-value in extras
+        extras = self.__dict__.get("extras", {})
+        try:
+            return extras[name]
+        except KeyError:
+            raise AttributeError(f"Context has no attribute {name}")
+
 
 class AbstractMotherTuner(ABC):
     def __init__(
@@ -177,7 +185,7 @@ class AbstractMotherTuner(ABC):
         return callbacks
 
     @abstractmethod
-    def objective(self, trial: optuna.trial.Trial, context: ObjectiveContext) -> float:
+    def _objective(self, trial: optuna.trial.Trial, context: ObjectiveContext) -> float:
         """
         Placeholder to implement a customized objective function
         This function is the func argument of optuna.study.optimize
@@ -185,15 +193,23 @@ class AbstractMotherTuner(ABC):
         """
         raise NotImplementedError
 
-    @abstractmethod
-    def call_optimize(self, context: ObjectiveContext) -> None:
-        """
-        Placeholder to implement a customized function to
-        1. additional processing on data/model
-        2. call the Study().optimize() function with self.objective()
-        """
+    def _custom_call_optimize(self, context: ObjectiveContext) -> None:
+        """Call study.optimize() function.
 
-        raise NotImplementedError
+        Override this method to add processing before or after optimization.
+
+        Args:
+            context (ObjectiveContext): optimize() function calls this function
+            with a ObjectiveContext object containing all necessary arguments.
+                self.call_optimize(obj_context)
+
+        """
+        self.study.optimize(
+            lambda trial: self._objective(trial, context=context),
+            n_trials=self.n_trials_optuna,
+            gc_after_trial=True,
+            callbacks=self.get_callbacks(),
+        )
 
     @handle_metadata_routing
     def optimize(
@@ -278,7 +294,7 @@ class AbstractMotherTuner(ABC):
             self.study.enqueue_trial(default_parameters)
 
         # call optuna study optimize
-        self.call_optimize(obj_context)
+        self._custom_call_optimize(obj_context)
 
         if default_parameters != {}:
             module_logger.info("Check if the default parameters have been evaluated in the study")
@@ -337,12 +353,32 @@ class MotherTuner(AbstractMotherTuner):
              -> Pipeline:
     """
 
-    def __init__(self, scorer: typing.Union[typing.Callable, str], **kwargs):
-
+    def __init__(
+        self,
+        scorer: typing.Union[typing.Callable, str],
+        sampler: typing.Optional[optuna.samplers.BaseSampler] = None,
+        early_stopping_optuna: bool = False,
+        tuning_direction: typing.Union[StudyDirection, str] = StudyDirection.MAXIMIZE,
+        n_trials_optuna: int = 100,
+        n_threads_optuna: int = 1,
+        n_startup_trials: int = 12,
+        seed: int = 42,
+        **kwargs,
+    ) -> None:
         self.scorer: typing.Callable = skl_metrics.get_scorer(scorer)
-        super().__init__(**kwargs)
 
-    def objective(self, trial: optuna.trial.Trial, context: ObjectiveContext) -> float:
+        super().__init__(
+            sampler=sampler,
+            early_stopping_optuna=early_stopping_optuna,
+            tuning_direction=tuning_direction,
+            n_trials_optuna=n_trials_optuna,
+            n_threads_optuna=n_threads_optuna,
+            n_startup_trials=n_startup_trials,
+            seed=seed,
+            **kwargs,
+        )
+
+    def _objective(self, trial: optuna.trial.Trial, context: ObjectiveContext) -> float:
         suggested_params_to_train: dict = context.get_hyper_space(trial=trial, X=context.X, y=context.y)
         module_logger.debug("Cloning pipeline")
         pipeline_cv: Pipeline = skl_base.clone(context.estimator)
@@ -372,20 +408,3 @@ class MotherTuner(AbstractMotherTuner):
         report_cross_validation_scores(trial, list(cv_score_not_na))
         mean_cv_score: float = cv_score_not_na.mean()
         return mean_cv_score
-
-    def call_optimize(self, context: ObjectiveContext) -> None:
-        """Call study.optimize() funtion.
-
-        Can be customised in the case of data processing needed for cross validation / optimisation
-
-        Args:
-            context (ObjectiveContext): optimize() function calls this function
-            with a ObjectiveContext object containing all necessary arguments.
-                self.call_optimize(obj_context)
-        """
-        self.study.optimize(
-            lambda trial: self.objective(trial, context=context),
-            n_trials=self.n_trials_optuna,
-            gc_after_trial=True,
-            callbacks=self.get_callbacks(),
-        )
