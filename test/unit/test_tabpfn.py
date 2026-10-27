@@ -1,8 +1,10 @@
 import numpy as np
 import pandas as pd
 import pytest
+from sklearn.base import clone
 from sklearn.datasets import load_diabetes, load_wine
 from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
 
 from mother.ml.models.m_tabpfn import (
     TabPFNClassifierMother,
@@ -45,6 +47,18 @@ def test_fit_forces_autocast_off_for_prefitted_model_and_restores_it():
 
     assert model.autocast_during_call is False
     assert model.use_autocast_ is True
+
+
+def test_embedding_transformer_kwargs_are_sklearn_params():
+    transformer = TabPFNEmbeddingTransformer(softmax_temperature=0.05)
+
+    assert transformer.get_params()["softmax_temperature"] == 0.05
+    assert clone(transformer).get_params()["softmax_temperature"] == 0.05
+
+    pipeline = Pipeline([("embedder", transformer)])
+    pipeline.set_params(embedder__softmax_temperature=1.9)
+
+    assert pipeline.get_params()["embedder__softmax_temperature"] == 1.9
 
 
 def get_data_containers(X, y):
