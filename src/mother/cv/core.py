@@ -8,6 +8,7 @@ import numpy as np
 import numpy.typing as npt
 from rdkit import Chem, DataStructs
 from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.exceptions import NotFittedError
 from sklearn.utils.validation import check_is_fitted
 
 from mother import chem
@@ -224,20 +225,21 @@ class MurckoScaffoldGroupingFromMols(DefaultGrouping):
         self.name = "murcko-scaffold-group"
 
     def transform(self, valid_compounds: Iterable[Any], **kwargs: Any) -> npt.NDArray[np.float64]:
-        check_is_fitted(self, "is_fitted")
+        # `check_is_fitted(self, "is_fitted")` would always pass here: the attribute exists from __init__.
+        if not self.is_fitted:
+            raise NotFittedError(f"This {type(self).__name__} instance is not fitted yet. Call 'fit' first.")
 
         scaffolds = cv_methods.murcko_scaffold_reduction(valid_compounds, scaffold=self.scaffold)
 
         groups = np.full((len(scaffolds), 1), np.nan, dtype=np.float64)
-        scaffold_to_id = {}
+        scaffold_to_id: dict[str, int] = {}
         for index, scaffold_mol in enumerate(scaffolds):
-            try:
-                scaffold_smiles = Chem.MolToSmiles(scaffold_mol)
-            except Exception:
-                scaffold_smiles = str(scaffold_mol)
-            if scaffold_smiles not in scaffold_to_id:
-                scaffold_to_id[scaffold_smiles] = len(scaffold_to_id)
-            groups[index, 0] = scaffold_to_id[scaffold_smiles]
+            # SMILES strings are already a canonical-enough key; rdkit mols are converted explicitly
+            # (no broad exception handling, so invalid input surfaces instead of silently splitting groups).
+            scaffold_key = scaffold_mol if isinstance(scaffold_mol, str) else Chem.MolToSmiles(scaffold_mol)
+            if scaffold_key not in scaffold_to_id:
+                scaffold_to_id[scaffold_key] = len(scaffold_to_id)
+            groups[index, 0] = scaffold_to_id[scaffold_key]
 
         return groups
 
