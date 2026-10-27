@@ -42,11 +42,24 @@ _EMBEDDING_DEFAULTS = {
 
 
 class _EnsembleLoss(nn.Module):
-    """Apply the task loss to every ensemble member independently.
+    """Train every TabM ensemble member against the same targets.
 
-    The network returns predictions with shape ``(batch, members, outputs)``.
-    Missing targets are masked. Observed losses are averaged within each
-    task, then across tasks present in the batch.
+    TabM predicts ``k`` outputs per row (one per ensemble member), so
+    predictions have shape ``(batch, members, outputs)``. Each member is
+    scored independently and the per-member losses are averaged, so every
+    member receives its own gradient signal.
+
+    Two target layouts are supported:
+
+    * **Single-target classification**: ``targets`` is a ``(batch,)`` vector
+      of encoded class indices, with ``-1`` marking missing labels.
+      Predictions are ``(batch, members, classes)`` logits.
+    * **Everything else** (regression and multitarget classification):
+      ``targets`` is a ``(batch, tasks)`` matrix with ``NaN`` marking missing
+      labels. Predictions are ``(batch, members, tasks)``. The loss is
+      averaged over observed labels per task, then averaged across the tasks
+      that have at least one observed label in the batch, so every task
+      counts equally regardless of how many labels it has.
     """
 
     def __init__(
@@ -86,68 +99,123 @@ class _EnsembleLoss(nn.Module):
         self.register_buffer("class_weights", class_weights)
 
     def forward(self, predictions: Tensor, targets: Tensor) -> Tensor:
-        """Compute equally weighted observed task losses across members.
+        """Compute the scalar training loss averaged over ensemble members.
 
         Args:
-            predictions: Member outputs with batch, member, and output
-                dimensions.
-            targets: A row/task matrix with NaN for missing labels, or an
-                encoded single-target class vector with -1 for missing labels.
+            predictions: Member outputs shaped ``(batch, members, outputs)``.
+            targets: A ``(batch, tasks)`` matrix with NaN for missing labels,
+                or an encoded single-target class vector with -1 for missing
+                labels.
 
         Returns:
-            Scalar masked cross-entropy, binary cross-entropy, or squared loss.
+            Scalar loss.
         """
         if self.classification and not self.multitarget:
-            observed = targets >= 0
-            if not observed.any():
-                raise ValueError("A training batch must contain at least one observed target.")
-            repeated = targets[observed].repeat_interleave(predictions.shape[1], dim=0)
-            logits = predictions[observed].flatten(0, 1)
-            weights = None if self.class_weights is None else self.class_weights.to(logits.dtype)
-            if callable(self.loss):
-                losses = self._custom_losses(logits, repeated)
-            elif self.loss != "focal":
-                return nn.functional.cross_entropy(logits, repeated, weight=weights)
-            else:
-                log_pt = logits.log_softmax(dim=-1).gather(1, repeated[:, None]).squeeze(1)
-                alpha = torch.where(repeated == 1, self.focal_alpha, 1 - self.focal_alpha)
-                losses = -alpha * (1 - log_pt.exp()).pow(self.focal_gamma) * log_pt
-            if weights is None:
-                return losses.mean()
-            return (weights[repeated] * losses).sum() / weights[repeated].sum()
-        observed = torch.isfinite(targets)
-        present = observed.any(dim=0)
-        if not present.any():
+            return self._single_target_classification_loss(predictions, targets)
+        return self._task_matrix_loss(predictions, targets)
+
+    # ------------------------------------------------------------------
+    # Single-target classification: targets are class indices, -1 = missing
+    # ------------------------------------------------------------------
+
+    def _single_target_classification_loss(self, predictions: Tensor, targets: Tensor) -> Tensor:
+        """Softmax loss over class logits, one row per (sample, member) pair."""
+        observed = targets >= 0
+        if not observed.any():
             raise ValueError("A training batch must contain at least one observed target.")
-        safe_targets = torch.where(observed, targets, 0).unsqueeze(1).expand_as(predictions)
+
+        # Flatten (observed_batch, members, classes) -> (observed_batch * members, classes)
+        # and repeat each label once per member so rows line up.
+        n_members = predictions.shape[1]
+        logits = predictions[observed].flatten(0, 1)
+        labels = targets[observed].repeat_interleave(n_members, dim=0)
+        class_weights = None if self.class_weights is None else self.class_weights.to(logits.dtype)
+
         if callable(self.loss):
-            losses = self._custom_losses(predictions, safe_targets)
-        elif self.classification:
-            losses = nn.functional.binary_cross_entropy_with_logits(predictions, safe_targets, reduction="none")
-            if self.loss == "focal":
-                probabilities = predictions.sigmoid()
-                pt = probabilities * safe_targets + (1 - probabilities) * (1 - safe_targets)
-                alpha = self.focal_alpha * safe_targets + (1 - self.focal_alpha) * (1 - safe_targets)
-                losses = alpha * (1 - pt).pow(self.focal_gamma) * losses
-        elif self.loss == "tweedie":
-            power = self.tweedie_variance_power
-            losses = -safe_targets * torch.exp((1 - power) * predictions) / (1 - power) + torch.exp(
-                (2 - power) * predictions
-            ) / (2 - power)
-        elif self.loss == "mae":
-            losses = (predictions - safe_targets).abs()
-        elif self.loss == "logcosh":
-            residuals = predictions - safe_targets
-            # Stable log(cosh(x)) = |x| + log1p(exp(-2|x|)) - log(2).
-            losses = residuals.abs() + nn.functional.softplus(-2 * residuals.abs()) - np.log(2)
+            losses = self._custom_losses(logits, labels)
+        elif self.loss == "focal":
+            losses = self._softmax_focal_losses(logits, labels)
         else:
-            losses = (predictions - safe_targets).square()
-        weights = observed.unsqueeze(1).expand_as(predictions).to(losses.dtype)
+            # PyTorch already computes the class-weighted mean.
+            return nn.functional.cross_entropy(logits, labels, weight=class_weights)
+
+        if class_weights is None:
+            return losses.mean()
+        sample_weights = class_weights[labels]
+        return (sample_weights * losses).sum() / sample_weights.sum()
+
+    def _softmax_focal_losses(self, logits: Tensor, labels: Tensor) -> Tensor:
+        """Focal loss ``-alpha * (1 - p_t)^gamma * log(p_t)`` on softmax probabilities."""
+        log_pt = logits.log_softmax(dim=-1).gather(1, labels[:, None]).squeeze(1)
+        alpha = torch.where(labels == 1, self.focal_alpha, 1 - self.focal_alpha)
+        return -alpha * (1 - log_pt.exp()).pow(self.focal_gamma) * log_pt
+
+    # ------------------------------------------------------------------
+    # Regression and multitarget classification: (batch, tasks) matrix, NaN = missing
+    # ------------------------------------------------------------------
+
+    def _task_matrix_loss(self, predictions: Tensor, targets: Tensor) -> Tensor:
+        """Per-task masked mean of element-wise losses, averaged over present tasks."""
+        observed = torch.isfinite(targets)  # (batch, tasks)
+        task_present = observed.any(dim=0)  # (tasks,)
+        if not task_present.any():
+            raise ValueError("A training batch must contain at least one observed target.")
+
+        # Replace missing labels with 0 so the loss stays finite, then broadcast
+        # (batch, tasks) -> (batch, members, tasks) to match the predictions.
+        targets = torch.where(observed, targets, 0).unsqueeze(1).expand_as(predictions)
+        observed = observed.unsqueeze(1).expand_as(predictions)
+
+        losses = self._elementwise_losses(predictions, targets)
+
+        weights = observed.to(losses.dtype)
         if self.class_weights is not None:
+            # class_weights is (tasks, 2): column 0 weights negatives, column 1 positives.
             task_weights = self.class_weights.to(losses.dtype)
-            weights = weights * torch.where(safe_targets == 1, task_weights[:, 1], task_weights[:, 0])
-        weighted = torch.where(observed.unsqueeze(1), losses * weights, 0).sum(dim=(0, 1))
-        return (weighted[present] / weights.sum(dim=(0, 1))[present]).mean()
+            weights = weights * torch.where(targets == 1, task_weights[:, 1], task_weights[:, 0])
+
+        # torch.where (rather than multiplying by a 0 weight) keeps a NaN/inf
+        # loss at a masked position from leaking into the sum.
+        weighted_loss_per_task = torch.where(observed, losses * weights, 0).sum(dim=(0, 1))
+        weight_per_task = weights.sum(dim=(0, 1))
+        return (weighted_loss_per_task[task_present] / weight_per_task[task_present]).mean()
+
+    def _elementwise_losses(self, predictions: Tensor, targets: Tensor) -> Tensor:
+        """Unreduced loss for every (sample, member, task) element."""
+        if callable(self.loss):
+            return self._custom_losses(predictions, targets)
+        if self.classification:
+            return self._sigmoid_losses(predictions, targets)
+        if self.loss == "tweedie":
+            return self._tweedie_losses(predictions, targets)
+        if self.loss == "mae":
+            return (predictions - targets).abs()
+        if self.loss == "logcosh":
+            return self._logcosh_losses(predictions - targets)
+        return (predictions - targets).square()
+
+    def _sigmoid_losses(self, logits: Tensor, targets: Tensor) -> Tensor:
+        """Binary cross-entropy per task, optionally reshaped into focal loss."""
+        losses = nn.functional.binary_cross_entropy_with_logits(logits, targets, reduction="none")
+        if self.loss != "focal":
+            return losses
+        probabilities = logits.sigmoid()
+        pt = probabilities * targets + (1 - probabilities) * (1 - targets)
+        alpha = self.focal_alpha * targets + (1 - self.focal_alpha) * (1 - targets)
+        return alpha * (1 - pt).pow(self.focal_gamma) * losses
+
+    def _tweedie_losses(self, log_means: Tensor, targets: Tensor) -> Tensor:
+        """Tweedie negative log-likelihood (up to a constant) for log-mean predictions."""
+        power = self.tweedie_variance_power
+        return -targets * torch.exp((1 - power) * log_means) / (1 - power) + torch.exp((2 - power) * log_means) / (
+            2 - power
+        )
+
+    @staticmethod
+    def _logcosh_losses(residuals: Tensor) -> Tensor:
+        """Numerically stable ``log(cosh(r)) = |r| + log1p(exp(-2|r|)) - log(2)``."""
+        abs_residuals = residuals.abs()
+        return abs_residuals + nn.functional.softplus(-2 * abs_residuals) - np.log(2)
 
     def _custom_losses(self, predictions: Tensor, targets: Tensor) -> Tensor:
         """Apply a user loss, which must return one loss per target element."""
