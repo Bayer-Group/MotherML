@@ -489,6 +489,20 @@ def test_alternative_losses_match_reference_formulas():
     torch.testing.assert_close(focal(binary_logits, binary_targets), 0.5 * cross_entropy(binary_logits, binary_targets))
 
 
+@pytest.mark.parametrize("multitarget", [False, True])
+def test_focal_loss_gradients_finite_for_small_gamma(multitarget):
+    # Confidently correct samples have p_t == 1, where d/dx x^gamma is infinite for gamma < 1.
+    if multitarget:
+        logits = torch.tensor([[[60.0]], [[-60.0]]], requires_grad=True)
+        targets = torch.tensor([[1.0], [0.0]])
+    else:
+        logits = torch.tensor([[[-60.0, 60.0]], [[60.0, -60.0]]], requires_grad=True)
+        targets = torch.tensor([1, 0])
+    loss = _EnsembleLoss(classification=True, multitarget=multitarget, loss="focal", focal_alpha=0.9, focal_gamma=0.5)
+    loss(logits, targets).backward()
+    assert torch.isfinite(logits.grad).all()
+
+
 @pytest.mark.parametrize("estimator", [TabMRegressorMother, TabMClassifierMother])
 @pytest.mark.parametrize("as_frame", [False, True])
 @pytest.mark.parametrize("arch_type", ["tabm", "tabm-mini"])

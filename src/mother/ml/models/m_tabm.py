@@ -148,7 +148,17 @@ class _EnsembleLoss(nn.Module):
         """Focal loss ``-alpha * (1 - p_t)^gamma * log(p_t)`` on softmax probabilities."""
         log_pt = logits.log_softmax(dim=-1).gather(1, labels[:, None]).squeeze(1)
         alpha = torch.where(labels == 1, self.focal_alpha, 1 - self.focal_alpha)
-        return -alpha * (1 - log_pt.exp()).pow(self.focal_gamma) * log_pt
+        return -alpha * self._focal_modulation(log_pt) * log_pt
+
+    def _focal_modulation(self, log_pt: Tensor) -> Tensor:
+        """Focal factor ``(1 - p_t)^gamma``, kept differentiable for ``gamma < 1``.
+
+        The derivative of ``x^gamma`` is infinite at ``x = 0`` when ``gamma < 1``,
+        so a confidently correct sample (``p_t == 1``) would yield ``inf * 0 = NaN``
+        gradients. Clamping ``1 - p_t`` away from zero avoids that.
+        """
+        one_minus_pt = -torch.expm1(log_pt)
+        return one_minus_pt.clamp_min(torch.finfo(log_pt.dtype).eps).pow(self.focal_gamma)
 
     # ------------------------------------------------------------------
     # Regression and multitarget classification: (batch, tasks) matrix, NaN = missing
@@ -199,10 +209,9 @@ class _EnsembleLoss(nn.Module):
         losses = nn.functional.binary_cross_entropy_with_logits(logits, targets, reduction="none")
         if self.loss != "focal":
             return losses
-        probabilities = logits.sigmoid()
-        pt = probabilities * targets + (1 - probabilities) * (1 - targets)
+        # For binary cross-entropy, losses == -log(p_t).
         alpha = self.focal_alpha * targets + (1 - self.focal_alpha) * (1 - targets)
-        return alpha * (1 - pt).pow(self.focal_gamma) * losses
+        return alpha * self._focal_modulation(-losses) * losses
 
     def _tweedie_losses(self, log_means: Tensor, targets: Tensor) -> Tensor:
         """Tweedie negative log-likelihood (up to a constant) for log-mean predictions."""
