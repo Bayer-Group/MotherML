@@ -68,6 +68,7 @@ class _EnsembleLoss(nn.Module):
         multitarget: bool = False,
         loss: str | CustomLoss | None = None,
         tweedie_variance_power: float = 1.5,
+        huber_delta: float = 1.0,
         focal_alpha: float = 0.5,
         focal_gamma: float = 2.0,
         class_weights: Tensor | None = None,
@@ -78,11 +79,14 @@ class _EnsembleLoss(nn.Module):
             classification: Use cross-entropy when true, otherwise mean
                 squared error.
             multitarget: Use binary cross-entropy for multitarget classification.
-            loss: ``"mse"``, ``"mae"``, ``"logcosh"``, ``"tweedie"``,
-                ``"cross_entropy"``, ``"focal"``, or a callable returning
-                unreduced losses. ``None`` selects MSE or cross-entropy.
+            loss: ``"mse"``, ``"mae"``, ``"logcosh"``, ``"huber"``,
+                ``"tweedie"``, ``"cross_entropy"``, ``"focal"``, or a callable
+                returning unreduced losses. ``None`` selects MSE or
+                cross-entropy.
             tweedie_variance_power: Tweedie power in (1, 2); predictions are
                 log means.
+            huber_delta: Residual size, in standardized target units, where
+                Huber loss switches from quadratic to linear.
             focal_alpha: Focal weight of the positive class.
             focal_gamma: Focal down-weighting of well-classified samples.
             class_weights: Optional per-class weights, shaped ``(classes,)``
@@ -94,6 +98,7 @@ class _EnsembleLoss(nn.Module):
         self.multitarget = multitarget
         self.loss = loss if loss is not None else ("cross_entropy" if classification else "mse")
         self.tweedie_variance_power = tweedie_variance_power
+        self.huber_delta = huber_delta
         self.focal_alpha = focal_alpha
         self.focal_gamma = focal_gamma
         self.register_buffer("class_weights", class_weights)
@@ -202,6 +207,8 @@ class _EnsembleLoss(nn.Module):
             return (predictions - targets).abs()
         if self.loss == "logcosh":
             return self._logcosh_losses(predictions - targets)
+        if self.loss == "huber":
+            return nn.functional.huber_loss(predictions, targets, reduction="none", delta=self.huber_delta)
         return (predictions - targets).square()
 
     def _sigmoid_losses(self, logits: Tensor, targets: Tensor) -> Tensor:
@@ -282,9 +289,12 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
         num_emb_n_frequencies: int = 48,
         num_emb_frequency_init_scale: float = 0.01,
         num_emb_activation: bool = True,
-        loss_function: Literal["mse", "mae", "logcosh", "tweedie", "cross_entropy", "focal"] | CustomLoss | None = None,
+        loss_function: Literal["mse", "mae", "logcosh", "huber", "tweedie", "cross_entropy", "focal"]
+        | CustomLoss
+        | None = None,
         tune_loss_function: bool = True,
         tweedie_variance_power: float = 1.5,
+        huber_delta: float = 1.0,
         focal_alpha: float = 0.5,
         focal_gamma: float = 2.0,
         lr: float = 0.002,
@@ -352,17 +362,18 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
                 periodic embedding frequencies.
             num_emb_activation: Whether to apply ReLU after periodic
                 embeddings.
-            loss_function: Training loss, mirroring the losses MotherTuner
+            loss_function: Training loss, based on the losses MotherTuner
                 searches for CatBoost. ``None`` (default) means "not chosen by
                 the user": direct fitting uses ``"mse"`` for regression and
                 ``"cross_entropy"`` for classification, and MotherTuner tunes
                 the loss when ``tune_loss_function`` is true.
-                Regressors also accept ``"mae"``, ``"logcosh"``, and
-                ``"tweedie"``; Tweedie needs nonnegative targets with a
+                Regressors also accept ``"mae"``, ``"logcosh"``, ``"huber"``,
+                and ``"tweedie"``; Tweedie needs nonnegative targets with a
                 positive value per task and predicts through a log link.
                 Classifiers also accept ``"focal"`` for binary tasks.
                 An explicit loss stays fixed during tuning, although the
-                Tweedie power or focal parameters are still tuned.
+                Tweedie power, Huber delta, or focal parameters are still
+                tuned.
                 A callable ``loss(predictions, targets)`` supplies a custom
                 loss and is never tuned. It must return unreduced losses with
                 the targets' shape, like PyTorch losses with
@@ -386,6 +397,9 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
                 tunes that loss's own parameters. ``False`` keeps the loss and
                 its parameters fixed.
             tweedie_variance_power: Tweedie variance power, in (1, 2).
+            huber_delta: Positive residual size, in target standard
+                deviations, where Huber loss turns from quadratic to linear.
+                Small values behave like MAE, large values like MSE.
             focal_alpha: Focal loss weight of the positive class, in (0, 1).
                 ``0.5`` weights both classes equally.
             focal_gamma: Positive focal loss exponent; larger values
@@ -418,6 +432,7 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
         self.loss_function = loss_function
         self.tune_loss_function = tune_loss_function
         self.tweedie_variance_power = tweedie_variance_power
+        self.huber_delta = huber_delta
         self.focal_alpha = focal_alpha
         self.focal_gamma = focal_gamma
         self.lr = lr
@@ -512,6 +527,8 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             raise ValueError("tune_loss_function must be a boolean.")
         if not 1 < self.tweedie_variance_power < 2:
             raise ValueError("tweedie_variance_power must be in (1, 2).")
+        if not np.isfinite(self.huber_delta) or self.huber_delta <= 0:
+            raise ValueError("huber_delta must be positive and finite.")
         if not 0 < self.focal_alpha < 1:
             raise ValueError("focal_alpha must be in (0, 1).")
         if not np.isfinite(self.focal_gamma) or self.focal_gamma <= 0:
@@ -687,6 +704,7 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             criterion__multitarget=self.target_type == "multi_target",
             criterion__loss=loss,
             criterion__tweedie_variance_power=self.tweedie_variance_power,
+            criterion__huber_delta=self.huber_delta,
             criterion__focal_alpha=self.focal_alpha,
             criterion__focal_gamma=self.focal_gamma,
             criterion__class_weights=(
@@ -740,7 +758,7 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
         """Return the task's losses: the default first, the data-dependent one last."""
         if isinstance(self, ClassifierMixin):
             return ("cross_entropy", "focal")
-        return ("mse", "mae", "logcosh", "tweedie")
+        return ("mse", "mae", "logcosh", "huber", "tweedie")
 
     def _resolved_loss(self) -> str:
         """Return the configured loss, resolving ``None`` to the task default."""
@@ -945,6 +963,8 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
             parameters[prefix + "loss_function"] = loss
         if loss == "tweedie":
             parameters[prefix + "tweedie_variance_power"] = 1.5
+        elif loss == "huber":
+            parameters[prefix + "huber_delta"] = 1.0
         elif loss == "focal":
             parameters[prefix + "focal_alpha"] = 0.5
             parameters[prefix + "focal_gamma"] = 2.0
@@ -969,10 +989,13 @@ class TabMRegressorMother(RegressorMixin, _BaseTabMMother):
     ) -> dict[str, Any]:
         """Suggest a regression loss and the parameters that loss needs.
 
-        With ``loss_function=None`` the trial chooses between MSE, MAE and
-        log-cosh, plus Tweedie when every observed target is nonnegative and
-        each task has a positive value. An explicit loss stays fixed. Tweedie,
-        whether chosen or fixed, also gets a tuned variance power.
+        With ``loss_function=None`` the trial chooses between MSE, log-cosh
+        and Huber, plus Tweedie when every observed target is nonnegative and
+        each task has a positive value. MAE is not searched because its
+        constant-size gradients train neural networks poorly; Huber with a
+        small delta covers that robust regime. An explicit loss stays fixed.
+        Tweedie and Huber, whether chosen or fixed, also get their parameter
+        tuned.
 
         Args:
             trial: Optuna trial used to suggest parameter values.
@@ -985,7 +1008,7 @@ class TabMRegressorMother(RegressorMixin, _BaseTabMMother):
         """
         loss = self.loss_function
         if loss is None:
-            losses = ["mse", "mae", "logcosh"]
+            losses = ["mse", "logcosh", "huber"]
             targets = self._target_array(y)
             numeric = np.asarray(np.where(pd.isna(targets), np.nan, targets), dtype=np.float64)
             if self._tweedie_compatible(numeric):
@@ -997,6 +1020,10 @@ class TabMRegressorMother(RegressorMixin, _BaseTabMMother):
             suggested_params[prefix + "tweedie_variance_power"] = trial.suggest_float(
                 prefix + "tweedie_variance_power", 1.000001, 1.999999
             )
+        elif loss == "huber":
+            # Targets are standardized, so delta is in standard deviations: 0.1
+            # is nearly MAE and 3 nearly MSE for almost all residuals.
+            suggested_params[prefix + "huber_delta"] = trial.suggest_float(prefix + "huber_delta", 0.1, 3.0, log=True)
         return suggested_params
 
     def _regression_members(self, X: Features) -> Tensor:
@@ -1101,6 +1128,7 @@ class TabMClassifierMother(ClassifierMixin, _BaseTabMMother):
         loss_function: Literal["cross_entropy", "focal"] | CustomLoss | None = None,
         tune_loss_function: bool = True,
         tweedie_variance_power: float = 1.5,
+        huber_delta: float = 1.0,
         focal_alpha: float = 0.5,
         focal_gamma: float = 2.0,
         auto_class_weights: Literal["default", "Balanced", "SqrtBalanced", "None"] | None = "default",
@@ -1146,6 +1174,7 @@ class TabMClassifierMother(ClassifierMixin, _BaseTabMMother):
             loss_function=loss_function,
             tune_loss_function=tune_loss_function,
             tweedie_variance_power=tweedie_variance_power,
+            huber_delta=huber_delta,
             focal_alpha=focal_alpha,
             focal_gamma=focal_gamma,
             lr=lr,
@@ -1194,10 +1223,12 @@ class TabMClassifierMother(ClassifierMixin, _BaseTabMMother):
             if loss == "focal":
                 # CatBoost disables class weights when tuning selects focal loss.
                 suggested_params[prefix + "auto_class_weights"] = "None"
-        # Ranges match CatBoost's focal tuning in m_catboost.py.
+        # Narrower than CatBoost's ranges: alpha near 0 or 1 ignores a class,
+        # and gamma above about 5 leaves too little gradient for networks.
+        # Gamma near 0 is already covered by plain cross-entropy.
         if loss == "focal":
-            suggested_params[prefix + "focal_alpha"] = trial.suggest_float(prefix + "focal_alpha", 0.000001, 0.999999)
-            suggested_params[prefix + "focal_gamma"] = trial.suggest_float(prefix + "focal_gamma", 0.000001, 7)
+            suggested_params[prefix + "focal_alpha"] = trial.suggest_float(prefix + "focal_alpha", 0.05, 0.95)
+            suggested_params[prefix + "focal_gamma"] = trial.suggest_float(prefix + "focal_gamma", 0.5, 5.0)
         return suggested_params
 
     def predict_proba(self, X: Features) -> npt.NDArray[np.float32] | list[npt.NDArray[np.float32]]:
