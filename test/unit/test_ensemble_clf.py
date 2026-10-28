@@ -29,6 +29,8 @@ class _FakeClassifier(AbstractMotherPipeline, BaseEstimator):
         self.probas = np.asarray(probas, dtype=float)
         self.uncertainties = np.asarray(uncertainties, dtype=float)
         self.classes_ = np.asarray(classes)
+        self.n_features_in_ = self.probas.shape[1]
+        self.feature_names_in_ = [f"f{i}" for i in range(self.n_features_in_)]
         self.data_uncertainties = None if data_uncertainties is None else np.asarray(data_uncertainties, dtype=float)
         self.total_uncertainties = None if total_uncertainties is None else np.asarray(total_uncertainties, dtype=float)
 
@@ -72,6 +74,8 @@ class _ClassifierWithoutKnowledgeUncertaintyValues(AbstractMotherPipeline, BaseE
     def __init__(self, probas, classes):
         self.probas = np.asarray(probas, dtype=float)
         self.classes_ = np.asarray(classes)
+        self.n_features_in_ = self.probas.shape[1]
+        self.feature_names_in_ = [f"f{i}" for i in range(self.n_features_in_)]
 
     def fit(self, X, y=None):
         return self

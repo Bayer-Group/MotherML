@@ -97,6 +97,10 @@ class CVEnsembleClassifierMother(AbstractMotherPipeline, MetaEstimatorMixin, Cla
                 raise ValueError(f"Estimator {i} must have a 'classes_' attribute.")
             if not callable(getattr(estimator, "predict_uncertainty", None)):
                 raise ValueError(f"Estimator {i} must have a 'predict_uncertainty' method.")
+            if not hasattr(estimator, "n_features_in_"):
+                raise ValueError(f"Estimator {i} must expose 'n_features_in_'.")
+            if not hasattr(estimator, "feature_names_in_"):
+                raise ValueError(f"Estimator {i} must expose 'feature_names_in_'.")
 
             # Validate that member classes are one-dimensional, non-empty, and unique
             member_classes = np.asarray(estimator.classes_)
@@ -121,9 +125,11 @@ class CVEnsembleClassifierMother(AbstractMotherPipeline, MetaEstimatorMixin, Cla
         if hasattr(self, "classes_") and self.classes_ is not None:
             return
 
-        # After validating member estimators and their class labels, set the ensemble's classes_
+        # After validating member estimators and their class labels, set the ensemble's classes_ and feature attributes
         self._validate_estimators(self.estimators)
         self.classes_ = np.asarray(self.estimators[0].classes_)
+        self.feature_names_in_ = getattr(self.estimators[0], "feature_names_in_")
+        self.n_features_in_ = getattr(self.estimators[0], "n_features_in_")
 
     def get_hyperparameter_space(self, X, y, trial: Trial, prefix: str = "") -> dict:
         """
