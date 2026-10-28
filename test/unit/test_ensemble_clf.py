@@ -3,23 +3,34 @@ import pandas as pd
 import pytest
 import sklearn.base as sk_base
 from scipy.special import rel_entr
-from sklearn.base import BaseEstimator
+from sklearn.base import BaseEstimator, MetaEstimatorMixin
 from sklearn.pipeline import Pipeline
 
 from mother.ml.core import AbstractMotherPipeline
-from mother.ml.ensembles.cvEnsemble import CVEnsembleClassifierMother
+from mother.ml.ensembles.cvEnsemble import (
+    CVEnsembleAveragingClassifier,
+    CVEnsembleClassifierMother,
+    CVEnsembleDerivedClassifier,
+    EnsembleDerivedUncertaintyMethod,
+)
 
 AGGREGATION_STRATEGIES = ["average"]
-UNCERTAINTY_METHODS = ["variance", "disagreement", "member_average"]
+UNCERTAINTY_METHODS = [
+    EnsembleDerivedUncertaintyMethod.ENTROPY,
+    EnsembleDerivedUncertaintyMethod.VARIANCE,
+    EnsembleDerivedUncertaintyMethod.DISAGREEMENT,
+]
 
 
 class _FakeClassifier(AbstractMotherPipeline, BaseEstimator):
     """Minimal fitted classifier exposing the ``predict_uncertainty`` contract used by the ensemble."""
 
-    def __init__(self, probas, uncertainties, classes):
+    def __init__(self, probas, uncertainties, classes, data_uncertainties=None, total_uncertainties=None):
         self.probas = np.asarray(probas, dtype=float)
         self.uncertainties = np.asarray(uncertainties, dtype=float)
         self.classes_ = np.asarray(classes)
+        self.data_uncertainties = None if data_uncertainties is None else np.asarray(data_uncertainties, dtype=float)
+        self.total_uncertainties = None if total_uncertainties is None else np.asarray(total_uncertainties, dtype=float)
 
     def fit(self, X, y=None):
         return self
@@ -45,13 +56,16 @@ class _FakeClassifier(AbstractMotherPipeline, BaseEstimator):
         probas = self.probas[: len(X)]
         labels = self.classes_[np.argmax(probas, axis=1)]
         columns = {f"proba_{i}": probas[:, i] for i in range(probas.shape[1])}
-        return pd.DataFrame(
-            {
-                "pred": labels,
-                **columns,
-                "prefix_knowledge_uncertainty": self.uncertainties[: len(X)],
-            }
-        )
+        prediction = {
+            "pred": labels,
+            **columns,
+            "prefix_knowledge_uncertainty": self.uncertainties[: len(X)],
+        }
+        if self.data_uncertainties is not None:
+            prediction["prefix_data_uncertainty"] = self.data_uncertainties[: len(X)]
+        if self.total_uncertainties is not None:
+            prediction["prefix_total_uncertainty"] = self.total_uncertainties[: len(X)]
+        return pd.DataFrame(prediction)
 
 
 class _ClassifierWithoutKnowledgeUncertaintyValues(AbstractMotherPipeline, BaseEstimator):
@@ -166,7 +180,7 @@ def X():
 def binary_ensemble(binary_probas, knowledge_uncertainties):
     first_proba, second_proba = binary_probas
     first_unc, second_unc = knowledge_uncertainties
-    return CVEnsembleClassifierMother(
+    return CVEnsembleDerivedClassifier(
         [
             _FakeClassifier(first_proba, first_unc, classes=[0, 1]),
             _FakeClassifier(second_proba, second_unc, classes=[0, 1]),
@@ -178,7 +192,7 @@ def binary_ensemble(binary_probas, knowledge_uncertainties):
 def multiclass_ensemble(multiclass_probas, knowledge_uncertainties):
     first_proba, second_proba = multiclass_probas
     first_unc, second_unc = knowledge_uncertainties
-    return CVEnsembleClassifierMother(
+    return CVEnsembleDerivedClassifier(
         [
             _FakeClassifier(first_proba, first_unc, classes=[0, 1, 2]),
             _FakeClassifier(second_proba, second_unc, classes=[0, 1, 2]),
@@ -186,14 +200,14 @@ def multiclass_ensemble(multiclass_probas, knowledge_uncertainties):
     )
 
 
-def _expected_uncertainty(probas: np.ndarray, knowledge_uncertainties: np.ndarray, method: str) -> np.ndarray:
-    if method == "variance":
+def _expected_uncertainty(probas: np.ndarray, method: EnsembleDerivedUncertaintyMethod) -> np.ndarray:
+    if method == EnsembleDerivedUncertaintyMethod.VARIANCE:
         return np.var(probas, axis=0).mean(axis=1)
-    if method == "member_average":
-        return np.mean(knowledge_uncertainties, axis=0)
-
-    # method "disagreement" using KL divergence
     ensemble_probas = np.mean(probas, axis=0)
+    if method == EnsembleDerivedUncertaintyMethod.ENTROPY:
+        total_uncertainty = -np.sum(rel_entr(ensemble_probas, 1.0), axis=-1)
+        data_uncertainty = np.mean(-np.sum(rel_entr(probas, 1.0), axis=-1), axis=0)
+        return total_uncertainty - data_uncertainty
     return np.sum([np.sum(rel_entr(member, ensemble_probas), axis=1) for member in probas], axis=0)
 
 
@@ -202,17 +216,21 @@ class TestEnsembleClassifierInitialization:
         assert binary_ensemble is not None
         assert len(binary_ensemble.estimators) == 2
 
+    def test_base_class_is_abstract(self):
+        with pytest.raises(TypeError, match="abstract"):
+            CVEnsembleClassifierMother([])
+
     def test_single_estimator_raises(self, binary_probas, knowledge_uncertainties):
         with pytest.raises(ValueError, match=r"At least two estimators"):
-            CVEnsembleClassifierMother([_FakeClassifier(binary_probas[0], knowledge_uncertainties[0], classes=[0, 1])])
+            CVEnsembleDerivedClassifier([_FakeClassifier(binary_probas[0], knowledge_uncertainties[0], classes=[0, 1])])
 
     def test_empty_estimator_list_raises(self):
         with pytest.raises(ValueError, match=r"At least two estimators"):
-            CVEnsembleClassifierMother([])
+            CVEnsembleDerivedClassifier([])
 
     def test_unfitted_estimator_raises(self):
         with pytest.raises(ValueError, match=r"is not fitted"):
-            CVEnsembleClassifierMother(
+            CVEnsembleDerivedClassifier(
                 [
                     _UnfittedClassifier(),
                     _UnfittedClassifier(),
@@ -220,24 +238,31 @@ class TestEnsembleClassifierInitialization:
             )
 
     def test_noncallable_predict_uncertainty_raises(self, binary_probas, knowledge_uncertainties):
-        first_proba, second_proba = binary_probas
-        first_unc, second_unc = knowledge_uncertainties
         with pytest.raises(ValueError, match=r"must have a 'predict_uncertainty' method"):
-            CVEnsembleClassifierMother(
+            CVEnsembleDerivedClassifier(
                 [
                     _ClassifierWithoutPredictUncertainty(),
-                    _FakeClassifier(second_proba, second_unc, classes=[0, 1]),
+                    _ClassifierWithoutPredictUncertainty(),
                 ]
             )
 
     def test_missing_class_labels_raise(self, binary_probas, knowledge_uncertainties):
-        first_proba, second_proba = binary_probas
-        first_unc, second_unc = knowledge_uncertainties
         with pytest.raises(ValueError, match=r"must have a 'classes_' attribute"):
-            CVEnsembleClassifierMother(
+            CVEnsembleDerivedClassifier(
                 [
                     _ClassifierWithoutClasses(),
-                    _FakeClassifier(second_proba, second_unc, classes=[0]),
+                    _ClassifierWithoutClasses(),
+                ]
+            )
+
+    def test_estimators_must_have_same_type(self, binary_probas, knowledge_uncertainties):
+        first_proba, second_proba = binary_probas
+        first_unc, second_unc = knowledge_uncertainties
+        with pytest.raises(ValueError, match=r"must be of type _FakeClassifier"):
+            CVEnsembleDerivedClassifier(
+                [
+                    _FakeClassifier(first_proba, first_unc, classes=[0, 1]),
+                    _ClassifierWithoutClasses(),
                 ]
             )
 
@@ -245,7 +270,7 @@ class TestEnsembleClassifierInitialization:
         first_proba, second_proba = binary_probas
         first_unc, second_unc = knowledge_uncertainties
         with pytest.raises(ValueError, match=r"same class labels"):
-            CVEnsembleClassifierMother(
+            CVEnsembleDerivedClassifier(
                 [
                     _FakeClassifier(first_proba, first_unc, classes=[0, 1]),
                     _FakeClassifier(second_proba, second_unc, classes=["active", "inactive"]),
@@ -268,8 +293,16 @@ class TestSklearnCompatibility:
         np.testing.assert_array_equal(clone.predict_proba(X), expected_proba)
         np.testing.assert_array_equal(clone.predict(X), expected_pred)
 
-    def test_classifer_recognition(self, binary_ensemble):
+    def test_classifier_recognition(self, binary_ensemble):
         assert sk_base.is_classifier(binary_ensemble)
+
+    def test_concrete_variants_inherit_meta_estimator_base(self, binary_ensemble):
+        averaging_ensemble = CVEnsembleAveragingClassifier(binary_ensemble.estimators)
+        assert isinstance(binary_ensemble, CVEnsembleClassifierMother)
+        assert isinstance(averaging_ensemble, CVEnsembleClassifierMother)
+        assert isinstance(binary_ensemble, MetaEstimatorMixin)
+        assert isinstance(averaging_ensemble, MetaEstimatorMixin)
+        assert sk_base.is_classifier(averaging_ensemble)
 
     def test_only_single_output(self, binary_ensemble):
         tags = sk_base.get_tags(binary_ensemble)
@@ -323,7 +356,7 @@ class TestEnsembleClassifierParameters:
 
 class TestEnsembleClassifierPredictions:
     def test_predict_probas_shape(self, binary_ensemble, binary_probas, X):
-        probas = binary_ensemble._predict_probas_and_uncertainties(X)
+        probas = binary_ensemble._collect_member_probas(X)
         assert probas.shape == (2, len(X), 2)
         np.testing.assert_allclose(probas[0], binary_probas[0])
         np.testing.assert_allclose(probas[1], binary_probas[1])
@@ -332,16 +365,31 @@ class TestEnsembleClassifierPredictions:
         result = binary_ensemble.predict_uncertainty(X)
         assert {
             "pred",
+            "proba_0",
+            "proba_1",
             "mean_predictions",
             "knowledge_uncertainty",
             "data_uncertainty",
             "total_uncertainty",
         }.issubset(result.columns)
         assert len(result) == len(X)
+        assert result.index.equals(X.index)
+        np.testing.assert_allclose(
+            result["knowledge_uncertainty"] + result["data_uncertainty"], result["total_uncertainty"]
+        )
+
+    def test_uncertainty_for_optimization_returns_only_knowledge(self, binary_ensemble, X):
+        result = binary_ensemble.predict_uncertainty(X, uncertainty_for_opt=True)
+        assert list(result.columns) == ["knowledge_uncertainty"]
+        assert result.index.equals(X.index)
 
     def test_entropy_kl_div_method_agreement(self, binary_ensemble, X):
-        entropy_result = binary_ensemble.predict_uncertainty(X, uncertainty_method="entropy")
-        disagreement_result = binary_ensemble.predict_uncertainty(X, uncertainty_method="disagreement")
+        entropy_result = binary_ensemble.predict_uncertainty(
+            X, uncertainty_method=EnsembleDerivedUncertaintyMethod.ENTROPY
+        )
+        disagreement_result = binary_ensemble.predict_uncertainty(
+            X, uncertainty_method=EnsembleDerivedUncertaintyMethod.DISAGREEMENT
+        )
         assert "knowledge_uncertainty" in entropy_result.columns
         assert "knowledge_uncertainty" in disagreement_result.columns
         np.testing.assert_allclose(
@@ -355,7 +403,6 @@ class TestEnsembleClassifierPredictions:
         self,
         binary_ensemble,
         binary_probas,
-        knowledge_uncertainties,
         X,
         strategy,
         method,
@@ -366,11 +413,7 @@ class TestEnsembleClassifierPredictions:
         np.testing.assert_array_equal(result["pred"].to_numpy(), np.array([0, 1, 1]))
         np.testing.assert_allclose(
             result["knowledge_uncertainty"].to_numpy(),
-            _expected_uncertainty(
-                np.stack(binary_probas, axis=0),
-                np.stack(knowledge_uncertainties, axis=0),
-                method,
-            ),
+            _expected_uncertainty(np.stack(binary_probas, axis=0), method),
         )
 
     @pytest.mark.parametrize("strategy", AGGREGATION_STRATEGIES)
@@ -379,7 +422,6 @@ class TestEnsembleClassifierPredictions:
         self,
         multiclass_ensemble,
         multiclass_probas,
-        knowledge_uncertainties,
         X,
         strategy,
         method,
@@ -389,11 +431,7 @@ class TestEnsembleClassifierPredictions:
         np.testing.assert_array_equal(result["pred"].to_numpy(), np.array([0, 1, 2]))
         np.testing.assert_allclose(
             result["knowledge_uncertainty"].to_numpy(),
-            _expected_uncertainty(
-                np.stack(multiclass_probas, axis=0),
-                np.stack(knowledge_uncertainties, axis=0),
-                method,
-            ),
+            _expected_uncertainty(np.stack(multiclass_probas, axis=0), method),
         )
 
     @pytest.mark.parametrize("strategy", AGGREGATION_STRATEGIES)
@@ -402,7 +440,7 @@ class TestEnsembleClassifierPredictions:
         first_proba, second_proba = binary_probas
         first_unc, second_unc = knowledge_uncertainties
         labels = np.array(["active", "inactive"])
-        ensemble = CVEnsembleClassifierMother(
+        ensemble = CVEnsembleDerivedClassifier(
             [
                 _FakeClassifier(first_proba, first_unc, classes=labels),
                 _FakeClassifier(second_proba, second_unc, classes=labels),
@@ -415,14 +453,9 @@ class TestEnsembleClassifierPredictions:
 
     @pytest.mark.parametrize("method", UNCERTAINTY_METHODS)
     def test_identical_members_have_zero_uncertainty(self, binary_probas, knowledge_uncertainties, X, method):
-        if method == "member_average":
-            pytest.skip(
-                "Skipping test. For identical members, the 'member_average' method returns non-zero uncertainty."
-            )
-
         first_proba = binary_probas[0]
         first_unc = knowledge_uncertainties[0]
-        ensemble = CVEnsembleClassifierMother(
+        ensemble = CVEnsembleDerivedClassifier(
             [
                 _FakeClassifier(first_proba, first_unc, classes=[0, 1]),
                 _FakeClassifier(first_proba.copy(), first_unc.copy(), classes=[0, 1]),
@@ -453,7 +486,7 @@ class TestEnsembleClassifierPredictions:
         third = np.array([[0.1, 0.9], [0.1, 0.9], [0.2, 0.8]])
         first_unc, second_unc = knowledge_uncertainties
         third_unc = np.array([0.9, 0.8, 0.2])
-        ensemble = CVEnsembleClassifierMother(
+        ensemble = CVEnsembleDerivedClassifier(
             [
                 _FakeClassifier(first, first_unc, classes=[0, 1]),
                 _FakeClassifier(second, second_unc, classes=[0, 1]),
@@ -464,21 +497,88 @@ class TestEnsembleClassifierPredictions:
         result = ensemble.predict_uncertainty(X)
         expected = np.argmax(np.mean(np.stack([first, second, third], axis=0), axis=0), axis=1)
 
-        assert ensemble._predict_probas_and_uncertainties(X).shape == (3, len(X), 2)
+        assert ensemble._collect_member_probas(X).shape == (3, len(X), 2)
         np.testing.assert_array_equal(result["pred"].to_numpy(), expected)
 
 
 class TestEnsembleClassifierErrorHandling:
     def test_empty_uncertainty_raises(self, binary_probas, knowledge_uncertainties, X):
         first, second = binary_probas
-        ensemble = CVEnsembleClassifierMother(
+        ensemble = CVEnsembleAveragingClassifier(
             [
                 _ClassifierWithoutKnowledgeUncertaintyValues(first, classes=[0, 1]),
                 _ClassifierWithoutKnowledgeUncertaintyValues(second, classes=[0, 1]),
             ]
         )
         with pytest.raises(ValueError, match=r"No valid member uncertainties available"):
-            ensemble.predict_uncertainty(X, uncertainty_method="member_average")
+            ensemble.predict_uncertainty(X)
+
+    def test_averaging_classifier_averages_available_uncertainties(self, binary_probas, knowledge_uncertainties, X):
+        first_proba, second_proba = binary_probas
+        first_knowledge, second_knowledge = knowledge_uncertainties
+        first_data = np.array([0.2, 0.4, 0.6])
+        second_data = np.array([0.4, 0.6, 0.8])
+        first_total = first_knowledge + first_data
+        second_total = second_knowledge + second_data
+        ensemble = CVEnsembleAveragingClassifier(
+            [
+                _FakeClassifier(
+                    first_proba, first_knowledge, [0, 1], data_uncertainties=first_data, total_uncertainties=first_total
+                ),
+                _FakeClassifier(
+                    second_proba,
+                    second_knowledge,
+                    [0, 1],
+                    data_uncertainties=second_data,
+                    total_uncertainties=second_total,
+                ),
+            ]
+        )
+
+        result = ensemble.predict_uncertainty(X)
+        np.testing.assert_allclose(result["knowledge_uncertainty"], (first_knowledge + second_knowledge) / 2)
+        np.testing.assert_allclose(result["data_uncertainty"], (first_data + second_data) / 2)
+        np.testing.assert_allclose(result["total_uncertainty"], (first_total + second_total) / 2)
+
+    def test_averaging_classifier_requires_consistent_uncertainty_types(
+        self, binary_probas, knowledge_uncertainties, X
+    ):
+        first_proba, second_proba = binary_probas
+        first_uncertainty, second_uncertainty = knowledge_uncertainties
+        ensemble = CVEnsembleAveragingClassifier(
+            [
+                _FakeClassifier(first_proba, first_uncertainty, [0, 1]),
+                _FakeClassifier(
+                    second_proba,
+                    second_uncertainty,
+                    [0, 1],
+                    data_uncertainties=np.array([0.1, 0.2, 0.3]),
+                ),
+            ]
+        )
+
+        with pytest.raises(ValueError, match=r"Inconsistent uncertainty types"):
+            ensemble.predict_uncertainty(X)
+
+    def test_averaging_classifier_ignores_negative_member_uncertainty(self, binary_probas, knowledge_uncertainties, X):
+        first_proba, second_proba = binary_probas
+        first_uncertainty, second_uncertainty = knowledge_uncertainties
+        negative_uncertainty = np.array([0.1, -0.2, 0.3])
+        ensemble = CVEnsembleAveragingClassifier(
+            [
+                _FakeClassifier(first_proba, first_uncertainty, [0, 1]),
+                _FakeClassifier(
+                    second_proba,
+                    second_uncertainty,
+                    [0, 1],
+                    data_uncertainties=negative_uncertainty,
+                ),
+            ]
+        )
+
+        result = ensemble.predict_uncertainty(X)
+        assert result["data_uncertainty"].isna().all()
+        np.testing.assert_allclose(result["knowledge_uncertainty"], (first_uncertainty + second_uncertainty) / 2)
 
     def test_unknown_aggregation_strategy_raises(self, binary_ensemble, X):
         with pytest.raises(ValueError, match=r"Unknown aggregation strategy"):
@@ -489,6 +589,6 @@ class TestEnsembleClassifierErrorHandling:
             binary_ensemble.predict_uncertainty(X, uncertainty_method="unknown")
 
     @pytest.mark.parametrize("shape", [(3, 2), (2, 3, 2, 1)])
-    def test_aggregate_predictions_requires_3d_input(self, binary_ensemble, shape):
+    def test_aggregate_probas_requires_3d_input(self, binary_ensemble, shape):
         with pytest.raises(ValueError, match=r"Unexpected dimension for probas"):
-            binary_ensemble._aggregate_predictions(np.zeros(shape))
+            binary_ensemble._aggregate_probas(np.zeros(shape))
