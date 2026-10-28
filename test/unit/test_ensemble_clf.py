@@ -401,6 +401,13 @@ class TestEnsembleClassifierPredictions:
             disagreement_result["knowledge_uncertainty"].to_numpy() / len(binary_ensemble.estimators),
         )
 
+    @pytest.mark.parametrize("method", UNCERTAINTY_METHODS)
+    def test_string_uncertainty_method(self, binary_ensemble, X, method):
+        enum_result = binary_ensemble.predict_uncertainty(X, uncertainty_method=method)
+        string_result = binary_ensemble.predict_uncertainty(X, uncertainty_method=method.value)
+
+        pd.testing.assert_frame_equal(string_result, enum_result)
+
     @pytest.mark.parametrize("strategy", AGGREGATION_STRATEGIES)
     @pytest.mark.parametrize("method", UNCERTAINTY_METHODS)
     def test_binary_predict_uncertainty(

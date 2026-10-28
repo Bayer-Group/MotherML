@@ -398,6 +398,11 @@ class CVEnsembleDerivedClassifier(CVEnsembleClassifierMother):
     def _calculate_uncertainty(
         self, estimator_probas: np.ndarray, uncertainty_method: EnsembleDerivedUncertaintyMethod | str
     ) -> tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
+        try:
+            uncertainty_method = EnsembleDerivedUncertaintyMethod(uncertainty_method)
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"Unknown uncertainty estimation method for ensemble model: {uncertainty_method}") from e
+
         if uncertainty_method == EnsembleDerivedUncertaintyMethod.ENTROPY:
             # This approach approximately captures the mutual information among ensemble members and
             # resulting knowledge uncertainty equals np.mean(kl_matrix, axis=0) with close-to-zero
@@ -434,9 +439,6 @@ class CVEnsembleDerivedClassifier(CVEnsembleClassifierMother):
             knowledge_uncertainty = disagreement_score
             data_uncertainty = None
             total_uncertainty = None
-        else:
-            raise ValueError(f"Unknown uncertainty estimation method for ensemble model: {uncertainty_method}")
-
         return knowledge_uncertainty, data_uncertainty, total_uncertainty
 
     def predict_uncertainty(
