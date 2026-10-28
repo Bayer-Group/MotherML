@@ -1,3 +1,6 @@
+from typing import cast
+from unittest.mock import Mock
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -16,7 +19,48 @@ from mother.ml.core import (
     AbstractMotherPipeline,
     PipelineWithHyperparameterRooting,
 )
-from mother.optimization.core import MotherTuner
+from mother.optimization.core import AbstractMotherTuner, MotherTuner, ObjectiveContext
+
+
+class MinimalMotherTuner(AbstractMotherTuner):
+    def _objective(self, trial, context) -> float:
+        self.objective_context = context
+        return 1.0
+
+
+def test_abstract_mother_tuner_runs_custom_objective():
+    tuner = MinimalMotherTuner(n_trials_optuna=3)
+    tuner.study = Mock()
+    context = cast(ObjectiveContext, object())
+
+    tuner._custom_call_optimize(context)
+
+    objective = tuner.study.optimize.call_args.args[0]
+    assert tuner.study.optimize.call_args.kwargs == {
+        "n_trials": 3,
+        "gc_after_trial": True,
+        "callbacks": None,
+    }
+    assert objective(Mock()) == 1.0
+    assert tuner.objective_context is context
+
+
+def test_objective_context_exposes_extras_as_attributes():
+    context = ObjectiveContext(
+        get_hyper_space=lambda **kwargs: {},
+        estimator=Pipeline([]),
+        X=pd.DataFrame(),
+        y=pd.Series(dtype=float),
+        cross_validation=GroupKFold(n_splits=2),
+        fit_kwargs={},
+        groups_as_cross_val_args=False,
+        groups=None,
+        extras={"my_option": "value"},
+    )
+
+    assert context.my_option == "value"
+    with pytest.raises(AttributeError):
+        _ = context.unknown_option
 
 
 # define a simple model to run the tests with

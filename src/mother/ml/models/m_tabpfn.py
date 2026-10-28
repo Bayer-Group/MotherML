@@ -538,6 +538,21 @@ class TabPFNEmbeddingTransformer(BaseEstimator, TransformerMixin):
         if self.random_state is not None:
             self._set_random_state()
 
+    def get_params(self, deep: bool = True) -> Dict[str, Any]:
+        params = super().get_params(deep=deep)
+        params.update(self.kwargs)
+        return params
+
+    def set_params(self, **params: Any) -> "TabPFNEmbeddingTransformer":
+        known_params = super().get_params(deep=False)
+        extra_params = {key: value for key, value in params.items() if key not in known_params and "__" not in key}
+        estimator_params = {key: value for key, value in params.items() if key not in extra_params}
+
+        if estimator_params:
+            super().set_params(**estimator_params)
+        self.kwargs.update(extra_params)
+        return self
+
     def _set_random_state(self) -> None:
         random.seed(self.random_state)
         torch.manual_seed(self.random_state)
