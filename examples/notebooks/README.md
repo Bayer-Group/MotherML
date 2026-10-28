@@ -51,6 +51,7 @@ Dive into sophisticated methods and specialized algorithms:
 | `02_random_forest_regression.ipynb` | Random Forest for molecular properties | 🟡 Intermediate | 15 min |
 | `03_regression_with_uncertainty.ipynb` | Uncertainty quantification in regression | 🔴 Advanced | 30 min |
 | `04_multitask_random_forest.ipynb` | Multi-task learning with Random Forest | 🔴 Advanced | 30 min |
+| `05_tabicl_regression.ipynb` | Regression using TabICL model with built-in SHAP explainability | 🔴 Advanced | 20 min |
 
 ### 03_classification/ - Categorical Property Prediction 🎯
 **Classify molecules into categories (active/inactive, toxic/safe, etc.)**
@@ -60,6 +61,7 @@ Dive into sophisticated methods and specialized algorithms:
 | `01_lasso_classification.ipynb` | Lasso regularized classification | 🟡 Intermediate | 20 min |
 | `02_binary_classification_uncertainty.ipynb` | Binary classification + uncertainty | 🟡 Intermediate | 25 min |
 | `03_ordinal_classification.ipynb` | Ranked categorical predictions | 🔴 Advanced | 35 min |
+| `04_tabicl_classification.ipynb` | Classification using tabicl with build-in SHAP explainability | 🔴 Advanced | 20 min |
 
 ### 04_feature_engineering/ - Molecular Descriptors & Selection 🔬
 **Master molecular feature generation and selection techniques**
@@ -81,5 +83,6 @@ Dive into sophisticated methods and specialized algorithms:
 | `04_ranking_model.ipynb` | Learning-to-Rank using CatboostRanker | 🔴 Advanced | 5 min* |
 | `05_tabicl_embedding_transformer.ipynb` | TabICL embeddings for molecular data | 🔴 Advanced | 30 min |
 | `06_custom_model_tuner.ipynb` | Custom hyperparameter tuning for a neural network | 🔴 Advanced | 40 min |
+
 
 **w/o the last optimization section. > 1h to run the optimization section*
