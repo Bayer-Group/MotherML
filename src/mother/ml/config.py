@@ -13,6 +13,8 @@ class ModelConfig(BaseSettings):
 
     Attributes:
         categorical_features (List[str]): Column names of categorical features.
+        text_features (List[str]): Column names of native CatBoost text features.
+        embedding_features (List[str]): Column names containing native CatBoost embedding vectors.
         type (properties.ModelType): Model type. One of the available model types in properties.ModelType.
         target_type (properties.TargetType): ML target type. One of the available target types in properties.TargetType.
         feature_selection_type (properties.FeatureSelectionType): Feature selection type.
@@ -22,6 +24,10 @@ class ModelConfig(BaseSettings):
     """
 
     categorical_features: typing.List[str] = Field(default=[], description="Column names of categorical features")
+    text_features: typing.List[str] = Field(default=[], description="Column names of native CatBoost text features")
+    embedding_features: typing.List[str] = Field(
+        default=[], description="Column names containing native CatBoost embedding vectors"
+    )
     model_type: properties.ModelType = Field(description=f"Model type. One of {properties.ModelType}")
     target_type: typing.Annotated[
         properties.TargetType, Field(description=f"ML target type. One of {properties.TargetType}")
