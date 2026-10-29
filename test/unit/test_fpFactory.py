@@ -1,7 +1,159 @@
-import pytest
-from rdkit.Chem import rdFingerprintGenerator as rdFG
+import hashlib
+import io
 
+import numpy as np
+import pandas as pd
+import pytest
+from rdkit import Chem
+from rdkit.Chem import rdFingerprintGenerator as rdFG
+from sklearn.base import clone
+from sklearn.exceptions import NotFittedError
+
+from mother.feature_generation import fp_gnn_gen
 from mother.feature_generation.fp_gen import FingerprintFactory
+from mother.feature_generation.fp_gnn_gen import (
+    CheMeleonFingerprintFactory,
+    CheMeleonFingerprintTransformer,
+    _CheMeleonEmbedder,
+)
+
+
+class _FakeBatchMolGraph:
+    def __init__(self, size):
+        self.size = size
+
+    def to(self, device):
+        return None
+
+
+class _FakeMoleculeDatapoint:
+    @classmethod
+    def from_smi(cls, smiles):
+        return smiles
+
+
+class _FakeMoleculeDataset(list):
+    pass
+
+
+class _FakeMessagePassing:
+    output_dim = 2
+
+    def __init__(self, **kwargs):
+        pass
+
+    def load_state_dict(self, state_dict):
+        pass
+
+
+class _FakeMPNN:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def to(self, device):
+        return self
+
+    def eval(self):
+        return self
+
+    def fingerprint(self, batch_graph, V_d, X_d):
+        import torch
+
+        return torch.ones((batch_graph.size, 2))
+
+
+class _FakeRegressionFFN:
+    def __init__(self, input_dim):
+        pass
+
+
+def _fake_collate_batch(datapoints):
+    return _FakeBatchMolGraph(len(datapoints)), None, None
+
+
+@pytest.fixture
+def checkpoint_cache(tmp_path, monkeypatch):
+    contents = b"offline checkpoint fixture"
+    cache_path = tmp_path / "cache" / "chemeleon_mp.pt"
+    monkeypatch.setattr(fp_gnn_gen, "_CHEMELEON_CACHE_PATH", cache_path)
+    monkeypatch.setattr(fp_gnn_gen, "_CHEMELEON_SHA256", hashlib.sha256(contents).hexdigest())
+    return cache_path, contents
+
+
+def test_chemeleon_checkpoint_reuses_verified_cache(checkpoint_cache, monkeypatch):
+    cache_path, contents = checkpoint_cache
+    cache_path.parent.mkdir()
+    cache_path.write_bytes(contents)
+
+    def unexpected_download(*args, **kwargs):
+        pytest.fail("A verified cache must not trigger a download.")
+
+    monkeypatch.setattr(fp_gnn_gen.urllib.request, "urlopen", unexpected_download)
+    assert fp_gnn_gen.get_default_chemeleon_checkpoint() == cache_path
+    assert cache_path.read_bytes() == contents
+    assert list(cache_path.parent.iterdir()) == [cache_path]
+
+
+@pytest.mark.parametrize("corrupt_cache", [False, True])
+def test_chemeleon_checkpoint_downloads_verified_replacement(checkpoint_cache, monkeypatch, corrupt_cache, caplog):
+    cache_path, contents = checkpoint_cache
+    if corrupt_cache:
+        cache_path.parent.mkdir()
+        cache_path.write_bytes(b"corrupt cache")
+    calls = []
+
+    def download(url, timeout):
+        calls.append((url, timeout))
+        return io.BytesIO(contents)
+
+    monkeypatch.setattr(fp_gnn_gen.urllib.request, "urlopen", download)
+    assert fp_gnn_gen.get_default_chemeleon_checkpoint() == cache_path
+    assert calls == [(fp_gnn_gen._CHEMELEON_ZENODO_URL, 60)]
+    assert cache_path.read_bytes() == contents
+    assert list(cache_path.parent.iterdir()) == [cache_path]
+    if corrupt_cache:
+        assert "failed SHA256 verification; replacing it" in caplog.text
+
+
+@pytest.mark.parametrize("corrupt_cache", [False, True])
+def test_chemeleon_checkpoint_rejects_bad_download_and_cleans_temp(checkpoint_cache, monkeypatch, corrupt_cache):
+    cache_path, _ = checkpoint_cache
+    if corrupt_cache:
+        cache_path.parent.mkdir()
+        cache_path.write_bytes(b"existing corrupt cache")
+    monkeypatch.setattr(fp_gnn_gen.urllib.request, "urlopen", lambda *args, **kwargs: io.BytesIO(b"bad download"))
+
+    with pytest.raises(RuntimeError, match="Downloaded CheMeleon checkpoint failed SHA256 verification"):
+        fp_gnn_gen.get_default_chemeleon_checkpoint()
+
+    assert list(cache_path.parent.glob("*.tmp")) == []
+    if corrupt_cache:
+        assert cache_path.read_bytes() == b"existing corrupt cache"
+    else:
+        assert not cache_path.exists()
+
+
+@pytest.mark.parametrize("failure_stage", ["connection", "stream"])
+def test_chemeleon_checkpoint_cleans_temp_on_download_failure(checkpoint_cache, monkeypatch, failure_stage):
+    cache_path, _ = checkpoint_cache
+
+    class FailingResponse(io.BytesIO):
+        def read(self, size=-1):
+            if self.tell():
+                raise OSError("interrupted download")
+            return super().read(size)
+
+    def download(*args, **kwargs):
+        if failure_stage == "connection":
+            raise OSError("connection failed")
+        return FailingResponse(b"partial download")
+
+    monkeypatch.setattr(fp_gnn_gen.urllib.request, "urlopen", download)
+    with pytest.raises(OSError, match="connection failed|interrupted download"):
+        fp_gnn_gen.get_default_chemeleon_checkpoint()
+
+    assert list(cache_path.parent.iterdir()) == []
+    assert not cache_path.exists()
 
 
 def test_initialization() -> None:
@@ -58,6 +210,206 @@ def test_countSimulation_property() -> None:
 def test_is_supported() -> None:
     assert FingerprintFactory.is_supported("MorganFP") is True
     assert FingerprintFactory.is_supported("InvalidFP") is False
+
+
+def test_chemeleon_transform_flattens_single_column_object_array() -> None:
+    molecule = Chem.MolFromSmiles("CCO")
+    transformer = CheMeleonFingerprintTransformer(
+        output_dim=2,
+        embedder=lambda smiles: np.ones((len(smiles), 2), dtype=np.float32),
+    ).fit([molecule])
+
+    result = transformer.transform(np.array([[molecule]], dtype=object))
+
+    assert result.shape == (1, 2)
+    assert np.all(result == 1.0)
+
+
+@pytest.mark.parametrize(
+    "input_factory",
+    [list, np.asarray, lambda values: np.asarray(values).reshape(-1, 1), pd.Series, pd.DataFrame, iter],
+    ids=["list", "array", "column_array", "series", "dataframe", "generator"],
+)
+def test_chemeleon_transform_preserves_molecule_rows(input_factory) -> None:
+    molecules = [Chem.MolFromSmiles(smiles) for smiles in ["CCO", "CC", "C"]]
+    transformer = CheMeleonFingerprintTransformer(
+        output_dim=2,
+        embedder=lambda smiles_batch: np.asarray([[len(smiles), 1] for smiles in smiles_batch], dtype=np.float32),
+    )
+
+    result = transformer.fit_transform(input_factory(molecules))
+
+    np.testing.assert_array_equal(result, [[3, 1], [2, 1], [1, 1]])
+    assert result.dtype == np.float32
+    assert transformer.get_feature_names_out() == ["CheMeleonGNNFP_0", "CheMeleonGNNFP_1"]
+
+
+def test_chemeleon_batching_preserves_invalid_rows() -> None:
+    batches = []
+
+    def embedder(smiles_batch):
+        batches.append(list(smiles_batch))
+        return np.full((len(smiles_batch), 2), len(batches), dtype=np.float32)
+
+    molecules = [Chem.MolFromSmiles("CCO"), None, Chem.MolFromSmiles("CC"), Chem.MolFromSmiles("C")]
+    transformer = CheMeleonFingerprintTransformer(output_dim=2, batch_size=1, embedder=embedder)
+
+    result = transformer.fit_transform(molecules)
+
+    assert batches == [["CCO"], ["CC"], ["C"]]
+    np.testing.assert_array_equal(result[[0, 2, 3]], [[1, 1], [2, 2], [3, 3]])
+    assert np.isnan(result[1]).all()
+    assert transformer.transform([]).shape == (0, 2)
+    assert np.isnan(transformer.transform([None, "invalid"])).all()
+    assert len(batches) == 3
+
+
+@pytest.mark.parametrize(
+    ("shape", "message"),
+    [
+        ((1, 2), "Expected 2 embedding rows"),
+        ((3, 2), "Expected 2 embedding rows"),
+        ((2, 3), "Expected embedding size 2"),
+        ((2,), "must return a 2D array"),
+    ],
+)
+def test_chemeleon_rejects_malformed_embedder_output(shape, message) -> None:
+    molecules = [Chem.MolFromSmiles("CCO"), Chem.MolFromSmiles("CC")]
+    transformer = CheMeleonFingerprintTransformer(
+        output_dim=2, embedder=lambda smiles_batch: np.ones(shape, dtype=np.float32)
+    )
+
+    with pytest.raises(ValueError, match=message):
+        transformer.fit_transform(molecules)
+
+
+def test_default_chemeleon_embedder_transformer_is_pickleable(monkeypatch) -> None:
+    import pickle
+    import sys
+    import types
+
+    torch = pytest.importorskip("torch")
+    chemprop = types.ModuleType("chemprop")
+    models = types.ModuleType("chemprop.models")
+    models.MPNN = _FakeMPNN
+    nn = types.ModuleType("chemprop.nn")
+    nn.BondMessagePassing = _FakeMessagePassing
+    nn.MeanAggregation = type("MeanAggregation", (), {})
+    nn.RegressionFFN = _FakeRegressionFFN
+    data = types.ModuleType("chemprop.data")
+    data.MoleculeDatapoint = _FakeMoleculeDatapoint
+    data.MoleculeDataset = _FakeMoleculeDataset
+    data.collate_batch = _fake_collate_batch
+    chemprop.models = models
+    chemprop.nn = nn
+    chemprop.data = data
+    monkeypatch.setitem(sys.modules, "chemprop", chemprop)
+    monkeypatch.setitem(sys.modules, "chemprop.models", models)
+    monkeypatch.setitem(sys.modules, "chemprop.nn", nn)
+    monkeypatch.setitem(sys.modules, "chemprop.data", data)
+    monkeypatch.setattr(torch, "load", lambda *args, **kwargs: {"hyper_parameters": {}, "state_dict": {}})
+
+    molecule = Chem.MolFromSmiles("CCO")
+    transformer = CheMeleonFingerprintTransformer(output_dim=2, checkpoint_path="fake.pt").fit([molecule])
+
+    restored = pickle.loads(pickle.dumps(transformer))
+
+    assert isinstance(restored.embedder_, _CheMeleonEmbedder)
+    np.testing.assert_array_equal(restored.transform([molecule]), [[1.0, 1.0]])
+
+
+@pytest.mark.parametrize("return_separate_columns", [True, False])
+def test_chemeleon_factory_output_layout(return_separate_columns) -> None:
+    molecules = pd.Series(
+        [Chem.MolFromSmiles("CCO"), None, Chem.MolFromSmiles("CC")],
+        index=pd.Index([12, 3, 8], name="molecule_id"),
+    )
+    factory = CheMeleonFingerprintFactory(
+        output_dim=2,
+        batch_size=1,
+        embedder=lambda smiles_batch: np.asarray([[len(smiles), 1] for smiles in smiles_batch], dtype=np.float32),
+        embedding_column_name="chemeleon_embedding",
+        return_separate_columns=return_separate_columns,
+    )
+    transformer = factory.get_fingerprint_generator()
+
+    result = transformer.fit_transform(molecules)
+
+    expected = [[3, 1], [np.nan, np.nan], [2, 1]]
+    if return_separate_columns:
+        assert isinstance(result, np.ndarray)
+        np.testing.assert_array_equal(result, expected)
+        assert transformer.get_feature_names_out() == ["chemeleon_embedding_0", "chemeleon_embedding_1"]
+    else:
+        assert isinstance(result, pd.DataFrame)
+        assert result.shape == (3, 1)
+        pd.testing.assert_index_equal(result.index, molecules.index)
+        assert result.columns.tolist() == transformer.get_feature_names_out() == ["chemeleon_embedding"]
+        np.testing.assert_array_equal(np.stack(result["chemeleon_embedding"]), expected)
+    assert transformer.get_output_dimension() == 2
+    cloned = clone(transformer)
+    assert cloned.embedding_column_name == "chemeleon_embedding"
+    assert cloned.return_separate_columns is return_separate_columns
+    with pytest.raises(NotFittedError):
+        cloned.transform(molecules)
+
+
+@pytest.mark.parametrize("invalid_values", [[], [None, "invalid"]], ids=["empty", "all_invalid"])
+@pytest.mark.parametrize("pandas_input", [False, True], ids=["iterator", "dataframe"])
+def test_chemeleon_single_column_empty_or_invalid_rows(invalid_values, pandas_input) -> None:
+    def embedder(smiles_batch):
+        pytest.fail("The embedder must not be called without valid molecules.")
+
+    index = pd.Index(range(10, 10 + len(invalid_values)), name="molecule_id")
+    molecules = pd.DataFrame({"molecule": invalid_values}, index=index) if pandas_input else iter(invalid_values)
+    transformer = CheMeleonFingerprintTransformer(output_dim=2, embedder=embedder, return_separate_columns=False)
+
+    result = transformer.fit_transform(molecules)
+
+    assert isinstance(result, pd.DataFrame)
+    assert result.shape == (len(invalid_values), 1)
+    assert result.columns.tolist() == transformer.get_feature_names_out() == ["CheMeleonGNNFP"]
+    pd.testing.assert_index_equal(result.index, index if pandas_input else pd.RangeIndex(len(invalid_values)))
+    for vector in result.iloc[:, 0]:
+        assert vector.shape == (2,)
+        assert vector.dtype == np.float32
+        assert np.isnan(vector).all()
+
+
+@pytest.mark.parametrize("return_separate_columns", [True, False])
+def test_chemeleon_sklearn_pandas_output(return_separate_columns) -> None:
+    molecules = pd.DataFrame({"molecule": [Chem.MolFromSmiles("CCO")]}, index=pd.Index([7], name="molecule_id"))
+    transformer = CheMeleonFingerprintTransformer(
+        output_dim=2,
+        embedder=lambda smiles_batch: np.ones((len(smiles_batch), 2), dtype=np.float32),
+        embedding_column_name="custom_embedding",
+        return_separate_columns=return_separate_columns,
+    ).set_output(transform="pandas")
+
+    result = transformer.fit_transform(molecules)
+
+    assert isinstance(result, pd.DataFrame)
+    assert result.shape == (1, 2 if return_separate_columns else 1)
+    assert result.columns.tolist() == transformer.get_feature_names_out()
+    pd.testing.assert_index_equal(result.index, molecules.index)
+    vector = result.iloc[0].to_numpy() if return_separate_columns else result.iloc[0, 0]
+    np.testing.assert_array_equal(vector, [1, 1])
+
+
+def test_chemeleon_sklearn_contract() -> None:
+    molecule = Chem.MolFromSmiles("CCO")
+    transformer = CheMeleonFingerprintTransformer(
+        output_dim=2, embedder=lambda smiles_batch: np.ones((len(smiles_batch), 2), dtype=np.float32)
+    )
+
+    with pytest.raises(NotFittedError):
+        transformer.transform([molecule])
+    fitted = transformer.fit([molecule])
+    assert fitted is transformer
+    with pytest.raises(NotFittedError):
+        clone(transformer).transform([molecule])
+    with pytest.raises(ValueError, match="single-column table"):
+        transformer.transform(np.asarray([[molecule, molecule]], dtype=object))
 
 
 if __name__ == "__main__":
