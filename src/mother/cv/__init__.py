@@ -5,10 +5,16 @@ from mother.cv.config import (
     TanimotoSimilarityParams,
     TimeSeriesParams,
 )
-from mother.cv.core import DefaultGrouping, TanimotoGroupingFromMols, TimeSeriesGrouping
+from mother.cv.core import (
+    DefaultGrouping,
+    MurckoScaffoldGroupingFromMols,
+    TanimotoGroupingFromMols,
+    TimeSeriesGrouping,
+)
 
 __all__ = [
     "TanimotoSimilarityParams",
+    "MurckoScaffoldGroupingFromMols",
     "TanimotoGroupingFromMols",
     "CVtype",
     "GenericCVModel",
