@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- version list -->
 
+## v2.1.0 (2026-10-28)
+
+### Bug Fixes
+
+- Derive model registry algorithm names via prefix removal
+  ([#106](https://github.com/Bayer-Group/MotherML/pull/106),
+  [`d339a04`](https://github.com/Bayer-Group/MotherML/commit/d339a04da483045c8a9a76eb136d44c7a4159b6c))
+
+- **cv**: Make MurckoScaffoldGroupingFromMols fit check effective
+  ([#106](https://github.com/Bayer-Group/MotherML/pull/106),
+  [`d339a04`](https://github.com/Bayer-Group/MotherML/commit/d339a04da483045c8a9a76eb136d44c7a4159b6c))
+
+### Code Style
+
+- Apply isort and ruff formatting ([#106](https://github.com/Bayer-Group/MotherML/pull/106),
+  [`d339a04`](https://github.com/Bayer-Group/MotherML/commit/d339a04da483045c8a9a76eb136d44c7a4159b6c))
+
+- **cv**: Fix import formatting in cv/__init__.py
+  ([#106](https://github.com/Bayer-Group/MotherML/pull/106),
+  [`d339a04`](https://github.com/Bayer-Group/MotherML/commit/d339a04da483045c8a9a76eb136d44c7a4159b6c))
+
+### Features
+
+- **cv**: Add Murcko scaffold grouping transformer
+  ([#106](https://github.com/Bayer-Group/MotherML/pull/106),
+  [`d339a04`](https://github.com/Bayer-Group/MotherML/commit/d339a04da483045c8a9a76eb136d44c7a4159b6c))
+
+### Testing
+
+- **cv**: Add smoke test for Murcko scaffold grouping
+  ([#106](https://github.com/Bayer-Group/MotherML/pull/106),
+  [`d339a04`](https://github.com/Bayer-Group/MotherML/commit/d339a04da483045c8a9a76eb136d44c7a4159b6c))
+
+- **cv**: Cover Murcko scaffold grouping behavior
+  ([#106](https://github.com/Bayer-Group/MotherML/pull/106),
+  [`d339a04`](https://github.com/Bayer-Group/MotherML/commit/d339a04da483045c8a9a76eb136d44c7a4159b6c))
+
+
 ## v2.0.5 (2026-10-16)
 
 ### Documentation
