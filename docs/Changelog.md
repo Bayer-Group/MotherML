@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- version list -->
 
+## v2.1.2 (2026-11-05)
+
+### Chores
+
+- **deps**: Bump certifi from 2026.7.22 to 2026.10.18
+  ([#120](https://github.com/Bayer-Group/MotherML/pull/120),
+  [`551c4da`](https://github.com/Bayer-Group/MotherML/commit/551c4daaa1f496a52d49dc114b2742424916c9de))
+
+- **deps**: Bump virtualenv from 21.14.5 to 21.14.13
+  ([#118](https://github.com/Bayer-Group/MotherML/pull/118),
+  [`ed39863`](https://github.com/Bayer-Group/MotherML/commit/ed39863ea1cfcb16de10129de90eee566f8f0972))
+
+
 ## v2.1.1 (2026-11-05)
 
 ### Chores
