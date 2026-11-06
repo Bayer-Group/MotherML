@@ -62,6 +62,8 @@ Dive into sophisticated methods and specialized algorithms:
 | `02_binary_classification_uncertainty.ipynb` | Binary classification + uncertainty | 🟡 Intermediate | 25 min |
 | `03_ordinal_classification.ipynb` | Ranked categorical predictions | 🔴 Advanced | 35 min |
 | `04_tabicl_classification.ipynb` | Classification using tabicl with build-in SHAP explainability | 🔴 Advanced | 20 min |
+| `05_logloss_tuning_for_calibrated_outputs.ipynb` | Hyperparameter tuning with different scorers | 🟡 Intermediate | 10 min* |
+**if tuning is performed with new parameters, total execution including optimization can take much longer*
 
 ### 04_feature_engineering/ - Molecular Descriptors & Selection 🔬
 **Master molecular feature generation and selection techniques**
