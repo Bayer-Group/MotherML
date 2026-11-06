@@ -3478,6 +3478,45 @@ def test_flow_device_walker_moves_every_shared_tensor_reference(device):
             torch.testing.assert_close(tensor.cpu(), shared)
 
 
+@pytest.mark.parametrize("batch_size", [-1, 0])
+def test_batch_size_candidates_full_batch_does_not_loop(batch_size):
+    from mother.ml.models.m_node import NODERegressor
+
+    regressor = NODERegressor(batch_size=batch_size, batch_size_tuning_upper_bound=512, device="cpu")
+
+    assert regressor._batch_size_candidates() == [batch_size]
+
+
+def test_batch_size_candidates_double_up_to_bound():
+    from mother.ml.models.m_node import NODERegressor
+
+    regressor = NODERegressor(batch_size=128, batch_size_tuning_upper_bound=512, device="cpu")
+
+    assert regressor._batch_size_candidates() == [128, 256, 512]
+
+
+def test_flow_device_walker_moves_aliased_and_named_tuples():
+    from collections import namedtuple
+    from types import SimpleNamespace
+
+    from mother.ml.models.node_head_utils import FlowHead
+
+    Pair = namedtuple("Pair", ["loc", "scale"])
+    shared = torch.ones(2)
+    shared_tuple = (shared, [shared])
+    unchanged = (1, "a")
+    graph = SimpleNamespace(first=shared_tuple, second=shared_tuple, named=Pair(shared, shared), unchanged=unchanged)
+
+    FlowHead._move_nested_tensors_to_device(graph, torch.device("meta"))
+
+    for tup in (graph.first, graph.second):
+        assert tup[0].device.type == "meta"
+        assert tup[1][0].device.type == "meta"
+    assert isinstance(graph.named, Pair)
+    assert graph.named.loc.device.type == graph.named.scale.device.type == "meta"
+    assert graph.unchanged is unchanged
+
+
 def test_activation_functions():
     """Test different activation functions (entmoid15, sparsemoid) - technical correctness only"""
     print("\n🚀 Activation Functions Test")

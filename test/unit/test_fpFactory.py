@@ -156,6 +156,31 @@ def test_chemeleon_checkpoint_cleans_temp_on_download_failure(checkpoint_cache, 
     assert not cache_path.exists()
 
 
+def test_chemeleon_checkpoint_cleans_temp_on_keyboard_interrupt(checkpoint_cache, monkeypatch):
+    cache_path, _ = checkpoint_cache
+
+    def interrupted(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(fp_gnn_gen.urllib.request, "urlopen", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        fp_gnn_gen.get_default_chemeleon_checkpoint()
+
+    assert list(cache_path.parent.iterdir()) == []
+
+
+def test_chemeleon_default_path_resolved_lazily(tmp_path, monkeypatch):
+    contents = b"offline checkpoint fixture"
+    monkeypatch.setattr(fp_gnn_gen, "_CHEMELEON_CACHE_PATH", None)
+    monkeypatch.setattr(fp_gnn_gen, "_CHEMELEON_SHA256", hashlib.sha256(contents).hexdigest())
+    monkeypatch.setattr(fp_gnn_gen.Path, "home", lambda: tmp_path)
+    expected = tmp_path / ".cache" / "mother" / "chemeleon_mp.pt"
+    expected.parent.mkdir(parents=True)
+    expected.write_bytes(contents)
+
+    assert fp_gnn_gen.get_default_chemeleon_checkpoint() == expected
+
+
 def test_initialization() -> None:
     # Test valid initialization
     params = {"n_bits": 1024, "countSimulation": True}

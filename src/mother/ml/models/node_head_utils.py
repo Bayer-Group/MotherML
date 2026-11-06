@@ -129,7 +129,12 @@ class FlowHead(nn.Module):
             return obj
 
         if isinstance(obj, tuple):
-            return tuple(FlowHead._move_nested_tensors_to_device(v, device, visited) for v in obj)
+            # Tuples are immutable and rebuilt, so aliases are not updated: traverse every reference.
+            visited.discard(oid)
+            items = [FlowHead._move_nested_tensors_to_device(v, device, visited) for v in obj]
+            if all(new is old for new, old in zip(items, obj)):
+                return obj
+            return type(obj)(*items) if hasattr(obj, "_fields") else tuple(items)
 
         if hasattr(obj, "__dict__"):
             for attr_name, attr_val in list(vars(obj).items()):

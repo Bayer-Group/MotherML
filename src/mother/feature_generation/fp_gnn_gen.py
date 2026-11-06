@@ -17,7 +17,8 @@ from mother.errors import ExtrasDependencyImportError
 module_logger = logging.getLogger(__name__)
 
 _CHEMELEON_ZENODO_URL = "https://zenodo.org/records/15460715/files/chemeleon_mp.pt"
-_CHEMELEON_CACHE_PATH = Path.home() / ".cache" / "mother" / "chemeleon_mp.pt"
+# Resolved lazily so importing this module never depends on HOME; tests may override it.
+_CHEMELEON_CACHE_PATH: Optional[Path] = None
 _CHEMELEON_SHA256 = "c376624d3407204e780a0ed13a9ac097cc9bb1c13ef89cdbc633c1715c183651"
 
 
@@ -32,36 +33,36 @@ def _sha256(path: Path) -> str:
 
 def get_default_chemeleon_checkpoint() -> Path:
     """Return path to chemeleon_mp.pt, downloading from Zenodo on first use."""
-    if _CHEMELEON_CACHE_PATH.exists() and _sha256(_CHEMELEON_CACHE_PATH) == _CHEMELEON_SHA256:
-        return _CHEMELEON_CACHE_PATH
+    cache_path = _CHEMELEON_CACHE_PATH or Path.home() / ".cache" / "mother" / "chemeleon_mp.pt"
+    if cache_path.exists() and _sha256(cache_path) == _CHEMELEON_SHA256:
+        return cache_path
 
-    if _CHEMELEON_CACHE_PATH.exists():
+    if cache_path.exists():
         module_logger.warning("Cached CheMeleon checkpoint failed SHA256 verification; replacing it.")
 
-    if not _CHEMELEON_CACHE_PATH.exists() or _sha256(_CHEMELEON_CACHE_PATH) != _CHEMELEON_SHA256:
-        _CHEMELEON_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path: Optional[Path] = None
-        try:
-            module_logger.info("Downloading CheMeleon checkpoint from Zenodo to %s", _CHEMELEON_CACHE_PATH)
-            with tempfile.NamedTemporaryFile(
-                mode="wb",
-                suffix=".tmp",
-                prefix="chemeleon_mp.",
-                dir=_CHEMELEON_CACHE_PATH.parent,
-                delete=False,
-            ) as tmp_file:
-                tmp_path = Path(tmp_file.name)
-                with urllib.request.urlopen(_CHEMELEON_ZENODO_URL, timeout=60) as response:
-                    shutil.copyfileobj(response, tmp_file)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Optional[Path] = None
+    try:
+        module_logger.info("Downloading CheMeleon checkpoint from Zenodo to %s", cache_path)
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            suffix=".tmp",
+            prefix="chemeleon_mp.",
+            dir=cache_path.parent,
+            delete=False,
+        ) as tmp_file:
+            tmp_path = Path(tmp_file.name)
+            with urllib.request.urlopen(_CHEMELEON_ZENODO_URL, timeout=60) as response:
+                shutil.copyfileobj(response, tmp_file)
 
-            if _sha256(tmp_path) != _CHEMELEON_SHA256:
-                raise RuntimeError("Downloaded CheMeleon checkpoint failed SHA256 verification.")
-            tmp_path.replace(_CHEMELEON_CACHE_PATH)  # atomic on POSIX; avoids partial files
-        except Exception:
-            if tmp_path is not None:
-                tmp_path.unlink(missing_ok=True)
-            raise
-    return _CHEMELEON_CACHE_PATH
+        if _sha256(tmp_path) != _CHEMELEON_SHA256:
+            raise RuntimeError("Downloaded CheMeleon checkpoint failed SHA256 verification.")
+        tmp_path.replace(cache_path)  # atomic on POSIX; avoids partial files
+    except BaseException:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+        raise
+    return cache_path
 
 
 def _check_chemprop() -> None:

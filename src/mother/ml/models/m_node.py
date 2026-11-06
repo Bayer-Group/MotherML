@@ -102,17 +102,23 @@ from typing import Any, Callable, Dict, Iterator, List, Literal, Optional, Tuple
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
-import skorch
-import torch
-import torch.nn as nn
 from optuna import Trial
 from sklearn.preprocessing import LabelEncoder, StandardScaler
-from skorch import NeuralNetClassifier
-from skorch.callbacks import EarlyStopping
-from skorch.net import NeuralNet
-from skorch.utils import data_from_dataset, to_device
-from torch import Tensor
-from torch.utils.data import default_collate, default_convert
+
+from mother.errors import ExtrasDependencyImportError
+
+try:
+    import skorch
+    import torch
+    import torch.nn as nn
+    from skorch import NeuralNetClassifier
+    from skorch.callbacks import EarlyStopping
+    from skorch.net import NeuralNet
+    from skorch.utils import data_from_dataset, to_device
+    from torch import Tensor
+    from torch.utils.data import default_collate, default_convert
+except ImportError as import_error:
+    raise ExtrasDependencyImportError("node", import_error) from import_error
 
 from mother.ml.core import AbstractMotherPipeline
 from mother.ml.models.node_head_utils import (
@@ -1093,7 +1099,8 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         upper_bound = getattr(self, "batch_size_tuning_upper_bound", None)
         start_batch_size = int(self.batch_size)
 
-        if upper_bound is None:
+        # Non-positive sizes (e.g. -1 = full batch) cannot be doubled towards the bound.
+        if upper_bound is None or start_batch_size <= 0:
             return [start_batch_size]
 
         if upper_bound < 64:
