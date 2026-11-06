@@ -9,7 +9,7 @@ To faciliatate configuration of the ML project a `MotherSettings` class is creat
 
     === "Complete Training or Inference Pipeline"
 
-        ```python exec="on" source="tabbed-left"
+        ~~~python exec="on" source="tabbed-left"
         import typing
         from mother import pipeline_utils as mother_takes_care
         from mother import ml
@@ -31,22 +31,22 @@ To faciliatate configuration of the ML project a `MotherSettings` class is creat
         # training_pipeline.fit(X_train, y_train)
         #inference_pipeline = training_pipeline
         # inference_pipeline.predict(["CCC"])
-        ```
+        ~~~
 
     === "Configuration"
 
-        ```python exec="on" source="tabbed-left"
+        ~~~python exec="on" source="tabbed-left"
         from mother.settings import MotherSettings
         # generate some default settings
         my_settings: MotherSettings = MotherSettings.create()
         # settings override example
         my_settings.preprocessing.flags = ["STANDARDIZE", "NEUTRALIZE", "FLATTEN_STEREOCHEMISTRY"]
         print(my_settings)
-        ```
+        ~~~
 
     === "Preprocessing"
 
-        ```python exec="on" source="tabbed-left"
+        ~~~python exec="on" source="tabbed-left"
         from mother.preprocessing import PreprocessingConfig, SmilesToMolTransformer, StandardizerTransformer
         from sklearn import pipeline as sklearn_pipeline
         from mother.settings import MotherSettings
@@ -63,11 +63,11 @@ To faciliatate configuration of the ML project a `MotherSettings` class is creat
             memory=None,
         ).set_output(transform="pandas")
         print(preprocessor)
-        ```
+        ~~~
 
     === "Feature Generation"
 
-        ```python exec="on" source="tabbed-left"
+        ~~~python exec="on" source="tabbed-left"
         from mother.feature_generation import ChemicalDescriptors, MaccsFingerprints, MorganFingerprints
         from mother.settings import MotherSettings
         my_settings: MotherSettings = MotherSettings.create()
@@ -79,11 +79,11 @@ To faciliatate configuration of the ML project a `MotherSettings` class is creat
             ],
         ).set_output(transform="pandas")
         print(feature_generator)
-        ```
+        ~~~
 
     === "Feature Selection and Model Training"
 
-        ```python exec="on" source="tabbed-left"
+        ~~~python exec="on" source="tabbed-left"
         from sklearn import pipeline as sklearn_pipeline
         import sklearn.model_selection as skl_model_sel
         import mother.pipeline_utils as mother_takes_care
@@ -101,7 +101,7 @@ To faciliatate configuration of the ML project a `MotherSettings` class is creat
         ("ml_model", ml.CatboostRegressorMother(target_type=my_settings.model.target_type, logging_level="Silent")),
         ])
         print(model)
-        ```
+        ~~~
 
 ## MotherSettings class
 
@@ -114,6 +114,74 @@ To dump the default configuration as yaml file and to be able to modify it to yo
 ### Configuration Subsections
 
 In the following every highlighted subsection represents the settings for a different transformer. A specialty is the `model` section which contains also the information for feature selection which can be used to create a more complex feature selection pipeline. For example, `pipeline` contains all the required parameters to configure a scikit learn pipeline. Thus, parameters can be set once and reused at different stages of your pipeline.
+
+### Native CatBoost feature types
+
+Declare native feature columns in the `model` section using the same list-of-column-names interface:
+
+```yaml
+model:
+  algorithm: catboost
+  categorical_features: ["category"]
+  text_features: ["description"]
+  embedding_features: ["embedding"]
+```
+
+The runtime YAML template loaded by `MotherSettings.create()` defaults all three
+native-feature lists to `[]`, so numeric-only workflows need no overrides.
+Direct `ModelConfig` construction also defaults omitted lists to `[]`.
+Populate only the feature types present in your data, as in the example above.
+Column names must refer to the data reaching the
+estimator, not columns discarded by an earlier preprocessing or feature-generation step.
+
+| Setting | Value in each DataFrame cell | CatBoost parameter |
+|---|---|---|
+| `categorical_features` | Category label, such as a string or integer | `cat_features` |
+| `text_features` | Raw text string | `text_features` |
+| `embedding_features` | Fixed-length numeric vector, such as a list or NumPy array | `embedding_features` |
+
+An embedding column contains **one vector per row**. It is not a string containing
+a serialized vector or a list of separate scalar feature columns. Already expanded
+numeric descriptors or fingerprint dimensions can remain ordinary numeric features.
+Mother does not automatically generate embeddings or convert raw text into vectors;
+CatBoost processes the declared native inputs.
+
+```python
+from mother.settings import MotherSettings
+from mother.pipeline_utils import get_model
+
+native_settings = MotherSettings.create()
+native_settings.model.algorithm = "catboost"
+native_settings.model.categorical_features = ["category"]
+native_settings.model.text_features = ["description"]
+native_settings.model.embedding_features = ["embedding"]
+native_settings.pipeline.remainder = "passthrough"
+native_settings.pipeline.verbose_feature_names_out = False
+native_model = get_model(native_settings)
+assert native_model.get_params()["text_features"] == ["description"]
+assert native_model.get_params()["embedding_features"] == ["embedding"]
+```
+
+The feature-selection builder applies numeric selection to numeric columns,
+excluding declared categorical columns even when their labels are integers.
+These categorical columns pass through the remainder unless categorical imputation
+is enabled, in which case they are handled by the categorical imputer.
+Text and vector-valued embedding columns also pass through the remainder.
+Use `remainder="passthrough"`, pandas output
+(`.set_output(transform="pandas")`), and `verbose_feature_names_out=False` to retain
+those columns and their original names for CatBoost. `IMPUTE_CATEGORICAL` still
+applies only to categorical columns; supply valid, nonmissing text and embedding
+values yourself.
+
+Direct CatBoost declarations under `model.parameters` remain supported:
+`cat_features`, `text_features`, and `embedding_features`. Use column names rather
+than positional indices when feature selection can reorder or remove columns.
+Explicit declarations in `model.parameters` take precedence over the corresponding
+top-level lists. Keep the top-level lists consistent with the columns passed
+through feature selection. These settings are used for CatBoost; they do not
+add native text or embedding support to other models.
+CatBoost's own restrictions for the chosen task, loss, and processing options
+still apply.
 
 ~~~yaml hl_lines="8 15 18 31 36 45" title="mother/data/mother_config.yaml"
 --8<-- "src/mother/data/mother_config.yaml"
