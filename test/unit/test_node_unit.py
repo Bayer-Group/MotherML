@@ -681,7 +681,7 @@ def test_tree_dropout_rejects_probability_one():
 
 
 @pytest.mark.parametrize("parameter", ["input_dropout", "tree_dropout", "mlp_dropout", "embedding_dropout"])
-@pytest.mark.parametrize("value", [-0.1, 1.1, float("nan"), float("inf")])
+@pytest.mark.parametrize("value", [-0.1, 1.1, float("nan"), float("inf"), True, False])
 def test_dropout_rates_reject_invalid_values_without_mutation(parameter, value):
     for model_class in (NODERegressor, NODEClassifier):
         with pytest.raises(ValueError, match=parameter):

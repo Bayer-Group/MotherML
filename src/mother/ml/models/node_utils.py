@@ -54,10 +54,19 @@ module_logger = logging.getLogger(__name__)
 
 
 def validate_dropout_rates(**rates: float) -> None:
-    """Validate PyTorch dropout probabilities and the stricter whole-tree keep probability."""
+    """Validate PyTorch dropout probabilities and the stricter whole-tree keep probability.
+
+    Booleans are rejected although ``bool`` is a ``Real``: ``True`` would pass as rate 1 and silently zero
+    every feature or unit during training.
+    """
     for name, rate in rates.items():
         upper_inclusive = name != "tree_dropout"
-        valid = isinstance(rate, Real) and 0 <= rate and (rate <= 1 if upper_inclusive else rate < 1)
+        valid = (
+            not isinstance(rate, bool)
+            and isinstance(rate, Real)
+            and 0 <= rate
+            and (rate <= 1 if upper_inclusive else rate < 1)
+        )
         if not valid:
             interval = "[0, 1]" if upper_inclusive else "[0, 1)"
             raise ValueError(f"{name} must be in the interval {interval}, got {rate!r}.")
