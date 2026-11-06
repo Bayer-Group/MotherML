@@ -25,14 +25,12 @@ from mother.ml.models.m_randomForest import (
 from mother.optimization.core import MotherTuner
 from mother.pipeline_utils import get_feature_selection_pipeline, mother_cv
 
-# NODE ("node") depends on non-standard optional dependencies
-# (skorch, torch, zuko) and is neural-network based. It is covered separately
-# in the dedicated neural suites (test_node_unit.py,
-# test_node_uncertainty.py). Exclude it from the
-# generic algorithm sweep here so these CV tests remain runnable without the
-# optional "node" extra installed.
-_OPTIONAL_DEP_ALGORITHMS = {"node"}
-STANDARD_ALGORITHMS = [a for a in get_available_algorithms() if a not in _OPTIONAL_DEP_ALGORITHMS]
+# The generic algorithm sweeps below build each registry algorithm explicitly and have no branch for NODE
+# ("node"): its estimators need their own setup (skorch/torch training, NODE-specific parameters), so they
+# are covered by the dedicated NODE suites (test_node_unit.py, test_node_uncertainty.py,
+# test_node_target_scaling.py). Exclude it from the sweeps here.
+_ALGORITHMS_WITH_OWN_TEST_SUITES = {"node"}
+STANDARD_ALGORITHMS = [a for a in get_available_algorithms() if a not in _ALGORITHMS_WITH_OWN_TEST_SUITES]
 
 
 @pytest.fixture()

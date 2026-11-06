@@ -17,14 +17,12 @@ from mother.ml.models.m_catboost import (
     CatboostRegressorMother,
 )
 
-# NODE ("node") and the MLP/Flow heads ("mlp", "flow") depend on non-standard
-# optional dependencies (skorch, torch, zuko) and are neural-network based. They
-# are covered separately in the dedicated neural suites (test_node_unit.py,
-# test_node_uncertainty.py). Exclude them from the
-# generic algorithm sweep so these core tests remain runnable (e.g. in dist-test)
-# without the optional "node" extra installed.
-_OPTIONAL_DEP_ALGORITHMS = {"node", "mlp", "flow"}
-STANDARD_ALGORITHMS = [a for a in ml.get_available_algorithms() if a not in _OPTIONAL_DEP_ALGORITHMS]
+# The fixtures below build each registry algorithm explicitly and have no branch for NODE ("node"): its
+# estimators need their own setup (skorch/torch training, NODE-specific parameters), so they are covered by
+# the dedicated NODE suites (test_node_unit.py, test_node_uncertainty.py, test_node_target_scaling.py).
+# Exclude it from the generic algorithm sweep. "mlp" and "flow" are NODE head types, not registry algorithms.
+_ALGORITHMS_WITH_OWN_TEST_SUITES = {"node"}
+STANDARD_ALGORITHMS = [a for a in ml.get_available_algorithms() if a not in _ALGORITHMS_WITH_OWN_TEST_SUITES]
 
 
 @pytest.fixture(params=STANDARD_ALGORITHMS)
