@@ -4,7 +4,9 @@ from datetime import datetime
 import numpy as np
 import pytest
 import sklearn.base as skl_base
+import sklearn.exceptions
 from rdkit import Chem
+from sklearn.model_selection import GroupKFold
 
 import mother.cv as cv_module
 from mother.cv import core, cv_methods
@@ -439,3 +441,93 @@ def test_kmedoids_grouping_pickle_clone(test_cases):
 #     assert len(groups) == len(list(mols))
 #     assert isinstance(groups, pd.DataFrame)
 #     return groups
+
+
+def _mols(*smiles):
+    return [Chem.MolFromSmiles(smi) for smi in smiles]
+
+
+def _murcko_groups(smiles, scaffold="Murcko"):
+    mols = _mols(*smiles)
+    grouping = cv_module.MurckoScaffoldGroupingFromMols(scaffold=scaffold)
+    grouping.fit(mols)
+    return grouping.transform(mols).flatten().astype(int).tolist()
+
+
+class TestMurckoScaffoldGrouping:
+    @pytest.mark.parametrize("scaffold", ["NoScaffold", "Murcko", "GenericMurcko"])
+    def test_transform_returns_groups(self, test_cases, scaffold):
+        grouping = cv_module.MurckoScaffoldGroupingFromMols(scaffold=scaffold)
+        grouping.fit(test_cases)
+        groups = grouping.transform(test_cases)
+
+        assert groups.shape == (len(test_cases), 1)
+        assert not np.isnan(groups).any()
+        # ids are consecutive integers starting at 0
+        assert sorted(set(groups.flatten().tolist())) == list(range(len(set(groups.flatten().tolist()))))
+
+    def test_murcko_molecules_with_same_scaffold_share_a_group(self):
+        # benzene, toluene and ethylbenzene share the benzene scaffold; pyridine does not
+        groups = _murcko_groups(["c1ccccc1", "Cc1ccccc1", "CCc1ccccc1", "c1ccncc1"])
+
+        assert groups[0] == groups[1] == groups[2]
+        assert groups[3] != groups[0]
+
+    def test_murcko_group_ids_follow_first_appearance_order(self):
+        groups = _murcko_groups(["c1ccncc1", "c1ccccc1", "Cc1ccncc1", "Cc1ccccc1"])
+
+        assert groups == [0, 1, 0, 1]
+
+    def test_murcko_acyclic_molecules_keep_their_own_group(self):
+        # molecules without a ring have no scaffold, so each distinct molecule is its own group
+        groups = _murcko_groups(["CCO", "CCCC", "CCO"])
+
+        assert groups[0] == groups[2]
+        assert groups[0] != groups[1]
+
+    def test_no_scaffold_groups_only_identical_molecules(self):
+        groups = _murcko_groups(["c1ccccc1", "Cc1ccccc1", "c1ccccc1", "CCO"], scaffold="NoScaffold")
+
+        assert groups == [0, 1, 0, 2]
+
+    def test_generic_murcko_ignores_atom_types(self):
+        # benzene, cyclohexane and pyridine are the same generic (all-carbon, single-bond) ring
+        groups = _murcko_groups(["c1ccccc1", "C1CCCCC1", "c1ccncc1", "c1ccoc1"], scaffold="GenericMurcko")
+
+        assert groups[0] == groups[1] == groups[2]
+        assert groups[3] != groups[0]  # five-membered ring is a different topology
+
+    def test_groups_are_deterministic(self, test_cases):
+        first = cv_module.MurckoScaffoldGroupingFromMols(scaffold="Murcko").fit(test_cases).transform(test_cases)
+        second = cv_module.MurckoScaffoldGroupingFromMols(scaffold="Murcko").fit(test_cases).transform(test_cases)
+
+        np.testing.assert_array_equal(first, second)
+
+    def test_transform_before_fit_raises(self, test_cases):
+        grouping = cv_module.MurckoScaffoldGroupingFromMols()
+
+        with pytest.raises(sklearn.exceptions.NotFittedError):
+            grouping.transform(test_cases)
+
+    def test_invalid_molecule_is_not_silently_grouped(self):
+        grouping = cv_module.MurckoScaffoldGroupingFromMols(scaffold="Murcko")
+        grouping.fit([])
+
+        with pytest.raises(Exception):
+            grouping.transform([None])
+
+    def test_clone_and_pickle_keep_scaffold_setting(self):
+        grouping = cv_module.MurckoScaffoldGroupingFromMols(scaffold="GenericMurcko")
+
+        assert skl_base.clone(grouping).scaffold == "GenericMurcko"
+        assert pickle.loads(pickle.dumps(grouping)).scaffold == "GenericMurcko"
+
+    def test_groups_work_with_group_kfold(self):
+        # a scaffold must never be split between train and test folds
+        smiles = ["c1ccccc1", "Cc1ccccc1", "CCc1ccccc1", "c1ccncc1", "Cc1ccncc1", "c1ccoc1", "Cc1ccoc1", "C1CCCCC1"]
+        mols = _mols(*smiles)
+        grouping = cv_module.MurckoScaffoldGroupingFromMols(scaffold="Murcko").fit(mols)
+        groups = grouping.transform(mols).flatten()
+
+        for train_idx, test_idx in GroupKFold(n_splits=3).split(mols, groups=groups):
+            assert set(groups[train_idx]).isdisjoint(set(groups[test_idx]))
