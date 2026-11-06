@@ -439,3 +439,53 @@ def test_chemeleon_sklearn_contract() -> None:
 
 if __name__ == "__main__":
     pytest.main()
+
+
+@pytest.mark.parametrize("name", ["output_dim", "batch_size"])
+@pytest.mark.parametrize("invalid", [0, -1, 2.5, True, None])
+def test_chemeleon_parameters_are_validated_in_fit_and_after_set_params(name, invalid):
+    embedder = lambda smiles_batch: np.ones((len(smiles_batch), 2), dtype=np.float32)  # noqa: E731
+    molecule = Chem.MolFromSmiles("CCO")
+    params = {"output_dim": 2, "batch_size": 2, "embedder": embedder}
+
+    # __init__ only stores the parameters (scikit-learn convention), so invalid values surface in fit.
+    transformer = CheMeleonFingerprintTransformer(**{**params, name: invalid})
+    with pytest.raises(ValueError, match=f"{name} must be a positive integer"):
+        transformer.fit([molecule])
+
+    # set_params bypasses __init__, so it must receive the same check.
+    transformer = CheMeleonFingerprintTransformer(**params).set_params(**{name: invalid})
+    with pytest.raises(ValueError, match=f"{name} must be a positive integer"):
+        transformer.fit([molecule])
+
+    # A value changed after fit is caught before it fails with a range() error inside transform.
+    fitted = CheMeleonFingerprintTransformer(**params).fit([molecule])
+    fitted.set_params(**{name: invalid})
+    with pytest.raises(ValueError, match=f"{name} must be a positive integer"):
+        fitted.transform([molecule])
+
+
+def test_chemeleon_numpy_integer_parameters_are_accepted():
+    embedder = lambda smiles_batch: np.ones((len(smiles_batch), 2), dtype=np.float32)  # noqa: E731
+    transformer = CheMeleonFingerprintTransformer(output_dim=np.int64(2), batch_size=np.int64(1), embedder=embedder)
+
+    assert transformer.fit([Chem.MolFromSmiles("CCO")]).transform([Chem.MolFromSmiles("CCO")]).shape == (1, 2)
+
+
+@pytest.mark.parametrize("name", ["output_dim", "batch_size"])
+@pytest.mark.parametrize("invalid", [0, -1, 2.5, True, None])
+def test_chemeleon_factory_validates_parameters_when_building_the_transformer(name, invalid):
+    embedder = lambda smiles_batch: np.ones((len(smiles_batch), 2), dtype=np.float32)  # noqa: E731
+    params = {"output_dim": 2, "batch_size": 2, "embedder": embedder}
+
+    factory = CheMeleonFingerprintFactory(**{**params, name: invalid})  # construction only stores
+    with pytest.raises(ValueError, match=f"{name} must be a positive integer"):
+        factory.get_fingerprint_generator()
+
+    # A value changed on a valid factory after construction gets the same check.
+    factory = CheMeleonFingerprintFactory(**params)
+    setattr(factory, name, invalid)
+    with pytest.raises(ValueError, match=f"{name} must be a positive integer"):
+        factory.get_fingerprint_generator()
+
+    assert CheMeleonFingerprintFactory(**params).get_fingerprint_generator().batch_size == 2

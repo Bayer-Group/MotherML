@@ -3,6 +3,7 @@ import logging
 import shutil
 import tempfile
 import urllib.request
+from numbers import Integral
 from pathlib import Path
 from typing import Any, Callable, Iterable, List, Optional, Sequence
 
@@ -159,11 +160,7 @@ class CheMeleonFingerprintTransformer(BaseEstimator, TransformerMixin):
         embedding_column_name: str = "CheMeleonGNNFP",
         return_separate_columns: bool = True,
     ) -> None:
-        """Validate and store CheMeleon embedding configuration for later use in `fit`."""
-        if output_dim <= 0:
-            raise ValueError(f"output_dim must be a positive integer, got {output_dim}.")
-        if batch_size <= 0:
-            raise ValueError(f"batch_size must be a positive integer, got {batch_size}.")
+        """Store the CheMeleon embedding configuration; it is validated in `fit` and `transform`."""
         self.output_dim = output_dim
         self.batch_size = batch_size
         self.checkpoint_path = checkpoint_path
@@ -172,8 +169,16 @@ class CheMeleonFingerprintTransformer(BaseEstimator, TransformerMixin):
         self.embedding_column_name = embedding_column_name
         self.return_separate_columns = return_separate_columns
 
+    def _validate_params(self) -> None:
+        """Check the current parameters, so values changed through `set_params` get the same checks."""
+        for name in ("output_dim", "batch_size"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, Integral) or value < 1:
+                raise ValueError(f"{name} must be a positive integer, got {value!r}.")
+
     def fit(self, X: Iterable, y: object | None = None) -> "CheMeleonFingerprintTransformer":
         """Load the CheMeleon embedder (or use the injected one) and mark the transformer as fitted."""
+        self._validate_params()
         if self.embedder is None:
             self.embedder_ = _default_chemeleon_embedder(
                 checkpoint_path=self.checkpoint_path,
@@ -188,6 +193,7 @@ class CheMeleonFingerprintTransformer(BaseEstimator, TransformerMixin):
     def transform(self, X: Iterable) -> np.ndarray | pd.DataFrame:
         """Convert RDKit Mol objects to CheMeleon fingerprints, NaN-filling any invalid molecules."""
         check_is_fitted(self, "is_fitted_")
+        self._validate_params()  # set_params may have changed batch_size or output_dim after fit
 
         values = np.asarray(X if hasattr(X, "__array__") else list(X), dtype=object)
         if values.ndim not in (1, 2) or (values.ndim == 2 and values.shape[1] != 1):
@@ -257,11 +263,7 @@ class CheMeleonFingerprintFactory:
         embedding_column_name: str = "CheMeleonGNNFP",
         return_separate_columns: bool = True,
     ) -> None:
-        """Validate and store the configuration used to build fingerprint transformers."""
-        if output_dim <= 0:
-            raise ValueError(f"output_dim must be a positive integer, got {output_dim}.")
-        if batch_size <= 0:
-            raise ValueError(f"batch_size must be a positive integer, got {batch_size}.")
+        """Store the configuration used to build fingerprint transformers (validated when one is built)."""
         self.output_dim = output_dim
         self.batch_size = batch_size
         self.checkpoint_path = checkpoint_path
@@ -271,11 +273,15 @@ class CheMeleonFingerprintFactory:
         self.return_separate_columns = return_separate_columns
 
     def get_fingerprint_generator(self) -> CheMeleonFingerprintTransformer:
-        """Build a `CheMeleonFingerprintTransformer` using this factory's stored configuration."""
+        """Build a `CheMeleonFingerprintTransformer` using this factory's stored configuration.
+
+        The stored output_dim and batch_size are validated here, so values changed after construction are
+        checked as well.
+        """
         if self.embedder is None:
             # Keep dependency optional until the factory is actively used.
             _check_chemprop()
-        return CheMeleonFingerprintTransformer(
+        transformer = CheMeleonFingerprintTransformer(
             output_dim=self.output_dim,
             batch_size=self.batch_size,
             checkpoint_path=self.checkpoint_path,
@@ -284,3 +290,5 @@ class CheMeleonFingerprintFactory:
             embedding_column_name=self.embedding_column_name,
             return_separate_columns=self.return_separate_columns,
         )
+        transformer._validate_params()
+        return transformer
