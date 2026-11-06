@@ -11,6 +11,7 @@ from typing import Any, List, Optional
 import torch
 import torch.nn as nn
 
+from mother.errors import ExtrasDependencyImportError
 from mother.ml.models.node_utils import validate_dropout_rates
 
 try:
@@ -164,9 +165,10 @@ class FlowHead(nn.Module):
         """Build a zuko conditional flow of type `flow_type`, with an optional MLP conditioner encoder."""
         super().__init__()
         validate_dropout_rates(mlp_dropout=mlp_dropout)
-        if zuko is None:  # pragma: no cover
-            raise ModuleNotFoundError(
-                "zuko is required for FlowHead. Install optional dependencies, e.g. `pip install mother-ml[node]`."
+        if zuko is None:
+            raise ExtrasDependencyImportError(
+                "node",
+                ModuleNotFoundError("No module named 'zuko' (required for flow heads)", name="zuko"),
             )
 
         self.mlp_hidden_dims = list(mlp_hidden_dims) if mlp_hidden_dims else None

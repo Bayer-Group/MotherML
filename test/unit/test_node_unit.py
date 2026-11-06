@@ -3763,3 +3763,41 @@ def test_odst_modules_run_under_float64_default_dtype_and_follow_it():
             }
     finally:
         torch.set_default_dtype(previous)
+
+
+def test_flow_head_without_zuko_raises_the_standard_extras_error(monkeypatch):
+    from mother.errors import ExtrasDependencyImportError
+    from mother.ml.models import node_head_utils
+
+    monkeypatch.setattr(node_head_utils, "zuko", None)
+
+    with pytest.raises(ExtrasDependencyImportError, match="zuko") as error:
+        node_head_utils.FlowHead(input_dim=4, output_dim=1)
+
+    assert "mother-ml[node]" in str(error.value)  # the standard installation hint
+
+    # The estimator surfaces the same error when it builds a flow head during fit.
+    features = np.random.default_rng(0).normal(size=(16, 3)).astype(np.float32)
+    model = NODERegressor(head_type="flow", num_trees=4, depth=2, max_epochs=1, device="cpu", verbose=0)
+    with pytest.raises(ExtrasDependencyImportError):
+        model.fit(features, features[:, 0])
+
+
+def test_odst_temperature_initialization_matches_per_column_percentiles():
+    """The temperatures are one data quantile of |x - threshold| per tree and depth (no Python loop)."""
+    from mother.ml.models.node_utils import ODST
+
+    torch.manual_seed(0)
+    layer = ODST(in_features=5, num_trees=6, depth=3, tree_output_dim=1, threshold_init_cutoff=1.0, random_state=0)
+    inputs = torch.randn(64, 5)
+
+    layer(inputs)  # the first call runs the data-aware initialization
+
+    selectors = layer.choice_function(layer.feature_selection_logits, dim=0)
+    values = torch.einsum("bi,ind->bnd", inputs, selectors).detach().numpy()
+    diffs = np.abs(values - layer.feature_thresholds.detach().numpy())
+    expected = np.zeros(diffs.shape[1:])
+    for tree in range(expected.shape[0]):
+        for depth in range(expected.shape[1]):
+            expected[tree, depth] = np.percentile(diffs[:, tree, depth], q=100.0)
+    np.testing.assert_allclose(layer.log_temperatures.detach().numpy(), np.log(expected + 1e-6), rtol=1e-5, atol=1e-6)

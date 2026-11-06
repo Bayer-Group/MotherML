@@ -794,13 +794,10 @@ class ODST(ModuleWithInit):
                 feature_threshold_diffs = (
                     abs(feature_values - self.feature_thresholds[tree_slice]).detach().cpu().numpy()
                 )
-                temperatures = np.zeros([stop - start, self.depth])
-                for tree_idx in range(stop - start):
-                    for depth_idx in range(self.depth):
-                        temperatures[tree_idx, depth_idx] = np.percentile(
-                            feature_threshold_diffs[:, tree_idx, depth_idx],
-                            q=100 * min(1.0, self.threshold_init_cutoff),
-                        )
+                # Every tree and depth uses the same quantile, so one call covers the whole slice.
+                temperatures = np.percentile(
+                    feature_threshold_diffs, q=100 * min(1.0, self.threshold_init_cutoff), axis=0
+                )
 
                 temperatures /= max(1.0, self.threshold_init_cutoff)
                 self.log_temperatures[tree_slice].copy_(
