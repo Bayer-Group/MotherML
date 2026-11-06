@@ -238,7 +238,8 @@ def test_node_flow_balsa_emd_opt_signal_and_total_nan():
         knowledge_method="balsa_emd",
         uncertainty_for_opt=True,
     )
-    opt_vals = opt_signal.to_numpy(dtype=float)
+    assert list(opt_signal.columns) == ["knowledge_uncertainty"]
+    opt_vals = opt_signal["knowledge_uncertainty"].to_numpy(dtype=float)
     pred_vals = pred["knowledge_uncertainty"].to_numpy(dtype=float)
     assert opt_vals.shape == pred_vals.shape
     assert np.isfinite(opt_vals).all()
@@ -313,11 +314,27 @@ def test_multilabel_uncertainty_uses_bernoulli_entropies(monkeypatch, experts):
     expected_total = -(
         mean_probabilities * np.log(mean_probabilities) + (1 - mean_probabilities) * np.log1p(-mean_probabilities)
     ).sum(axis=-1)
-    np.testing.assert_array_equal(np.stack(result["pred"]), mean_probabilities > 0.5)
-    np.testing.assert_allclose(np.stack(result["mean_predictions"]), mean_probabilities)
+    labels = range(mean_probabilities.shape[1])
+    assert list(result.columns) == (
+        [f"target_{i}_pred" for i in labels]
+        + [f"target_{i}_mean_predictions" for i in labels]
+        + ["knowledge_uncertainty", "data_uncertainty", "total_uncertainty"]
+    )
+    np.testing.assert_array_equal(result[[f"target_{i}_pred" for i in labels]].to_numpy(), mean_probabilities > 0.5)
+    np.testing.assert_allclose(result[[f"target_{i}_mean_predictions" for i in labels]].to_numpy(), mean_probabilities)
     np.testing.assert_allclose(result["data_uncertainty"], expected_data)
     np.testing.assert_allclose(result["total_uncertainty"], expected_total)
     np.testing.assert_allclose(result["knowledge_uncertainty"], expected_total - expected_data, atol=1e-12)
+
+    def bernoulli_entropy(p):
+        return -(p * np.log(p) + (1 - p) * np.log1p(-p))
+
+    per_label_knowledge = np.maximum(
+        bernoulli_entropy(mean_probabilities) - bernoulli_entropy(probabilities).mean(axis=0), 0.0
+    )
+    acquisition = model.predict_uncertainty(np.zeros((1, 3), dtype=np.float32), num_samples=2, uncertainty_for_opt=True)
+    assert list(acquisition.columns) == ["knowledge_uncertainty"]
+    np.testing.assert_allclose(acquisition["knowledge_uncertainty"], per_label_knowledge.max(axis=1), atol=1e-12)
 
 
 @pytest.mark.parametrize("model_class", [NODERegressor, NODEClassifier])
@@ -928,7 +945,9 @@ def test_mc_passes_keep_rows_aligned_with_changing_batch_sizes(tiny_regression_d
         if task == "classification"
         else inputs[:, 0]
     )
-    np.testing.assert_allclose(result["mean_predictions"], expected, atol=1e-4)
+    # Classifiers leave mean_predictions unset; the probability is in proba_1.
+    column = "proba_1" if task == "classification" else "mean_predictions"
+    np.testing.assert_allclose(result[column], expected, atol=1e-4)
     assert batches.iterations == (1 if task == "classification" else 2)
     assert all(not module.training for module in model.module_.modules())
 
@@ -941,3 +960,96 @@ def test_classifier_mc_dropout_requires_positive_sample_count(tiny_regression_da
     )
     with pytest.raises(ValueError, match="num_samples must be positive"):
         model.predict_uncertainty(features[:5], num_samples=count)
+
+
+def _cv_frame():
+    from sklearn.model_selection import KFold
+
+    rng = np.random.default_rng(0)
+    X = pd.DataFrame(rng.normal(size=(60, 4)), columns=list("abcd"), index=[f"m{i}" for i in range(60)])
+    return X, KFold(2, shuffle=True, random_state=0)
+
+
+_NODE_CV_PARAMS = dict(num_trees=4, depth=2, max_epochs=2, input_dropout=0.1, device="cpu", verbose=0)
+
+
+def test_binary_classifier_uncertainty_layout_in_mother_cv():
+    from mother.pipeline_utils import mother_cv
+
+    X, cv = _cv_frame()
+    y = pd.Series((X["a"] > 0).astype(int), name="y")
+
+    node = mother_cv(NODEClassifier(**_NODE_CV_PARAMS), X=X, y=y, cv=cv)
+
+    node_columns = list(node.columns)
+    assert node_columns[:6] == [
+        "pred_y",
+        "pred_proba_0",
+        "pred_proba_1",
+        "pred_knowledge_uncertainty",
+        "pred_data_uncertainty",
+        "pred_total_uncertainty",
+    ]
+    assert "pred_mean_predictions" not in node_columns  # unset for classifiers, so mother_cv drops it
+    np.testing.assert_allclose(node[["pred_proba_0", "pred_proba_1"]].sum(axis=1), 1.0, atol=1e-5)
+    assert (node["pred_y"] == (node["pred_proba_1"] > 0.5).astype(int)).all()
+
+
+def test_multiclass_classifier_proba_columns_in_mother_cv():
+    from mother.pipeline_utils import mother_cv
+
+    X, cv = _cv_frame()
+    y = pd.Series(pd.cut(X["a"], [-9, -0.5, 0.5, 9], labels=[0, 1, 2]).astype(int), name="y")
+
+    result = mother_cv(NODEClassifier(**_NODE_CV_PARAMS), X=X, y=y, cv=cv)
+
+    assert list(result.columns[:4]) == ["pred_y", "pred_proba_0", "pred_proba_1", "pred_proba_2"]
+    np.testing.assert_allclose(result[["pred_proba_0", "pred_proba_1", "pred_proba_2"]].sum(axis=1), 1.0, atol=1e-5)
+    assert (
+        result["pred_y"] == result[["pred_proba_0", "pred_proba_1", "pred_proba_2"]].to_numpy().argmax(axis=1)
+    ).all()
+
+
+def test_multilabel_and_multitarget_outputs_work_in_mother_cv():
+    from mother.pipeline_utils import mother_cv
+
+    X, cv = _cv_frame()
+    labels = pd.DataFrame({"l0": (X["a"] > 0).astype(int), "l1": (X["b"] > 0).astype(int)})
+    classifier = NODEClassifier(
+        criterion=torch.nn.BCEWithLogitsLoss, model_type="classification_multilabel", **_NODE_CV_PARAMS
+    )
+    result = mother_cv(classifier, X=X, y=labels, cv=cv)
+    assert {"pred_target_0_pred", "pred_target_1_pred", "pred_knowledge_uncertainty"} <= set(result.columns)
+    assert not any(result[f"pred_target_{i}_pred"].map(lambda v: hasattr(v, "__len__")).any() for i in range(2))
+    assert {"pred_proba_l0", "pred_proba_l1"} <= set(result.columns)
+
+    targets = pd.DataFrame({"t0": X["a"] * 10 + 100, "t1": X["b"] * 0.1})
+    for params in ({"head_type": "linear"}, {"head_type": "flow", "flow_type": "NICE"}):
+        regression = mother_cv(NODERegressor(**params, **_NODE_CV_PARAMS), X=X, y=targets, cv=cv)
+        assert {"pred_target_0_pred", "pred_target_1_pred", "pred_target_0_mean_predictions"} <= set(regression.columns)
+        assert np.isfinite(regression[["pred_target_0_pred", "pred_target_1_pred"]].to_numpy(dtype=float)).all()
+
+
+@pytest.mark.parametrize(
+    "negative, positive",
+    [("safe", "toxic"), (5, 7)],
+    ids=["string_labels", "non_contiguous_integer_labels"],
+)
+def test_classifier_probability_columns_are_positional_in_mother_cv(negative, positive):
+    from mother.pipeline_utils import mother_cv
+
+    X, cv = _cv_frame()
+    y = pd.Series(np.where(X["a"] > 0, positive, negative), index=X.index, name="y")
+    model = NODEClassifier(**_NODE_CV_PARAMS).fit(X, y)
+
+    direct = model.predict_uncertainty(X.iloc[:5], num_samples=5)
+    ordered = np.asarray(model.classes_)  # sorted labels: the class order of proba_0, proba_1, ...
+    assert list(direct.columns[:3]) == ["pred", "proba_0", "proba_1"]
+    assert direct["mean_predictions"].isna().all()  # unset for classifiers; probabilities are in proba_*
+    np.testing.assert_allclose(direct[["proba_0", "proba_1"]].sum(axis=1), 1.0, atol=1e-5)
+
+    result = mother_cv(NODEClassifier(**_NODE_CV_PARAMS), X=X, y=y, cv=cv)
+    assert list(result.columns[:3]) == ["pred_y", "pred_proba_0", "pred_proba_1"]
+    assert set(result["pred_y"]) <= {negative, positive}
+    probabilities = result[["pred_proba_0", "pred_proba_1"]].to_numpy()
+    assert (result["pred_y"].to_numpy() == ordered[probabilities.argmax(axis=1)]).all()

@@ -2740,17 +2740,19 @@ class NODERegressor(BaseNODEEstimator):
                   ``data_uncertainty`` and ``total_uncertainty`` stay single columns
                   (one likelihood across all targets) while ``pred`` and
                   ``mean_predictions`` are per target. Non-flow heads report per-target MC-dropout
-                  uncertainty.
+                  ``knowledge_uncertainty``; like CatBoost, their ``data_uncertainty`` and
+                  ``total_uncertainty`` are NaN for multi-target regression.
                 - If ``return_quantiles=True``: A tuple containing:
                     - The DataFrame described above.
                     - ``np.ndarray`` of quantile values with shape
                       ``(n_samples, n_quantiles)``.
-                - If ``uncertainty_for_opt=True``: ``pd.Series`` of
-                  ``knowledge_uncertainty`` (epistemic) — BALSA-EMD scores for a
-                  flow head with dropout, MC-dropout std/IQR for a non-flow head
-                  (the maximum across targets for multi-target regression, as in CatBoost) —
-                  or of ``total_uncertainty`` when no epistemic estimate is
-                  available (flow head without dropout).
+                - If ``uncertainty_for_opt=True``: a ``pd.DataFrame`` with exactly one column
+                  (like CatBoost and RandomForest): ``knowledge_uncertainty`` (epistemic) —
+                  BALSA-EMD scores for a flow head with dropout, MC-dropout std/IQR for a
+                  non-flow head — or ``total_uncertainty`` when no epistemic estimate is
+                  available (flow head without dropout). For multi-target regression with a
+                  non-flow head the ``knowledge_uncertainty`` column holds the maximum
+                  per-target value, the same reduction CatBoost applies.
 
         Example:
             >>> # Flow head with dropout (both uncertainties)
@@ -2932,23 +2934,25 @@ class NODERegressor(BaseNODEEstimator):
                     "mean_predictions": mean_predictions,
                     "knowledge_uncertainty": uncertainties,
                     "data_uncertainty": None,
-                    "total_uncertainty": uncertainties,
+                    # Like CatBoost, multi-target regression leaves total_uncertainty unset (NaN).
+                    "total_uncertainty": uncertainties if n_targets == 1 else None,
                 },
                 index,
                 n_targets,
             )
 
         if uncertainty_for_opt:
+            # One-column DataFrame, as returned by CatBoost and RandomForest.
             if n_targets > 1 and not is_flow_head:
-                # Like CatBoost: reduce the per-target epistemic scores to the max across targets.
+                # Multi-target: the max of the per-target epistemic scores, named for what it holds.
                 knowledge_columns = [f"target_{i}_knowledge_uncertainty" for i in range(n_targets)]
-                return results[knowledge_columns].astype(float).max(axis=1).rename("knowledge_uncertainty")
+                acquisition = results[knowledge_columns].astype(float).max(axis=1)
+                return pd.DataFrame({"knowledge_uncertainty": acquisition}, index=results.index)
             # Epistemic (knowledge) uncertainty is the active-learning acquisition
             # signal (BALSA-EMD for flow+dropout); fall back to total_uncertainty for
             # a flow head without dropout, which exposes no epistemic estimate.
-            if results["knowledge_uncertainty"].notna().any():
-                return results.loc[:, "knowledge_uncertainty"]
-            return results.loc[:, "total_uncertainty"]
+            column = "knowledge_uncertainty" if results["knowledge_uncertainty"].notna().any() else "total_uncertainty"
+            return results[[column]]
 
         if return_quantiles:
             return results, quantile_predictions
@@ -3760,10 +3764,11 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
         returning predictions along with uncertainty estimates in a standardised
         DataFrame.
 
-        For multi-label classification, ``pred`` contains a binary vector and
-        ``mean_predictions`` contains a probability vector for each row. The
+        For multi-label classification, ``pred`` and ``mean_predictions`` (probability) are
+        reported per label as ``target_{i}_pred`` / ``target_{i}_mean_predictions``. The
         uncertainty columns sum the per-label Bernoulli entropies and mutual
-        information; these are marginal-label summaries, not joint-label entropy.
+        information; these are marginal-label summaries, not joint-label entropy, so they
+        stay single columns that describe all labels together.
 
         Args:
             X: Input features.
@@ -3778,10 +3783,14 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
 
         Returns:
             pd.DataFrame:
-                - If ``return_quantiles=False``: DataFrame with columns:
-                    - ``'mean_predictions'``: Mean-over-dropout probability of the
-                      reported class (class 1 for binary, predicted-class prob for
-                      multiclass).
+                - If ``return_quantiles=False``: DataFrame with columns (binary and
+                  multiclass, CatBoost layout: ``pred``, then ``proba_0 … proba_{C-1}`` — the mean
+                  MC-dropout class probabilities, positional in ``classes_`` order — then the
+                  terms below):
+                    - ``'pred'``: Predicted class label.
+                    - ``'mean_predictions'``: Unset (``None``) for classifiers, as in CatBoost;
+                      the probabilities are in the ``proba_*`` columns. (Multi-label: the
+                      per-label probability, as ``target_{i}_mean_predictions``.)
                     - ``'knowledge_uncertainty'``: Epistemic uncertainty — mutual
                       information ``total - data`` (matches CatBoost).
                     - ``'data_uncertainty'``: Aleatoric uncertainty — mean per-pass
@@ -3789,7 +3798,8 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
                     - ``'total_uncertainty'``: Entropy of the mean predictive
                       distribution.
                 - If ``uncertainty_for_opt=True``: ``pd.DataFrame`` with 1 column
-                    ``'knowledge_uncertainty'``.
+                    ``'knowledge_uncertainty'`` (for multi-label classification the
+                    highest per-label epistemic uncertainty of each row).
 
         Raises:
             ValueError: If ``return_quantiles=True`` (quantiles require a flow head).
@@ -3812,17 +3822,20 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
         #   total     = entropy of the mean predictive distribution  H(mean_p)
         #   data      = mean per-pass entropy (expected entropy)      E_t[H(p_t)]
         #   knowledge = total - data (mutual information; 0 when dropout inactive)
+        per_label_knowledge: Optional[npt.NDArray[Any]] = None
         if isinstance(self.criterion_, nn.BCEWithLogitsLoss):
             pred = (mean_probs > 0.5).astype(int)
             mean_predictions = mean_probs
             mean_bernoulli = np.stack([mean_probs, 1.0 - mean_probs], axis=-1)
             per_pass_bernoulli = np.stack([probabilities, 1.0 - probabilities], axis=-1)
-            total_uncertainty = entropy(mean_bernoulli, axis=-1).sum(axis=-1)
+            per_label_total = entropy(mean_bernoulli, axis=-1)  # (n_datapoints, n_labels)
+            per_label_data = entropy(per_pass_bernoulli, axis=-1).mean(axis=0)
+            per_label_knowledge = np.maximum(per_label_total - per_label_data, 0.0)
+            total_uncertainty = per_label_total.sum(axis=-1)
             per_pass_entropy = entropy(per_pass_bernoulli, axis=-1).sum(axis=-1)
         else:
             pred = mean_probs.argmax(axis=1)
             pred = self._decode_class_labels(pred)
-            mean_predictions = mean_probs[:, 1] if mean_probs.shape[1] == 2 else mean_probs.max(axis=1)
             total_uncertainty = entropy(mean_probs, axis=1)
             per_pass_entropy = entropy(probabilities, axis=2)
         data_uncertainty = per_pass_entropy.mean(axis=0)
@@ -3831,22 +3844,49 @@ class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
 
         index = X.index if isinstance(X, pd.DataFrame) else None
 
-        results = pd.DataFrame(
-            {
-                "pred": _prepare_for_dataframe(pred),
-                "mean_predictions": _prepare_for_dataframe(mean_predictions),
-                "knowledge_uncertainty": knowledge_uncertainty,
-                "data_uncertainty": data_uncertainty,
-                "total_uncertainty": total_uncertainty,
-            },
-            index=index,
-        )
+        if isinstance(self.criterion_, nn.BCEWithLogitsLoss):
+            # Multi-label: per-label pred / mean probability. The uncertainties sum the label entropies,
+            # so they describe all labels together and stay single columns (mother_cv derives the
+            # per-label probability columns from predict_proba itself).
+            results = _build_uncertainty_frame(
+                {
+                    "pred": pred,
+                    "mean_predictions": mean_predictions,
+                    "knowledge_uncertainty": knowledge_uncertainty,
+                    "data_uncertainty": data_uncertainty,
+                    "total_uncertainty": total_uncertainty,
+                },
+                index,
+                mean_probs.shape[1],
+                ("knowledge_uncertainty", "data_uncertainty", "total_uncertainty"),
+            )
+        else:
+            # Binary / multiclass, exactly the CatBoost layout: pred, proba_<class index> (positional, in
+            # ``classes_`` order), then the uncertainty terms. mean_predictions is unset for classifiers, as in
+            # CatBoost. The probabilities are the MC-dropout means, consistent with ``pred``.
+            proba = pd.DataFrame(mean_probs, index=index, columns=[f"proba_{i}" for i in range(mean_probs.shape[1])])
+            results = pd.concat(
+                [
+                    pd.DataFrame({"pred": _prepare_for_dataframe(pred)}, index=index),
+                    proba,
+                    pd.DataFrame(
+                        {
+                            "mean_predictions": None,
+                            "knowledge_uncertainty": knowledge_uncertainty,
+                            "data_uncertainty": data_uncertainty,
+                            "total_uncertainty": total_uncertainty,
+                        },
+                        index=index,
+                    ),
+                ],
+                axis=1,
+            )
 
         if uncertainty_for_opt:
-            return pd.DataFrame(
-                {"knowledge_uncertainty": results["knowledge_uncertainty"]},
-                index=index,
-            )
+            # Multi-label: the most uncertain label (max per-label epistemic score), as CatBoost does for
+            # multi-target; the reported knowledge_uncertainty column is the sum over labels.
+            acquisition = knowledge_uncertainty if per_label_knowledge is None else per_label_knowledge.max(axis=1)
+            return pd.DataFrame({"knowledge_uncertainty": acquisition}, index=index)
 
         return results
 

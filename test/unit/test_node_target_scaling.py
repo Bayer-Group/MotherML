@@ -172,7 +172,8 @@ def test_flow_uncertainty_dataframe_quantiles_and_acquisition_units(fitted_pair,
         _seed()
         frame = scaled.predict_uncertainty(features, **{**kwargs, "knowledge_method": "balsa_emd"})
         column = "knowledge_uncertainty" if frame["knowledge_uncertainty"].notna().any() else "total_uncertainty"
-        np.testing.assert_allclose(acquisition, frame[column])
+        assert list(acquisition.columns) == [column]
+        np.testing.assert_allclose(acquisition[column], frame[column])
 
 
 def test_flow_scaler_uses_only_internal_training_partition_and_refits():
@@ -335,6 +336,16 @@ def test_float64_default_dtype_does_not_break_models_or_leak():
         classifier = NODEClassifier(num_trees=4, depth=2, max_epochs=2, device="cpu", verbose=0)
         classifier.fit(features, (features[:, 0] > 0).astype(int))
         assert classifier.predict_proba(features[:3]).dtype == np.float32
+
+        # Multi-target flows score epistemic uncertainty with random projections (BALSA-EMD), which must
+        # follow the dtype of the samples as well.
+        multi_features, multi_targets = _data(2)
+        flow = _model(max_epochs=2, input_dropout=0.1).fit(multi_features, multi_targets)
+        options = dict(num_samples=5, num_mc_samples=3, num_flow_samples=4)
+        scores = flow.predict_uncertainty(multi_features[:3], knowledge_method="balsa_emd", **options)
+        assert np.isfinite(scores["knowledge_uncertainty"].to_numpy(dtype=float)).all()
+        acquisition = flow.predict_uncertainty(multi_features[:3], uncertainty_for_opt=True, **options)
+        assert np.isfinite(acquisition["knowledge_uncertainty"].to_numpy(dtype=float)).all()
         assert torch.get_default_dtype() == torch.float64
     finally:
         torch.set_default_dtype(previous)
@@ -347,7 +358,7 @@ def test_single_target_uncertainty_columns_unchanged():
         assert list(result.columns) == list(UNCERTAINTY_FIELDS)
 
 
-def test_nonflow_multitarget_uncertainty_follows_catboost_layout():
+def test_nonflow_multitarget_uncertainty_layout():
     features, targets = _data(2)
     X = pd.DataFrame(features, columns=list("abc"), index=[f"mol_{i}" for i in range(len(features))])
     model = _model(head_type="linear", input_dropout=0.15, tree_dropout=0.15, max_epochs=2).fit(X, targets)
@@ -362,9 +373,8 @@ def test_nonflow_multitarget_uncertainty_follows_catboost_layout():
     knowledge = result[["target_0_knowledge_uncertainty", "target_1_knowledge_uncertainty"]].to_numpy(dtype=float)
     assert (knowledge > 0).all()
     assert result[["target_0_data_uncertainty", "target_1_data_uncertainty"]].isna().all().all()
-    np.testing.assert_array_equal(
-        result[["target_0_total_uncertainty", "target_1_total_uncertainty"]].to_numpy(dtype=float), knowledge
-    )
+    # Multi-target regression leaves total_uncertainty unset.
+    assert result[["target_0_total_uncertainty", "target_1_total_uncertainty"]].isna().all().all()
 
     _seed()
     reference = model.predict_uncertainty(X.iloc[:5], num_samples=10)
@@ -372,8 +382,10 @@ def test_nonflow_multitarget_uncertainty_follows_catboost_layout():
     acquisition = model.predict_uncertainty(X.iloc[:5], num_samples=10, uncertainty_for_opt=True)
     knowledge_columns = ["target_0_knowledge_uncertainty", "target_1_knowledge_uncertainty"]
     expected = reference[knowledge_columns].to_numpy(dtype=float).max(axis=1)
+    assert isinstance(acquisition, pd.DataFrame)
+    assert list(acquisition.columns) == ["knowledge_uncertainty"]
     assert acquisition.index.equals(X.index[:5])
-    np.testing.assert_allclose(acquisition.to_numpy(dtype=float), expected)
+    np.testing.assert_allclose(acquisition["knowledge_uncertainty"].to_numpy(dtype=float), expected)
 
 
 @pytest.mark.parametrize("dropout", [0.0, 0.15])

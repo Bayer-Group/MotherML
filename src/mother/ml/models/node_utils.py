@@ -124,11 +124,13 @@ def balsa_emd_from_mc_samples(
             T = len(samples_b)
             S, B, D = samples_b[0].shape
             device = samples_b[0].device
-            emd_sum = torch.zeros(B, device=device)
+            # Follow the samples' dtype, not torch's global default dtype.
+            dtype = samples_b[0].dtype
+            emd_sum = torch.zeros(B, device=device, dtype=dtype)
 
             if D > 1:
                 n_dirs = sliced_directions if sliced_directions > 0 else max(50, 10 * D)
-                dirs = torch.randn(n_dirs, D, device=device)
+                dirs = torch.randn(n_dirs, D, device=device, dtype=dtype)
                 dirs = dirs / dirs.norm(dim=1, keepdim=True)
 
             for t in range(T - 1):
