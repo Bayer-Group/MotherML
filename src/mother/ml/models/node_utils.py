@@ -130,6 +130,10 @@ def balsa_emd_from_mc_samples(
         raise ValueError("reduction must be one of {'sum', 'mean'}")
 
     out: List[Tensor] = []
+    # One set of random directions for the whole call (drawn from the first batch's shape). Per-batch draws
+    # would score rows in different inference batches with different projections, so the ranking of rows
+    # would depend on how the data happens to be batched.
+    dirs: Optional[Tensor] = None
 
     with torch.no_grad():
         for samples_b in samples_by_batch:
@@ -140,7 +144,7 @@ def balsa_emd_from_mc_samples(
             dtype = samples_b[0].dtype
             emd_sum = torch.zeros(B, device=device, dtype=dtype)
 
-            if D > 1:
+            if D > 1 and dirs is None:
                 n_dirs = sliced_directions if sliced_directions > 0 else max(50, 10 * D)
                 dirs = torch.randn(n_dirs, D, device=device, dtype=dtype)
                 dirs = dirs / dirs.norm(dim=1, keepdim=True)

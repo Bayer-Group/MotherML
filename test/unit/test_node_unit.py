@@ -3801,3 +3801,36 @@ def test_odst_temperature_initialization_matches_per_column_percentiles():
         for depth in range(expected.shape[1]):
             expected[tree, depth] = np.percentile(diffs[:, tree, depth], q=100.0)
     np.testing.assert_allclose(layer.log_temperatures.detach().numpy(), np.log(expected + 1e-6), rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize("n_batches", [2, 3])
+def test_balsa_emd_scores_do_not_depend_on_how_rows_are_batched(n_batches):
+    from mother.ml.models.node_utils import balsa_emd_from_mc_samples
+
+    torch.manual_seed(0)
+    passes, draws, targets, rows = 4, 60, 3, 6
+    scale = 1 + torch.arange(rows).view(1, rows, 1) * 0.3
+    samples = [torch.randn(draws, rows, targets) * scale for _ in range(passes)]
+
+    torch.manual_seed(1)
+    one_batch = balsa_emd_from_mc_samples([samples])
+    chunks = np.array_split(np.arange(rows), n_batches)
+    torch.manual_seed(1)
+    batched = balsa_emd_from_mc_samples([[sample[:, chunk] for sample in samples] for chunk in chunks])
+
+    # Every batch is scored with the same random directions, so the scores are those of the one-batch call.
+    np.testing.assert_allclose(batched, one_batch, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize("head_type", ["mlp", "flow"])
+def test_mlp_hidden_dims_accept_tuples_like_lists(head_type):
+    features = np.random.default_rng(0).normal(size=(24, 3)).astype(np.float32)
+    fitted = {}
+    for label, dims in (("list", [16, 8]), ("tuple", (16, 8))):
+        torch.manual_seed(0)
+        fitted[label] = NODERegressor(
+            head_type=head_type, mlp_hidden_dims=dims, num_trees=4, depth=2, max_epochs=1, device="cpu", verbose=0
+        ).fit(features, features[:, 0])
+
+    list_shapes = [tuple(p.shape) for p in fitted["list"].module_.head.parameters()]
+    assert [tuple(p.shape) for p in fitted["tuple"].module_.head.parameters()] == list_shapes

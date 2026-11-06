@@ -6,7 +6,7 @@ used in NODE flow prediction paths.
 
 from __future__ import annotations
 
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Sequence
 
 import torch
 import torch.nn as nn
@@ -27,7 +27,7 @@ class MLPHead(nn.Module):
         self,
         input_dim: int,
         output_dim: int,
-        hidden_dims: Optional[List[int]],
+        hidden_dims: Optional[Sequence[int]],
         dropout: float = 0.1,
         activation: str = "ReLU",
         norm: str = "batch",
@@ -54,7 +54,7 @@ class MLPHead(nn.Module):
             raise ValueError(f"Unsupported activation: {activation}")
 
         layers: List[nn.Module] = []
-        dims = [input_dim] + hidden_dims + [output_dim]
+        dims = [input_dim, *hidden_dims, output_dim]  # hidden_dims may be any sequence, e.g. a tuple
         for i in range(len(dims) - 1):
             layers.append(nn.Linear(dims[i], dims[i + 1]))
             if i < len(dims) - 2:
