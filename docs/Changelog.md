@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- version list -->
 
+## v2.1.5 (2026-11-06)
+
+### Chores
+
+- **deps**: Bump gitpython from 3.2.0 to 3.2.1
+  ([#123](https://github.com/Bayer-Group/MotherML/pull/123),
+  [`665bcc5`](https://github.com/Bayer-Group/MotherML/commit/665bcc5e8d709dc4445de41f362f0b852f48b248))
+
+
 ## v2.1.4 (2026-11-06)
 
 ### Chores
