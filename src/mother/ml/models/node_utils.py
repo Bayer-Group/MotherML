@@ -440,6 +440,24 @@ class Residual(nn.Module):
 # ==============================================================================
 
 
+class SingletonSafeBatchNorm1d(nn.BatchNorm1d):
+    """``BatchNorm1d`` that tolerates a training batch holding a single value per channel.
+
+    PyTorch cannot estimate batch statistics from one row and raises ``ValueError``. A last training batch of
+    one row is unavoidable whenever the number of rows leaves a remainder of 1 (for example 17 rows with
+    ``batch_size=8``), and dropping that row or changing the batch size would silently change training. Such a
+    batch is therefore normalized with the running statistics, as in evaluation mode, and does not update them.
+    """
+
+    def forward(self, input: Tensor) -> Tensor:
+        """Normalize ``input``; a single value per channel in training mode falls back to the running statistics."""
+        if self.training and input.dim() >= 2 and input.numel() // input.shape[1] == 1:
+            return F.batch_norm(
+                input, self.running_mean, self.running_var, self.weight, self.bias, False, 0.0, self.eps
+            )
+        return super().forward(input)
+
+
 class Embedding1dLayer(nn.Module):
     """
     Embedding layer for tabular data with continuous and categorical features.
@@ -480,7 +498,7 @@ class Embedding1dLayer(nn.Module):
 
         # Optional batch normalization for continuous features
         if batch_norm_continuous_input and continuous_dim > 0:
-            self.cont_batch_norm = nn.BatchNorm1d(continuous_dim)
+            self.cont_batch_norm = SingletonSafeBatchNorm1d(continuous_dim)
         else:
             self.cont_batch_norm = None
 

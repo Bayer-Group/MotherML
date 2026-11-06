@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 
 from mother.errors import ExtrasDependencyImportError
-from mother.ml.models.node_utils import validate_dropout_rates
+from mother.ml.models.node_utils import SingletonSafeBatchNorm1d, validate_dropout_rates
 
 try:
     import zuko
@@ -59,7 +59,7 @@ class MLPHead(nn.Module):
             layers.append(nn.Linear(dims[i], dims[i + 1]))
             if i < len(dims) - 2:
                 if norm == "batch":
-                    layers.append(nn.BatchNorm1d(dims[i + 1]))
+                    layers.append(SingletonSafeBatchNorm1d(dims[i + 1]))
                 elif norm == "layer":
                     layers.append(nn.LayerNorm(dims[i + 1]))
                 elif norm != "none":
@@ -196,7 +196,7 @@ class FlowHead(nn.Module):
             for hidden_dim in self.mlp_hidden_dims:
                 encoder_layers.append(nn.Linear(prev_dim, hidden_dim))
                 if mlp_norm == "batch":
-                    encoder_layers.append(nn.BatchNorm1d(hidden_dim))
+                    encoder_layers.append(SingletonSafeBatchNorm1d(hidden_dim))
                 elif mlp_norm == "layer":
                     encoder_layers.append(nn.LayerNorm(hidden_dim))
                 elif mlp_norm != "none":

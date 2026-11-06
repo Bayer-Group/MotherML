@@ -3834,3 +3834,57 @@ def test_mlp_hidden_dims_accept_tuples_like_lists(head_type):
 
     list_shapes = [tuple(p.shape) for p in fitted["list"].module_.head.parameters()]
     assert [tuple(p.shape) for p in fitted["tuple"].module_.head.parameters()] == list_shapes
+
+
+@pytest.mark.parametrize("model_class", [NODERegressor, NODEClassifier])
+@pytest.mark.parametrize("n_rows", [17, 25])
+def test_batch_norm_on_continuous_input_survives_a_last_training_batch_of_one_row(model_class, n_rows):
+    """n_rows % batch_size == 1 leaves a single-row last batch, which plain BatchNorm1d rejects in training."""
+    features = np.random.default_rng(0).normal(size=(n_rows, 4)).astype(np.float32)
+    targets = (features[:, 0] > 0).astype(int) if model_class is NODEClassifier else features[:, 0]
+    model = model_class(
+        batch_norm_continuous_input=True,
+        num_trees=4,
+        depth=2,
+        max_epochs=2,
+        batch_size=8,
+        device="cpu",
+        verbose=0,
+    ).fit(features, targets)
+
+    assert np.isfinite(model.predict(features[:3])).all()
+
+
+def test_singleton_safe_batch_norm_uses_running_statistics_for_one_row_and_is_plain_otherwise():
+    from mother.ml.models.node_utils import SingletonSafeBatchNorm1d
+
+    torch.manual_seed(0)
+    layer = SingletonSafeBatchNorm1d(3)
+    layer(torch.randn(8, 3) * 2 + 1)  # a normal training batch updates the running statistics
+    mean_before, var_before = layer.running_mean.clone(), layer.running_var.clone()
+    single_row = torch.randn(1, 3)
+
+    layer.train()
+    in_training = layer(single_row)
+    layer.eval()
+    in_eval = layer(single_row)
+
+    torch.testing.assert_close(in_training, in_eval)  # the running statistics were used
+    torch.testing.assert_close(layer.running_mean, mean_before)  # and were not changed by the single row
+    torch.testing.assert_close(layer.running_var, var_before)
+
+    layer.train()
+    reference = nn.BatchNorm1d(3)
+    batch = torch.randn(5, 3)
+    torch.testing.assert_close(layer(batch), reference(batch))  # more than one row: identical to BatchNorm1d
+
+
+def test_heads_accept_a_single_row_in_training_mode_with_batch_norm():
+    from mother.ml.models.node_head_utils import FlowHead, MLPHead
+
+    single_row = torch.randn(1, 6)
+    mlp = MLPHead(input_dim=6, output_dim=1, hidden_dims=[8], norm="batch").train()
+    assert mlp(single_row).shape == (1, 1)
+
+    flow = FlowHead(input_dim=6, output_dim=1, flow_type="NICE", mlp_hidden_dims=[8], mlp_norm="batch").train()
+    assert flow(single_row).sample().shape[-1] == 1
