@@ -16,6 +16,7 @@ from optuna.trial import FixedTrial
 from sklearn.base import clone
 
 from mother.ml.models.m_catboost import (
+    CatboostClassifierMother,
     CatboostGaussianProcessRegressorMother,
     CatboostRankerMother,
     CatboostRegressorMother,
@@ -55,7 +56,7 @@ def _fixed_trial(bootstrap_type: str) -> FixedTrial:
         ("Bayesian", _BAGGING_TEMPERATURE, _SUBSAMPLE, FloatDistribution(0.01, 10.0, log=True)),
     ],
 )
-@pytest.mark.parametrize("model_class", [CatboostRegressorMother, CatboostRankerMother])
+@pytest.mark.parametrize("model_class", [CatboostRegressorMother, CatboostClassifierMother, CatboostRankerMother])
 def test_bootstrap_level_tuning_adds_matching_parameter(
     data, model_class, bootstrap_type, expected, not_expected, expected_distribution
 ):
@@ -72,7 +73,7 @@ def test_bootstrap_level_tuning_adds_matching_parameter(
     assert not_expected not in trial.distributions
 
 
-@pytest.mark.parametrize("model_class", [CatboostRegressorMother, CatboostRankerMother])
+@pytest.mark.parametrize("model_class", [CatboostRegressorMother, CatboostClassifierMother, CatboostRankerMother])
 def test_bootstrap_level_tuning_skips_mvs(data, model_class):
     X, y = data
     model = model_class(tune_bootstrap_level=True, tune_tree_structure_type=False, tune_loss_function=False)
@@ -88,7 +89,7 @@ def test_bootstrap_level_tuning_skips_mvs(data, model_class):
 
 
 @pytest.mark.parametrize("bootstrap_type", ["Bernoulli", "Bayesian", "MVS"])
-@pytest.mark.parametrize("model_class", [CatboostRegressorMother, CatboostRankerMother])
+@pytest.mark.parametrize("model_class", [CatboostRegressorMother, CatboostClassifierMother, CatboostRankerMother])
 def test_bootstrap_level_tuning_disabled_by_default(data, model_class, bootstrap_type):
     X, y = data
     model = model_class(tune_tree_structure_type=False, tune_loss_function=False)
@@ -102,6 +103,38 @@ def test_bootstrap_level_tuning_disabled_by_default(data, model_class, bootstrap
     assert _BAGGING_TEMPERATURE not in params
     assert _SUBSAMPLE not in trial.distributions
     assert _BAGGING_TEMPERATURE not in trial.distributions
+
+
+@pytest.mark.parametrize("loss_function", ["Logloss", "Focal"])
+@pytest.mark.parametrize(
+    "bootstrap_type, expected, not_expected",
+    [("Bernoulli", _SUBSAMPLE, _BAGGING_TEMPERATURE), ("Bayesian", _BAGGING_TEMPERATURE, _SUBSAMPLE)],
+)
+def test_classifier_bootstrap_level_tuning_with_loss_tuning(
+    data, bootstrap_type, expected, not_expected, loss_function
+):
+    X, _ = data
+    y = pd.Series(np.arange(len(X)) % 2)
+    model = CatboostClassifierMother(tune_bootstrap_level=True, tune_tree_structure_type=False)
+    trial = FixedTrial(
+        {
+            "bootstrap_type": bootstrap_type,
+            "learning_rate": 0.05,
+            "random_strength": 1.0,
+            "subsample": 0.8,
+            "bagging_temperature": 1.0,
+            "max_depth": 5,
+            "loss_function": loss_function,
+            "alpha": 0.25,
+            "gamma": 2.0,
+        }
+    )
+
+    params = model.get_hyperparameter_space(X, y, trial)
+
+    assert params[expected] == trial.params[expected]
+    assert not_expected not in params
+    assert params["loss_function"].startswith(loss_function)
 
 
 def test_bootstrap_level_flag_round_trips_through_clone():
