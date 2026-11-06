@@ -310,6 +310,28 @@ def test_optimize_reports_cv_scores_only_with_multiple_splits(
     assert bool(reported) == expect_reports
 
 
+def test_optimize_skips_cv_score_report_when_too_few_fold_scores_are_valid(lasso_pipeline, synthetic_data, monkeypatch):
+    """A multi-fold CV whose folds are all NaN but one must not hand Optuna a single score (it raises)."""
+    X, y, _ = synthetic_data
+    monkeypatch.setattr(
+        "mother.optimization.core.skl_model_sel.cross_val_score",
+        lambda **kwargs: np.array([np.nan, np.nan, -1.0]),
+    )
+    tuner = MotherTuner(scorer="neg_mean_squared_error", early_stopping_optuna=False, n_trials_optuna=2)
+
+    model = tuner.optimize(
+        lasso_pipeline,
+        X=X,
+        y=y,
+        hyperparameter_space_function=lasso_pipeline.get_hyperparameter_space,
+        default_parameters=lasso_pipeline.default_parameters(),
+        cross_validation=KFold(n_splits=3, shuffle=True, random_state=42),
+    )
+
+    assert model is not None
+    assert all(trial.value == -1.0 for trial in tuner.study.trials)
+
+
 def test_early_stopping_without_torch_raises_instead_of_warning(monkeypatch):
     monkeypatch.setattr("mother.optimization.core.torch_available", False)
     tuner = MotherTuner(scorer="neg_mean_squared_error", early_stopping_optuna=True)

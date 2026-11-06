@@ -307,9 +307,10 @@ class MotherTuner:
             module_logger.info(f"Trial {trial.number}, cv score: {cv_score}")
             cv_score_not_na: np.ndarray = cv_score[~np.isnan(cv_score)]
             # Optuna's terminator estimates its statistical error from the spread of several CV scores per
-            # trial. A hold-out split has a single score, so nothing is reported (early stopping cannot be
-            # enabled for it, see get_callbacks).
-            if cross_validation.get_n_splits() > 1:
+            # trial and rejects fewer than two. Guard on the usable scores, not the split count: a hold-out
+            # split has a single score (early stopping cannot be enabled for it, see get_callbacks), and a
+            # multi-fold CV can still return NaN for all but one fold.
+            if len(cv_score_not_na) > 1:
                 report_cross_validation_scores(trial, list(cv_score_not_na))
             mean_cv_score: float = cv_score_not_na.mean()
             return mean_cv_score
