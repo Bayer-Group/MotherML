@@ -1,6 +1,7 @@
 import pickle
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 
 import numpy as np
@@ -29,7 +30,10 @@ from mother.ml.models.nn_losses import (
     focal_alpha_from_strength,
     inverse_frequency_alpha,
 )
-from mother.ml.models.tabm_utils import PiecewiseLinearEmbeddings
+from mother.ml.models.tabm_utils import (
+    PiecewiseLinearEmbeddings,
+    PiecewiseLinearEncoding,
+)
 from mother.optimization.core import MotherTuner
 from mother.pipeline_utils import get_model, mother_cv
 from mother.settings import MotherSettings
@@ -292,6 +296,16 @@ def test_piecewise_embeddings_reject_unsupported_training_data(data, small_param
     assert np.isfinite(model.predict(X.assign(a=1))).all()
 
 
+def test_piecewise_encoding_with_unequal_bin_counts_accepts_any_batch_shape():
+    # Three bins for the first feature and one for the second, so padding has to be masked out.
+    encoding = PiecewiseLinearEncoding([torch.tensor([0.0, 1.0, 2.0, 3.0]), torch.tensor([0.0, 1.0])])
+    x = torch.tensor([[0.5, 0.2], [2.5, 0.9], [1.5, 0.4], [3.0, 0.0], [0.0, 1.0], [1.0, 0.5]])
+    expected = encoding(x)
+    assert expected.shape == (6, 4)
+    torch.testing.assert_close(encoding(x[0]), expected[0])
+    torch.testing.assert_close(encoding(x.reshape(2, 3, 2)), expected.reshape(2, 3, 4))
+
+
 def test_auto_embeddings_require_tuning(data, small_params):
     X, y = data
     model = TabMRegressorMother(**small_params, num_emb_type="auto")
@@ -503,6 +517,19 @@ def test_focal_loss_gradients_finite_for_small_gamma(multitarget):
     loss = EnsembleLoss(classification=True, multitarget=multitarget, loss="focal", focal_alpha=0.9, focal_gamma=0.5)
     loss(logits, targets).backward()
     assert torch.isfinite(logits.grad).all()
+
+
+def test_tweedie_gradients_finite_for_zero_and_missing_targets():
+    # exp(0.5 * 300) overflows float32: an observed zero target with a very negative log-mean
+    # hits it in the target term, and a missing label with a large log-mean in the mean term.
+    log_means = torch.tensor([[[-300.0, 0.5]], [[300.0, 0.2]]], requires_grad=True)
+    targets = torch.tensor([[0.0, 1.0], [float("nan"), 2.0]])
+    loss = EnsembleLoss(classification=False, multitarget=True, loss="tweedie", tweedie_variance_power=1.5)
+    value = loss(log_means, targets)
+    value.backward()
+    assert torch.isfinite(value)
+    assert torch.isfinite(log_means.grad).all()
+    assert log_means.grad[1, 0, 0] == 0
 
 
 @pytest.mark.parametrize("estimator", [TabMRegressorMother, TabMClassifierMother])
@@ -813,6 +840,20 @@ def test_training_learns_and_is_reproducible(data, arch_type):
     assert first.net_.history[-1]["train_loss"] < first.net_.history[0]["train_loss"]
     classifier = TabMClassifierMother(**params).fit(X, np.where(y > 0, "yes", "no"))
     assert accuracy_score(np.where(y > 0, "yes", "no"), classifier.predict(X)) > 0.85
+
+
+def test_threaded_fits_match_sequential_fits(data):
+    # Seeded fits reset torch's process-global generators, so threaded fits must not interleave.
+    X, y = data
+    params = dict(n_blocks=1, d_block=16, k=4, max_epochs=3, batch_size=16, dropout=0.1)
+    seeds = [0, 1, 2, 3]
+    expected = [TabMRegressorMother(**params, random_state=seed).fit(X, y).predict(X) for seed in seeds]
+    state = torch.random.get_rng_state().clone()
+    with ThreadPoolExecutor(max_workers=len(seeds)) as pool:
+        models = list(pool.map(lambda seed: TabMRegressorMother(**params, random_state=seed).fit(X, y), seeds))
+    torch.testing.assert_close(torch.random.get_rng_state(), state)
+    for model, predictions in zip(models, expected):
+        np.testing.assert_allclose(model.predict(X), predictions)
 
 
 def test_optimizer_weight_decay_groups(data, small_params):

@@ -1,6 +1,7 @@
 """Mother estimators for TabM, trained with skorch."""
 
 import logging
+import threading
 from typing import Any, Literal, Sequence, TypeAlias
 
 import numpy as np
@@ -40,6 +41,10 @@ from mother.ml.models.tabm_utils import compute_bins
 
 Features: TypeAlias = pd.DataFrame | npt.NDArray[Any]
 module_logger = logging.getLogger(__name__)
+# Skorch draws weight initialization, dropout masks, and batch shuffling from torch's
+# process-global generators. Seeded fits reset and restore those generators, so fits
+# running in parallel threads (e.g. joblib's threading backend) must not overlap.
+_TORCH_RNG_LOCK = threading.Lock()
 _EMBEDDING_TYPES = ("linear", "linear_relu", "periodic", "pwl")
 _EMBEDDING_DEFAULTS = {
     "d_embedding": 16,
@@ -588,7 +593,7 @@ class _BaseTabMMother(BaseEstimator, AbstractMotherPipeline):
         devices = (
             [device.index if device.index is not None else torch.cuda.current_device()] if device.type == "cuda" else []
         )
-        with torch.random.fork_rng(devices=devices):
+        with _TORCH_RNG_LOCK, torch.random.fork_rng(devices=devices):
             torch.random.default_generator.manual_seed(self.random_state)
             for index in devices:
                 torch.cuda.default_generators[index].manual_seed(self.random_state)

@@ -751,7 +751,7 @@ class PiecewiseLinearEncoding(nn.Module):
             Encodings concatenated across features.
         """
         x = self.impl(x)
-        return x.flatten(-2) if self.impl.mask is None else x[:, self.impl.mask]
+        return x.flatten(-2) if self.impl.mask is None else x[..., self.impl.mask]
 
 
 class PiecewiseLinearEmbeddings(nn.Module):

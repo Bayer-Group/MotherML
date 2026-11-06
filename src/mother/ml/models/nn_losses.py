@@ -207,7 +207,9 @@ class EnsembleLoss(nn.Module):
         targets = torch.where(observed, targets, 0).unsqueeze(1).expand_as(predictions)
         observed = observed.unsqueeze(1).expand_as(predictions)
 
-        losses = self._elementwise_losses(predictions, targets)
+        # Zero the masked predictions too: the torch.where below hides a non-finite
+        # masked loss in the forward pass, but its gradient would still be 0 * inf.
+        losses = self._elementwise_losses(torch.where(observed, predictions, 0), targets)
 
         weights = observed.to(losses.dtype)
         if self.class_weights is not None:
@@ -249,9 +251,13 @@ class EnsembleLoss(nn.Module):
     def _tweedie_losses(self, log_means: Tensor, targets: Tensor) -> Tensor:
         """Tweedie negative log-likelihood (up to a constant) for log-mean predictions."""
         power = self.tweedie_variance_power
-        return -targets * torch.exp((1 - power) * log_means) / (1 - power) + torch.exp((2 - power) * log_means) / (
-            2 - power
-        )
+        # The first term vanishes for a zero target, but exp((1 - power) * log_mean)
+        # overflows float32 once the model drives that log-mean far below zero, and
+        # 0 * inf is NaN in the loss and its gradient. Evaluate it at log-mean 0 there.
+        first_log_means = torch.where(targets == 0, 0, log_means)
+        return -targets * torch.exp((1 - power) * first_log_means) / (1 - power) + torch.exp(
+            (2 - power) * log_means
+        ) / (2 - power)
 
     @staticmethod
     def _logcosh_losses(residuals: Tensor) -> Tensor:
