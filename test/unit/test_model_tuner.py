@@ -11,7 +11,7 @@ from sklearn.model_selection import GroupKFold, KFold, PredefinedSplit
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import MinMaxScaler
 
-from mother.errors import ExtrasDependencyImportError
+from mother.errors import ConfigurationError, ExtrasDependencyImportError
 from mother.ml import CatboostClassifierMother, avg_ndcg_score
 from mother.ml.core import (
     AbstractMotherPipeline,
@@ -318,7 +318,7 @@ def test_early_stopping_without_torch_raises_instead_of_warning(monkeypatch):
         tuner.get_callbacks()
 
     assert "mother-ml[torch]" in str(error.value)  # the install hint is part of the error
-    # A hold-out split would also disable early stopping, but the missing dependency is reported first.
+    # A hold-out split is invalid with early stopping too, but the missing dependency is reported first.
     with pytest.raises(ExtrasDependencyImportError):
         tuner.get_callbacks(cross_validation=PredefinedSplit(test_fold=[-1, -1, 0, 0]))
 
@@ -347,21 +347,50 @@ def test_no_early_stopping_without_torch_is_not_an_error(monkeypatch):
     assert MotherTuner(scorer="neg_mean_squared_error", early_stopping_optuna=False).get_callbacks() is None
 
 
+def test_early_stopping_with_holdout_cv_raises_instead_of_warning(monkeypatch):
+    monkeypatch.setattr("mother.optimization.core.torch_available", True)  # reach the CV check without torch
+    tuner = MotherTuner(scorer="neg_mean_squared_error", early_stopping_optuna=True)
+    holdout_cv = PredefinedSplit(test_fold=[-1, -1, 0, 0])
+
+    with pytest.raises(ConfigurationError, match="at least 2 CV splits") as error:
+        tuner.get_callbacks(cross_validation=holdout_cv)
+
+    assert "early_stopping_optuna=False" in str(error.value)  # the message says how to fix it
+
+
+def test_optimize_with_early_stopping_and_holdout_cv_fails_before_any_trial(
+    lasso_pipeline, synthetic_data, monkeypatch
+):
+    monkeypatch.setattr("mother.optimization.core.torch_available", True)
+    X, y, _ = synthetic_data
+    test_fold = np.full(len(X), -1)
+    test_fold[-20:] = 0
+    tuner = MotherTuner(scorer="neg_mean_squared_error", early_stopping_optuna=True, n_trials_optuna=2)
+
+    with pytest.raises(ConfigurationError):
+        tuner.optimize(
+            lasso_pipeline,
+            X=X,
+            y=y,
+            hyperparameter_space_function=lasso_pipeline.get_hyperparameter_space,
+            default_parameters=lasso_pipeline.default_parameters(),
+            cross_validation=PredefinedSplit(test_fold=test_fold),
+        )
+
+    assert tuner.study is None  # the study was never created, so no trial ran
+
+
+def test_holdout_cv_without_early_stopping_is_not_an_error():
+    holdout_cv = PredefinedSplit(test_fold=[-1, -1, 0, 0])
+
+    assert MotherTuner(scorer="neg_mean_squared_error", early_stopping_optuna=False).get_callbacks(holdout_cv) is None
+
+
 @pytest.mark.skipif(
     not _TORCH_AVAILABLE,
     reason="Optuna early-stopping callback tests require the optional torch extra (mother[torch]).",
 )
 class TestGetCallbacks:
-    def test_holdout_cv_disables_early_termination_callback(self, caplog):
-        caplog.set_level("WARNING")
-        tuner = MotherTuner(scorer="neg_mean_squared_error", early_stopping_optuna=True)
-        holdout_cv = PredefinedSplit(test_fold=[-1, -1, 0, 0])
-
-        callbacks = tuner.get_callbacks(cross_validation=holdout_cv)
-
-        assert callbacks is None
-        assert "requires at least 2 CV splits" in caplog.text
-
     def test_multi_split_cv_keeps_early_termination_callback(self):
         tuner = MotherTuner(scorer="neg_mean_squared_error", early_stopping_optuna=True)
         kfold_cv = KFold(n_splits=3, shuffle=True, random_state=42)
@@ -370,6 +399,10 @@ class TestGetCallbacks:
 
         assert callbacks is not None
         assert len(callbacks) == 1
+        # The threshold is Optuna's own default; only the hold-out compatibility is new in this PR.
+        from optuna.terminator.improvement.evaluator import DEFAULT_MIN_N_TRIALS
+
+        assert callbacks[0]._terminator._min_n_trials == DEFAULT_MIN_N_TRIALS
 
     def test_no_cv_argument_keeps_existing_behavior(self):
         tuner = MotherTuner(scorer="neg_mean_squared_error", early_stopping_optuna=True)
@@ -378,30 +411,3 @@ class TestGetCallbacks:
 
         assert callbacks is not None
         assert len(callbacks) == 1
-
-    def test_optimize_works_with_holdout_cv(self, lasso_pipeline, synthetic_data, caplog):
-        caplog.set_level("WARNING")
-        X, y, _ = synthetic_data
-        test_fold = np.full(len(X), -1)
-        test_fold[-20:] = 0
-        holdout_cv = PredefinedSplit(test_fold=test_fold)
-
-        tuner = MotherTuner(
-            scorer="neg_mean_squared_error",
-            early_stopping_optuna=True,
-            n_trials_optuna=1,
-        )
-
-        model = tuner.optimize(
-            lasso_pipeline,
-            X=X,
-            y=y,
-            hyperparameter_space_function=lasso_pipeline.get_hyperparameter_space,
-            default_parameters=lasso_pipeline.default_parameters(),
-            cross_validation=holdout_cv,
-        )
-
-        assert model is not None
-        assert tuner.study is not None
-        assert len(tuner.study.trials) >= 1
-        assert "requires at least 2 CV splits" in caplog.text
