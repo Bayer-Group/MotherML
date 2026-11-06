@@ -250,6 +250,35 @@ def _prepare_for_dataframe(
     return [row for row in arr]
 
 
+def _build_uncertainty_frame(
+    sections: Dict[str, Optional[npt.NDArray[Any]]],
+    index: Optional[pd.Index],
+    n_targets: int,
+    joint_fields: Tuple[str, ...] = (),
+) -> pd.DataFrame:
+    """Assemble ``predict_uncertainty`` output in the Mother schema.
+
+    Single target: one column per field (``pred``, ``mean_predictions``, ...).
+    Multi-target: ``target_{i}_{field}`` columns grouped by field, as the CatBoost and
+    RandomForest models do; an unavailable field becomes NaN columns. Fields listed in
+    ``joint_fields`` describe all targets together (e.g. flow-head entropies, which are
+    one likelihood over the joint distribution and have no per-target marginal) and
+    therefore stay a single column without a ``target_`` prefix.
+    """
+    columns: Dict[str, Any] = {}
+    for field, values in sections.items():
+        if n_targets == 1 or field in joint_fields:
+            columns[field] = _prepare_for_dataframe(values)
+            continue
+        n_rows = next(len(v) for v in sections.values() if v is not None)
+        per_target = None if values is None else np.asarray(values).reshape(n_rows, n_targets)
+        for target_idx in range(n_targets):
+            columns[f"target_{target_idx}_{field}"] = (
+                np.full(n_rows, np.nan) if per_target is None else per_target[:, target_idx]
+            )
+    return pd.DataFrame(columns, index=index)
+
+
 # ==============================================================================
 # SKORCH CALLBACKS FOR AUTO DIMENSION DETECTION
 # ==============================================================================
@@ -1155,6 +1184,19 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
     def _supports_flow_configuration(self) -> bool:
         """Whether this estimator should expose flow configuration parameters."""
         return True
+
+    def initialize_module(self) -> "BaseNODEEstimator":
+        """Build the module in float32 whatever torch's global default dtype is.
+
+        Inputs are always prepared as float32 and the tree buffers are float32, so parameters
+        created under ``torch.set_default_dtype(torch.float64)`` would fail with a dtype mismatch.
+        """
+        previous = torch.get_default_dtype()
+        torch.set_default_dtype(torch.float32)
+        try:
+            return super().initialize_module()  # type: ignore[no-any-return]
+        finally:
+            torch.set_default_dtype(previous)
 
     def _has_active_dropout(self, *, include_mlp: bool = True) -> bool:
         """Check whether any dropout source is configured with a non-zero rate.
@@ -2680,22 +2722,33 @@ class NODERegressor(BaseNODEEstimator):
         Returns:
             Union[pd.DataFrame, tuple[pd.DataFrame, np.ndarray]]:
                 - If ``return_quantiles=False`` (default): A DataFrame with columns:
+                    - ``'pred'``: The point prediction for each sample.
                     - ``'mean_predictions'``: The mean predictions for each sample.
                     - ``'knowledge_uncertainty'``: Epistemic uncertainty (from MC Dropout if
                       available, else ``None``).
                     - ``'data_uncertainty'``: Aleatoric uncertainty (from flow if available,
                       else ``None``).
-                                        - ``'total_uncertainty'``: Combined / primary uncertainty measure.
-                                            For ``knowledge_method='balsa_emd'``, this is ``NaN`` because
-                                            BALSA-EMD knowledge scores are not additive with entropy-based
-                                            data uncertainty.
+                    - ``'total_uncertainty'``: Combined / primary uncertainty measure.
+                      For ``knowledge_method='balsa_emd'``, this is ``NaN`` because
+                      BALSA-EMD knowledge scores are not additive with entropy-based
+                      data uncertainty.
+
+                  For multi-target regression the columns follow the CatBoost layout:
+                  ``target_{i}_{field}`` grouped by field (all ``pred``, then all
+                  ``mean_predictions``, ...), with unavailable fields as NaN. Flow heads model
+                  the targets jointly, so their ``knowledge_uncertainty``,
+                  ``data_uncertainty`` and ``total_uncertainty`` stay single columns
+                  (one likelihood across all targets) while ``pred`` and
+                  ``mean_predictions`` are per target. Non-flow heads report per-target MC-dropout
+                  uncertainty.
                 - If ``return_quantiles=True``: A tuple containing:
                     - The DataFrame described above.
                     - ``np.ndarray`` of quantile values with shape
                       ``(n_samples, n_quantiles)``.
                 - If ``uncertainty_for_opt=True``: ``pd.Series`` of
                   ``knowledge_uncertainty`` (epistemic) — BALSA-EMD scores for a
-                  flow head with dropout, MC-dropout std/IQR for a non-flow head —
+                  flow head with dropout, MC-dropout std/IQR for a non-flow head
+                  (the maximum across targets for multi-target regression, as in CatBoost) —
                   or of ``total_uncertainty`` when no epistemic estimate is
                   available (flow head without dropout).
 
@@ -2732,6 +2785,9 @@ class NODERegressor(BaseNODEEstimator):
             )
 
         index = X.index if isinstance(X, pd.DataFrame) else None
+        n_targets = int(getattr(self.module_, "output_dim", 1))
+        # Flow entropies are one likelihood over all targets, so they stay joint (unprefixed) columns.
+        joint_fields = ("knowledge_uncertainty", "data_uncertainty", "total_uncertainty") if is_flow_head else ()
 
         # Defensive copy to avoid mutating the default list
         quantiles = list(quantiles)
@@ -2805,15 +2861,17 @@ class NODERegressor(BaseNODEEstimator):
             data_unc = stats["data_uncertainty"]  # Always 1D (scalar per sample)
             total_unc = stats["total_uncertainty"]  # Always 1D (scalar per sample)
 
-            results = pd.DataFrame(
+            results = _build_uncertainty_frame(
                 {
-                    "pred": _prepare_for_dataframe(pred),
-                    "mean_predictions": _prepare_for_dataframe(pred),
-                    "knowledge_uncertainty": _prepare_for_dataframe(knowledge_unc),
+                    "pred": pred,
+                    "mean_predictions": pred,
+                    "knowledge_uncertainty": knowledge_unc,
                     "data_uncertainty": data_unc,  # Always scalar
                     "total_uncertainty": total_unc,  # Always scalar
                 },
-                index=index,
+                index,
+                n_targets,
+                joint_fields,
             )
 
         # Flow head without dropout: use flow uncertainty only
@@ -2842,15 +2900,17 @@ class NODERegressor(BaseNODEEstimator):
             mean_predictions = torch.cat(all_means, 0).cpu().numpy()
             uncertainties = torch.cat(data_unc_list, 0).cpu().numpy().flatten()  # Always 1D
 
-            results = pd.DataFrame(
+            results = _build_uncertainty_frame(
                 {
-                    "pred": _prepare_for_dataframe(predictions),
-                    "mean_predictions": _prepare_for_dataframe(mean_predictions),
+                    "pred": predictions,
+                    "mean_predictions": mean_predictions,
                     "knowledge_uncertainty": None,
                     "data_uncertainty": uncertainties,  # Always scalar (1D array)
                     "total_uncertainty": uncertainties,  # Always scalar (1D array)
                 },
-                index=index,
+                index,
+                n_targets,
+                joint_fields,
             )
 
         # Non-flow heads: use MC Dropout (std/IQR only — no quantiles)
@@ -2866,18 +2926,23 @@ class NODERegressor(BaseNODEEstimator):
                 return_mean=True,
             )
 
-            results = pd.DataFrame(
+            results = _build_uncertainty_frame(
                 {
-                    "pred": _prepare_for_dataframe(predictions),
-                    "mean_predictions": _prepare_for_dataframe(mean_predictions),
-                    "knowledge_uncertainty": _prepare_for_dataframe(uncertainties),
+                    "pred": predictions,
+                    "mean_predictions": mean_predictions,
+                    "knowledge_uncertainty": uncertainties,
                     "data_uncertainty": None,
-                    "total_uncertainty": _prepare_for_dataframe(uncertainties),
+                    "total_uncertainty": uncertainties,
                 },
-                index=index,
+                index,
+                n_targets,
             )
 
         if uncertainty_for_opt:
+            if n_targets > 1 and not is_flow_head:
+                # Like CatBoost: reduce the per-target epistemic scores to the max across targets.
+                knowledge_columns = [f"target_{i}_knowledge_uncertainty" for i in range(n_targets)]
+                return results[knowledge_columns].astype(float).max(axis=1).rename("knowledge_uncertainty")
             # Epistemic (knowledge) uncertainty is the active-learning acquisition
             # signal (BALSA-EMD for flow+dropout); fall back to total_uncertainty for
             # a flow head without dropout, which exposes no epistemic estimate.

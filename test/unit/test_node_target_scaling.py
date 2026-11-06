@@ -4,6 +4,7 @@ import copy
 import pickle
 
 import numpy as np
+import pandas as pd
 import pytest
 from sklearn.base import clone
 
@@ -45,6 +46,13 @@ def _data(n_targets):
 def _seed():
     torch.manual_seed(123)
     np.random.seed(123)
+
+
+def _per_target_values(frame, field, n_targets):
+    """Return ``(n_rows, n_targets)`` values of a predict_uncertainty field for either output schema."""
+    if n_targets == 1:
+        return np.asarray(frame[field], dtype=float).reshape(-1, 1)
+    return frame[[f"target_{i}_{field}" for i in range(n_targets)]].to_numpy(dtype=float)
 
 
 @pytest.fixture(scope="module", params=[(n, d, p) for n in (1, 2) for d in ("cpu", "cuda") for p in (0.0, 0.15)])
@@ -134,7 +142,10 @@ def test_flow_uncertainty_dataframe_quantiles_and_acquisition_units(fitted_pair,
         np.testing.assert_allclose(actual_q, expected_q * factor + offset, rtol=2e-5, atol=2e-4)
         for key in ("pred", "mean_predictions"):
             np.testing.assert_allclose(
-                np.stack(actual[key]), np.stack(expected[key]) * factor + offset, rtol=2e-5, atol=2e-4
+                _per_target_values(actual, key, mean.size),
+                _per_target_values(expected, key, mean.size) * factor + offset,
+                rtol=2e-5,
+                atol=2e-4,
             )
         np.testing.assert_allclose(actual["data_uncertainty"], expected["data_uncertainty"] + shift, atol=2e-5)
         if method == "bald" or not scaled._has_active_dropout(include_mlp=False):
@@ -303,3 +314,80 @@ def test_nonflow_scaling_rejects_infinite_targets_and_can_be_disabled():
         _model(head_type="linear").fit(features, inf_targets)
     unscaled = _model(head_type="linear", scale_targets=False).fit(features, targets)
     assert not hasattr(unscaled, "target_scaler_")
+
+
+UNCERTAINTY_FIELDS = ("pred", "mean_predictions", "knowledge_uncertainty", "data_uncertainty", "total_uncertainty")
+
+
+def test_float64_default_dtype_does_not_break_models_or_leak():
+    from mother.ml.models.m_node import NODEClassifier
+
+    features, targets = _data(1)
+    previous = torch.get_default_dtype()
+    torch.set_default_dtype(torch.float64)
+    try:
+        for params in ({"head_type": "linear"}, {"head_type": "flow"}):
+            model = _model(max_epochs=2, input_dropout=0.1, **params).fit(features, targets)
+            assert {p.dtype for p in model.module_.parameters()} == {torch.float32}
+            assert model.predict(features[:3]).dtype == np.float32
+            frame = model.predict_uncertainty(features[:3], num_samples=5, num_mc_samples=3, num_flow_samples=4)
+            assert np.isfinite(frame["pred"].to_numpy(dtype=float)).all()
+        classifier = NODEClassifier(num_trees=4, depth=2, max_epochs=2, device="cpu", verbose=0)
+        classifier.fit(features, (features[:, 0] > 0).astype(int))
+        assert classifier.predict_proba(features[:3]).dtype == np.float32
+        assert torch.get_default_dtype() == torch.float64
+    finally:
+        torch.set_default_dtype(previous)
+
+
+def test_single_target_uncertainty_columns_unchanged():
+    features, targets = _data(1)
+    for params in ({"head_type": "linear", "input_dropout": 0.15}, {"head_type": "flow"}):
+        result = _model(max_epochs=2, **params).fit(features, targets).predict_uncertainty(features[:3], num_samples=5)
+        assert list(result.columns) == list(UNCERTAINTY_FIELDS)
+
+
+def test_nonflow_multitarget_uncertainty_follows_catboost_layout():
+    features, targets = _data(2)
+    X = pd.DataFrame(features, columns=list("abc"), index=[f"mol_{i}" for i in range(len(features))])
+    model = _model(head_type="linear", input_dropout=0.15, tree_dropout=0.15, max_epochs=2).fit(X, targets)
+
+    result = model.predict_uncertainty(X.iloc[:5], num_samples=10)
+
+    assert list(result.columns) == [f"target_{i}_{field}" for field in UNCERTAINTY_FIELDS for i in range(2)]
+    assert result.index.equals(X.index[:5])
+    np.testing.assert_allclose(
+        result[["target_0_pred", "target_1_pred"]].to_numpy(), model.predict(X.iloc[:5]), rtol=1e-5
+    )
+    knowledge = result[["target_0_knowledge_uncertainty", "target_1_knowledge_uncertainty"]].to_numpy(dtype=float)
+    assert (knowledge > 0).all()
+    assert result[["target_0_data_uncertainty", "target_1_data_uncertainty"]].isna().all().all()
+    np.testing.assert_array_equal(
+        result[["target_0_total_uncertainty", "target_1_total_uncertainty"]].to_numpy(dtype=float), knowledge
+    )
+
+    _seed()
+    reference = model.predict_uncertainty(X.iloc[:5], num_samples=10)
+    _seed()
+    acquisition = model.predict_uncertainty(X.iloc[:5], num_samples=10, uncertainty_for_opt=True)
+    knowledge_columns = ["target_0_knowledge_uncertainty", "target_1_knowledge_uncertainty"]
+    expected = reference[knowledge_columns].to_numpy(dtype=float).max(axis=1)
+    assert acquisition.index.equals(X.index[:5])
+    np.testing.assert_allclose(acquisition.to_numpy(dtype=float), expected)
+
+
+@pytest.mark.parametrize("dropout", [0.0, 0.15])
+def test_flow_multitarget_uncertainty_keeps_joint_likelihood_columns(dropout):
+    features, targets = _data(2)
+    X = pd.DataFrame(features, columns=list("abc"), index=[f"mol_{i}" for i in range(len(features))])
+    model = _model(input_dropout=dropout, tree_dropout=dropout).fit(X, targets)
+
+    result = model.predict_uncertainty(X.iloc[:4], num_samples=10, num_mc_samples=3, num_flow_samples=8)
+
+    per_target = [f"target_{i}_{field}" for field in ("pred", "mean_predictions") for i in range(2)]
+    assert list(result.columns) == per_target + ["knowledge_uncertainty", "data_uncertainty", "total_uncertainty"]
+    assert result.index.equals(X.index[:4])
+    assert np.isfinite(result[per_target].to_numpy(dtype=float)).all()
+    assert np.isfinite(result["data_uncertainty"].to_numpy(dtype=float)).all()
+    assert np.isfinite(result["total_uncertainty"].to_numpy(dtype=float)).all()
+    assert result["knowledge_uncertainty"].notna().all() == (dropout > 0)
