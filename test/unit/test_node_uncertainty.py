@@ -711,7 +711,7 @@ def test_inference_accepts_ordered_custom_sampling(tiny_regression_data, samplin
     ).fit(features, targets)
     model.module_.eval()
     with torch.no_grad():
-        expected = model.module_(torch.from_numpy(inputs)).numpy()
+        expected = model._to_target_units(model.module_(torch.from_numpy(inputs)).numpy())
 
     np.testing.assert_allclose(model.predict(inputs), expected, rtol=1e-5, atol=1e-6)
 
@@ -913,7 +913,8 @@ def test_mc_passes_keep_rows_aligned_with_changing_batch_sizes(tiny_regression_d
         if task == "flow":
             location = (location - model.target_scaler_.mean_[0]) / model.target_scaler_.scale_[0]
             return torch.distributions.Independent(torch.distributions.Normal(location, 1e-5), 1)
-        return location
+        # Regression modules emit standardized targets; predictions map them back to original units.
+        return (location - model.target_scaler_.mean_[0]) / model.target_scaler_.scale_[0]
 
     monkeypatch.setattr(model.module_, "forward", deterministic_forward)
     result = model.predict_uncertainty(

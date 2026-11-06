@@ -201,7 +201,8 @@ def test_flow_scaling_constant_targets_clone_pickle_and_opt_out():
     assert not hasattr(unscaled, "target_scaler_")
     assert not clone(unscaled).scale_targets
     nonflow = _model(head_type="linear").fit(features, targets)
-    assert not hasattr(nonflow, "target_scaler_")
+    np.testing.assert_array_equal(nonflow.target_scaler_.scale_, [1.0])
+    assert not hasattr(_model(head_type="linear", scale_targets=False).fit(features, targets), "target_scaler_")
 
 
 def test_flow_loss_uses_standardized_training_and_validation_targets():
@@ -244,3 +245,61 @@ def test_flow_scaling_rejects_nonfinite_targets(invalid):
     targets[0] = invalid
     with pytest.raises(ValueError, match="complete, finite targets"):
         _model().fit(features, targets)
+
+
+@pytest.mark.parametrize("n_targets", [1, 2])
+def test_nonflow_predictions_and_mc_uncertainty_in_original_units(n_targets):
+    features, targets = _data(n_targets)
+    scaled = _model(head_type="linear", input_dropout=0.15, tree_dropout=0.15, max_epochs=2).fit(features, targets)
+    unscaled = copy.deepcopy(scaled)
+    del unscaled.target_scaler_
+    mean, scale = scaled.target_scaler_.mean_, scaled.target_scaler_.scale_
+    inputs = features[:5]
+
+    np.testing.assert_allclose(scaled.predict(inputs), unscaled.predict(inputs) * scale + mean, rtol=1e-5)
+
+    _seed()
+    expected_std, expected_mean = unscaled._predict_uncertainty_mc_dropout(inputs, num_samples=20, return_mean=True)
+    _seed()
+    std, mc_mean = scaled._predict_uncertainty_mc_dropout(inputs, num_samples=20, return_mean=True)
+    np.testing.assert_allclose(std, expected_std * scale, rtol=1e-4, atol=1e-6)
+    np.testing.assert_allclose(mc_mean, expected_mean * scale + mean, rtol=1e-5)
+    assert (std > 0).all()
+
+    _seed()
+    expected = unscaled.predict_uncertainty(inputs, num_samples=20)
+    _seed()
+    actual = scaled.predict_uncertainty(inputs, num_samples=20)
+    if n_targets == 1:
+        np.testing.assert_allclose(
+            actual["total_uncertainty"].to_numpy(dtype=float),
+            expected["total_uncertainty"].to_numpy(dtype=float) * scale.item(),
+            rtol=1e-4,
+            atol=1e-6,
+        )
+
+
+def test_nonflow_scaling_handles_missing_multitarget_values():
+    features, targets = _data(2)
+    targets[::3, 1] = np.nan
+    model = _model(head_type="linear", max_epochs=2).fit(features, targets)
+    np.testing.assert_allclose(model.target_scaler_.mean_, np.nanmean(targets, axis=0), rtol=1e-4)
+    np.testing.assert_allclose(model.target_scaler_.scale_, np.nanstd(targets, axis=0), rtol=1e-4)
+    assert np.isfinite(model.history[-1, "train_loss"])
+    assert np.isfinite(model.predict(features[:4])).all()
+
+    targets[:, 1] = np.nan
+    unobserved = _model(head_type="linear", max_epochs=2).fit(features, targets)
+    np.testing.assert_array_equal(unobserved.target_scaler_.mean_[1:], [0.0])
+    np.testing.assert_array_equal(unobserved.target_scaler_.scale_[1:], [1.0])
+    assert np.isfinite(unobserved.history[-1, "train_loss"])
+
+
+def test_nonflow_scaling_rejects_infinite_targets_and_can_be_disabled():
+    features, targets = _data(1)
+    inf_targets = targets.copy()
+    inf_targets[0] = np.inf
+    with pytest.raises(ValueError, match="infinite"):
+        _model(head_type="linear").fit(features, inf_targets)
+    unscaled = _model(head_type="linear", scale_targets=False).fit(features, targets)
+    assert not hasattr(unscaled, "target_scaler_")

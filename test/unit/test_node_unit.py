@@ -3346,6 +3346,7 @@ def test_explicit_regression_criterion_is_preserved(via_set_params):
         depth=2,
         max_epochs=1,
         criterion=nn.MSELoss if via_set_params else nn.L1Loss,
+        scale_targets=False,
         device="cpu",
         verbose=0,
     )

@@ -1571,6 +1571,14 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         )
         return np.empty((0, output_width), dtype=np.float32)
 
+    def _to_target_units(self, predictions: npt.NDArray[Any]) -> npt.NDArray[Any]:
+        """Hook: map raw module outputs to the units supplied to ``fit``.
+
+        Identity here (the classifier does not scale). ``NODERegressor`` overrides it to undo
+        target standardization, so the shared MC-dropout code needs no regressor-specific logic.
+        """
+        return predictions
+
     def _predict_uncertainty_mc_dropout(
         self,
         X: Union[pd.DataFrame, npt.NDArray[np.float32]],
@@ -1690,6 +1698,8 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
 
         # Stack predictions: shape (num_samples, n_samples, n_outputs)
         all_predictions_np = np.concatenate(all_predictions, axis=1)
+        # Uncertainty (std/IQR/quantiles) is computed in the units supplied to ``fit``.
+        all_predictions_np = self._to_target_units(all_predictions_np)
 
         # Compute uncertainty measure across MC samples
         if use_std:
@@ -1962,14 +1972,24 @@ class NODERegressor(BaseNODEEstimator):
                     doubled sizes up to the bound.
         - DataFrame and numpy array support
         - Validation split + early stopping are opt-in via ``train_split``
-        - Flow targets are standardized automatically (``scale_targets=True``),
-          using only the internal training partition. Predictions, samples and
-          quantiles are returned in the units supplied to ``fit``.
+        - Targets are standardized automatically (``scale_targets=True``),
+          using only the internal training partition. Predictions, samples,
+          quantiles and MC-dropout uncertainties are returned in the units
+          supplied to ``fit``.
 
     Target scaling:
-        ``scale_targets`` (bool, default ``True``) standardizes each flow target
-        independently. It does not scale input features or affect non-flow heads.
-        Start with scaling enabled, especially for targets far from zero/unit
+        ``scale_targets`` (bool, default ``True``) standardizes each target
+        independently, for flow and non-flow heads alike. It does not scale input
+        features. Non-flow heads train with MSE, so unscaled targets with large
+        offsets or scales converge slowly, and in multi-target regression the
+        target with the largest scale dominates the loss. Scaling is computed
+        from observed values only, so multi-target regression with missing
+        (NaN) targets is supported; a target without any observed value is left
+        in its original units. ``predict`` and the MC-dropout std/IQR/mean are
+        returned in original units, while the training and validation loss are
+        computed in standardized units.
+
+        For flow heads, start with scaling enabled, especially for targets far from zero/unit
         scale, but compare ``True`` and ``False`` on the same validation splits:
         scaling can improve optimization without improving every metric.
         A small three-seed sklearn benchmark found substantial NSF improvements
@@ -2175,19 +2195,40 @@ class NODERegressor(BaseNODEEstimator):
         return super().initialize()
 
     def get_split_datasets(self, X: Any, y: Any = None, **fit_params: Any) -> Tuple[Any, Any]:
-        """Learn flow target units from the training partition, never validation targets."""
+        """Learn target units from the training partition, never validation targets."""
         dataset_train, dataset_valid = super().get_split_datasets(X, y, **fit_params)
-        if self._is_flow_head and self.scale_targets and not hasattr(self, "target_scaler_"):
+        if self.scale_targets and not hasattr(self, "target_scaler_"):
             _, targets = data_from_dataset(dataset_train)
             if isinstance(targets, Tensor):
                 targets = targets.detach().cpu().numpy()
             targets = np.asarray(targets)
             if targets.ndim == 1:
                 targets = targets.reshape(-1, 1)
-            if not np.isfinite(targets).all():
-                raise ValueError("Flow heads require complete, finite targets; use a non-flow head for NaN masking.")
-            self.target_scaler_ = StandardScaler().fit(targets)
+            if self._is_flow_head:
+                if not np.isfinite(targets).all():
+                    raise ValueError(
+                        "Flow heads require complete, finite targets; use a non-flow head for NaN masking."
+                    )
+                self.target_scaler_ = StandardScaler().fit(targets)
+            else:
+                if np.isinf(targets).any():
+                    raise ValueError("Targets must not contain infinite values.")
+                # StandardScaler ignores NaN, so multi-target regression with missing values is scaled per target
+                # from its observed entries only. A target without observations keeps its original units.
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", RuntimeWarning)
+                    scaler = StandardScaler().fit(targets)
+                scaler.mean_ = np.where(np.isfinite(scaler.mean_), scaler.mean_, 0.0)
+                scaler.scale_ = np.where(np.isfinite(scaler.scale_) & (scaler.scale_ > 0), scaler.scale_, 1.0)
+                self.target_scaler_ = scaler
         return dataset_train, dataset_valid
+
+    def _to_target_units(self, predictions: npt.NDArray[Any]) -> npt.NDArray[Any]:
+        """Undo target standardization for non-flow heads (flow heads rescale their distribution instead)."""
+        if self._is_flow_head or not hasattr(self, "target_scaler_"):
+            return predictions
+        scaler = self.target_scaler_
+        return np.asarray(predictions * scaler.scale_ + scaler.mean_, dtype=predictions.dtype)
 
     def _flow_in_target_units(self, distribution: torch.distributions.Distribution) -> torch.distributions.Distribution:
         """Apply the inverse target transform, including its density Jacobian."""
@@ -2255,7 +2296,13 @@ class NODERegressor(BaseNODEEstimator):
             loss = loss.mean()
             return loss
 
-        # For other head types, handle tensor shape mismatch
+        # For other head types, standardize targets (NaNs stay NaN so masking below still applies)
+        if hasattr(self, "target_scaler_"):
+            y_true = (y_true - y_true.new_tensor(self.target_scaler_.mean_)) / y_true.new_tensor(
+                self.target_scaler_.scale_
+            )
+
+        # Handle tensor shape mismatch
         if hasattr(y_pred, "dim"):
             if y_pred.dim() == 2 and y_pred.size(1) == 1 and y_true.dim() == 1:
                 y_pred = y_pred.squeeze(1)  # Convert [N, 1] to [N]
@@ -2373,10 +2420,10 @@ class NODERegressor(BaseNODEEstimator):
         y: Union[pd.Series, npt.NDArray[np.float32]],
         **fit_params: Any,
     ) -> "NODERegressor":
-        """Fit on supplied targets; flow heads standardize them internally by default.
+        """Fit on supplied targets, standardized internally by default (``scale_targets``).
 
-        ``scale_targets=False`` disables flow standardization. Non-flow heads
-        are unchanged. A fresh fit relearns scaling; warm starts and
+        ``scale_targets=False`` disables standardization for all heads. A fresh fit relearns
+        scaling; warm starts and
         ``partial_fit`` retain the original scaler to preserve the learned units.
         Compare scaling settings on held-out validation data using separate
         estimators or fresh fits with ``warm_start=False``, not by toggling a
@@ -2444,7 +2491,7 @@ class NODERegressor(BaseNODEEstimator):
         else:
             if return_sample_distribution:
                 raise ValueError("return_sample_distribution=True is only available for flow heads (head_type='flow').")
-            return super().predict(X)
+            return self._to_target_units(super().predict(X))
 
     def predict_flow_head(
         self,
