@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- version list -->
 
+## v2.1.4 (2026-11-06)
+
+### Chores
+
+- **deps**: Bump filelock from 4.0.11 to 4.2.1
+  ([#117](https://github.com/Bayer-Group/MotherML/pull/117),
+  [`0c7459f`](https://github.com/Bayer-Group/MotherML/commit/0c7459fa5f566b3c3876af8437eed3964dbcaf20))
+
+
 ## v2.1.3 (2026-11-06)
 
 ### Chores
