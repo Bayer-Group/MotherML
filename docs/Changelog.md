@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- version list -->
 
+## v2.1.7 (2026-11-06)
+
+### Chores
+
+- **deps**: Bump actions/download-artifact from 8.0.1 to 8.0.2
+  ([#111](https://github.com/Bayer-Group/MotherML/pull/111),
+  [`ce9698e`](https://github.com/Bayer-Group/MotherML/commit/ce9698e2a42d93cc36614eba1fc02f7654e32d0c))
+
+
+## v2.1.6 (2026-11-06)
+
+### Chores
+
+- **deps**: Bump numpy from 2.2.6 to 2.4.6
+  ([#112](https://github.com/Bayer-Group/MotherML/pull/112),
+  [`9ef0fe1`](https://github.com/Bayer-Group/MotherML/commit/9ef0fe11482a3b9b579e1f43c942ebe0491e8b66))
+
+
 ## v2.1.5 (2026-11-06)
 
 ### Chores
