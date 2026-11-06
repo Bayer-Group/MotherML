@@ -71,6 +71,18 @@ def validate_tree_chunk_size(tree_chunk_size: Optional[int]) -> None:
         raise ValueError(f"tree_chunk_size must be a positive integer or None, got {tree_chunk_size!r}.")
 
 
+def validate_batch_size(batch_size: int) -> int:
+    """Require a positive integer row count, or -1 for one batch holding all rows, and return it as ``int``.
+
+    ``None`` is rejected: PyTorch then disables batching, so single rows would reach the model and
+    fail with a shape error. NumPy integers are accepted and converted, because PyTorch itself only
+    accepts built-in ``int``.
+    """
+    if isinstance(batch_size, bool) or not isinstance(batch_size, Integral) or (batch_size < 1 and batch_size != -1):
+        raise ValueError(f"batch_size must be a positive integer or -1 (all rows in one batch), got {batch_size!r}.")
+    return int(batch_size)
+
+
 # ==============================================================================
 # UTILITY FUNCTIONS FOR SPARSE ACTIVATIONS
 # ==============================================================================
@@ -586,13 +598,14 @@ class ODST(ModuleWithInit):
         self.feature_selection_logits = nn.Parameter(torch.zeros([in_features, num_trees, depth]), requires_grad=True)
         initialize_selection_logits_(self.feature_selection_logits)
 
-        # Decision thresholds and temperatures (initialized from data in initialize())
+        # Decision thresholds and temperatures (initialized from data in initialize()).
+        # All tensors follow torch's default dtype, like the leaf responses and selection logits above.
         self.feature_thresholds = nn.Parameter(
-            torch.full([num_trees, depth], float("nan"), dtype=torch.float32),
+            torch.full([num_trees, depth], float("nan")),
             requires_grad=True,
         )
         self.log_temperatures = nn.Parameter(
-            torch.full([num_trees, depth], float("nan"), dtype=torch.float32),
+            torch.full([num_trees, depth], float("nan")),
             requires_grad=True,
         )
 
@@ -600,7 +613,7 @@ class ODST(ModuleWithInit):
         with torch.no_grad():
             indices = torch.arange(2**self.depth)
             offsets = 2 ** torch.arange(self.depth)
-            bin_codes = (indices.view(1, -1) // offsets.view(-1, 1) % 2).to(torch.float32)
+            bin_codes = (indices.view(1, -1) // offsets.view(-1, 1) % 2).to(self.response.dtype)
             bin_codes_1hot = torch.stack([bin_codes, 1.0 - bin_codes], dim=-1)
             # Shape: [depth, 2^depth, 2]
             self.register_buffer("bin_codes_1hot", bin_codes_1hot)
@@ -741,7 +754,7 @@ class ODST(ModuleWithInit):
 
         with torch.no_grad():
             if not isinstance(input, torch.Tensor):
-                input_tensor = torch.as_tensor(input, dtype=torch.float32)
+                input_tensor = torch.as_tensor(input, dtype=self.response.dtype)
             else:
                 input_tensor = input
 

@@ -3479,13 +3479,13 @@ def test_flow_device_walker_moves_every_shared_tensor_reference(device):
             torch.testing.assert_close(tensor.cpu(), shared)
 
 
-@pytest.mark.parametrize("batch_size", [-1, 0])
-def test_batch_size_candidates_full_batch_does_not_loop(batch_size):
+def test_batch_size_candidates_full_batch_does_not_loop():
     from mother.ml.models.m_node import NODERegressor
 
-    regressor = NODERegressor(batch_size=batch_size, batch_size_tuning_upper_bound=512, device="cpu")
+    # -1 (all rows in one batch) is the only non-positive size the estimator accepts; it cannot be doubled.
+    regressor = NODERegressor(batch_size=-1, batch_size_tuning_upper_bound=512, device="cpu")
 
-    assert regressor._batch_size_candidates() == [batch_size]
+    assert regressor._batch_size_candidates() == [-1]
 
 
 def test_batch_size_candidates_double_up_to_bound():
@@ -3706,3 +3706,60 @@ def run_fast_tests():
 
 if __name__ == "__main__":
     run_fast_tests()
+
+
+@pytest.mark.parametrize("model_class", [NODERegressor, NODEClassifier])
+@pytest.mark.parametrize("invalid", [0, -2, 2.5, True, None, "8"])
+def test_invalid_batch_size_is_rejected_everywhere_before_training(model_class, invalid):
+    features = np.random.default_rng(0).normal(size=(24, 3)).astype(np.float32)
+    targets = (features[:, 0] > 0).astype(int) if model_class is NODEClassifier else features[:, 0]
+    params = dict(num_trees=4, depth=2, max_epochs=1, device="cpu", verbose=0)
+
+    with pytest.raises(ValueError, match="batch_size must be a positive integer or -1"):
+        model_class(batch_size=invalid, **params)
+
+    model = model_class(**params)
+    with pytest.raises(ValueError, match="batch_size must be a positive integer or -1"):
+        model.set_params(batch_size=invalid)
+
+    # A value assigned directly as an attribute bypasses set_params; fit still has to reject it.
+    model.batch_size = invalid
+    with pytest.raises(ValueError, match="batch_size must be a positive integer or -1"):
+        model.fit(features, targets)
+
+
+@pytest.mark.parametrize("model_class", [NODERegressor, NODEClassifier])
+@pytest.mark.parametrize("valid", [-1, 1, 8, np.int64(8)])
+def test_valid_batch_sizes_train_and_numpy_integers_become_int(model_class, valid):
+    from sklearn.base import clone
+
+    features = np.random.default_rng(0).normal(size=(24, 3)).astype(np.float32)
+    targets = (features[:, 0] > 0).astype(int) if model_class is NODEClassifier else features[:, 0]
+    model = model_class(batch_size=valid, num_trees=4, depth=2, max_epochs=1, device="cpu", verbose=0)
+
+    assert type(model.batch_size) is int
+    assert clone(model).batch_size == int(valid)
+    model.fit(features, targets)
+    assert model.predict(features[:3]).shape[0] == 3
+
+
+def test_odst_modules_run_under_float64_default_dtype_and_follow_it():
+    from mother.ml.models.node_utils import ODST, DenseODSTBlock
+
+    previous = torch.get_default_dtype()
+    torch.set_default_dtype(torch.float64)
+    try:
+        inputs = torch.randn(32, 5)
+        for module in (
+            ODST(in_features=5, num_trees=4, depth=2, tree_output_dim=2),
+            DenseODSTBlock(input_dim=5, num_trees=4, num_layers=2, depth=2, tree_output_dim=2),
+        ):
+            output = module(inputs)
+            assert output.dtype == torch.float64
+            assert torch.isfinite(output).all()
+            assert {tensor.dtype for tensor in module.parameters()} == {torch.float64}
+            assert {buffer.dtype for name, buffer in module.named_buffers() if buffer.is_floating_point()} == {
+                torch.float64
+            }
+    finally:
+        torch.set_default_dtype(previous)

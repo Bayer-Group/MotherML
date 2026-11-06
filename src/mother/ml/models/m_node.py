@@ -135,6 +135,7 @@ from mother.ml.models.node_utils import (
     entmoid15,
     sparsemax,
     sparsemoid,
+    validate_batch_size,
     validate_dropout_rates,
     validate_tree_chunk_size,
 )
@@ -1128,7 +1129,7 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         upper_bound = getattr(self, "batch_size_tuning_upper_bound", None)
         start_batch_size = int(self.batch_size)
 
-        # Non-positive sizes (e.g. -1 = full batch) cannot be doubled towards the bound.
+        # -1 (all rows in one batch) is not a positive size and cannot be doubled towards the bound.
         if upper_bound is None or start_batch_size <= 0:
             return [start_batch_size]
 
@@ -1279,6 +1280,9 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
 
     def _prepare_fit_X(self, X: Union[pd.DataFrame, npt.NDArray[np.float32]]) -> npt.NDArray[np.float32]:
         """Encode training inputs with the same configured encoder used for prediction."""
+        # Re-check at fit time: set_params and direct attribute assignment can change batch_size after
+        # construction, and an invalid value would otherwise only fail deep inside training.
+        self.batch_size = validate_batch_size(self.batch_size)
         self._is_dataframe_input = isinstance(X, pd.DataFrame)
         if not self._is_dataframe_input:
             X = np.asarray(X, dtype=np.float32)
@@ -1347,7 +1351,7 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
             optimizer=optimizer,
             lr=lr,
             max_epochs=max_epochs,
-            batch_size=batch_size,
+            batch_size=validate_batch_size(batch_size),
             iterator_train__shuffle=iterator_train__shuffle,
             train_split=train_split,
             callbacks=callbacks_list,
@@ -1439,6 +1443,8 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         for name in ("tree_chunk_size", "module__tree_chunk_size"):
             if name in params:
                 validate_tree_chunk_size(params[name])
+        if "batch_size" in params:
+            params["batch_size"] = validate_batch_size(params["batch_size"])
         dropout_parameters = {"input_dropout", "tree_dropout", "mlp_dropout", "embedding_dropout"}
         validate_dropout_rates(
             **{
