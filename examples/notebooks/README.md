@@ -74,6 +74,7 @@ Dive into sophisticated methods and specialized algorithms:
 | `01_feature_selection.ipynb` | Automated feature selection strategies | 🟡 Intermediate | 25 min |
 | `02_boruta_feature_selection.ipynb` | Boruta algorithm for feature importance | 🔴 Advanced | 30 min |
 | `03_rna_preprocessing.ipynb` | RNA data preprocessing | 🔴 Advanced | 25 min |
+| `04_chemeleon_fingerprints.ipynb` | Quick start: pretrained CheMeleon embeddings from SMILES | 🟢 Beginner | 5 min |
 
 ### 05_advanced/
 **Cutting-edge techniques and specialized algorithms**
