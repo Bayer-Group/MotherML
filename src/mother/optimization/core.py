@@ -21,6 +21,7 @@ from optuna.terminator import (
 from sklearn.pipeline import Pipeline
 
 from mother import utils as mother_utils
+from mother.errors import ExtrasDependencyImportError
 from mother.optimization import utils
 
 module_logger = logging.getLogger(__name__)
@@ -107,11 +108,26 @@ def handle_metadata_routing(func: typing.Callable) -> typing.Callable:
 class MotherTuner:
     """MotherTuner is a class that facilitates hyperparameter tuning using Optuna.
 
+    Early stopping:
+        With ``early_stopping_optuna=True`` the study is stopped before ``n_trials_optuna`` trials
+        have run once Optuna's ``Terminator`` judges that further trials are unlikely to improve the
+        result. The terminator only starts to decide after 40 trials, so studies with fewer trials
+        are never stopped early. It needs at least two CV splits, so with a hold-out split (a single
+        split) early stopping is switched off and a warning is logged.
+
+        Optuna's terminator is built on PyTorch, which is an optional dependency of Mother
+        (``pip install mother-ml[torch]``). If early stopping is requested but torch is not installed,
+        :meth:`optimize` raises :class:`~mother.errors.ExtrasDependencyImportError` before any trial is
+        run. This is deliberately an error and not a warning: a warning is easy to overlook, and the
+        user would then believe that early stopping is active while every trial is in fact run.
+        Install the torch extra or pass ``early_stopping_optuna=False`` (the default).
+
     Attributes:
         n_trials_optuna (int): Number of trials for Optuna optimization.
         n_startup_trials (int): Number of startup trials for Optuna.
         n_threads_optuna (int): Number of threads for Optuna optimization.
-        early_stopping_optuna (bool): Flag to enable early stopping in Optuna.
+        early_stopping_optuna (bool): Stop the study early with Optuna's terminator (default False).
+            Requires the optional torch dependency; see "Early stopping" above.
         tuning_direction (StudyDirection or string): Direction of optimization (maximize or minimize).
         scorer (typing.Callable): Scoring function or string identifier for scoring.
         sampler (optuna.samplers.BaseSampler): Sampler for Optuna trials.
@@ -137,7 +153,7 @@ class MotherTuner:
         tuning_direction: typing.Union[StudyDirection, str] = StudyDirection.MAXIMIZE,
         n_trials_optuna: int = 100,
         n_threads_optuna: int = 1,
-        n_startup_trials: int = 20,
+        n_startup_trials: int = 12,
         seed: int = 42,
         **kwargs,
     ):
@@ -163,16 +179,21 @@ class MotherTuner:
 
     def get_callbacks(self, cross_validation: typing.Optional[skl_model_sel.BaseCrossValidator] = None):
         """
-        Prepares and returns a list of callbacks for early stopping in Optuna optimization.
+        Prepares and returns the list of callbacks for early stopping in Optuna optimization.
 
-        If early stopping with Optuna is enabled, PyTorch is available, and the
-        cross-validation strategy supports early termination, this method will return
-        a list containing a TerminatorCallback instance.
+        If early stopping with Optuna is enabled and the cross-validation strategy supports
+        early termination, this method returns a list containing a ``TerminatorCallback``.
 
-        It returns None in any of the following cases:
-        - early stopping with Optuna is disabled
-        - PyTorch is not available (warning is logged)
-        - hold-out cross-validation is detected (fewer than 2 splits)
+        It returns None when:
+        - early stopping with Optuna is disabled (``early_stopping_optuna=False``, the default)
+        - a hold-out cross-validation is detected (fewer than 2 splits): Optuna's terminator needs
+          several CV scores per trial, so early stopping is disabled and a warning is logged
+
+        Raises:
+            ExtrasDependencyImportError: If ``early_stopping_optuna=True`` but PyTorch is not installed.
+                Optuna's terminator requires torch. Silently running without early stopping would hide
+                from the user that the option has no effect, so this is an error and not a warning.
+                Install the extra (``pip install mother-ml[torch]``) or set ``early_stopping_optuna=False``.
 
         Returns:
             typing.Optional[typing.List[TerminatorCallback]]: A list of TerminatorCallback
@@ -181,19 +202,20 @@ class MotherTuner:
         callbacks: typing.Optional[typing.List[TerminatorCallback]] = None
         if self.early_stopping_optuna:
             if not torch_available:
-                module_logger.warning("Torch not installed, early optuna termination will not be available")
-                module_logger.warning(
-                    """Torch is required for early termination of optuna optimization.
-                    To enable early termination please install torch:
-                    pip install mother[torch] or uv add mother[torch]"""
+                raise ExtrasDependencyImportError(
+                    "torch",
+                    ImportError(
+                        "early_stopping_optuna=True requires PyTorch (used by Optuna's terminator), "
+                        "but torch is not installed. Install the torch extra, or set "
+                        "early_stopping_optuna=False to tune without early stopping."
+                    ),
                 )
-            else:
-                if cross_validation is not None and cross_validation.get_n_splits() < 2:
-                    module_logger.warning(
-                        "Optuna early termination requires at least 2 CV splits; disabling callback for hold-out setup"
-                    )
-                    return None
-                callbacks = [TerminatorCallback(terminator=Terminator(min_n_trials=40))]
+            if cross_validation is not None and cross_validation.get_n_splits() < 2:
+                module_logger.warning(
+                    "Optuna early termination requires at least 2 CV splits; disabling callback for hold-out setup"
+                )
+                return None
+            callbacks = [TerminatorCallback(terminator=Terminator(min_n_trials=40))]
         return callbacks
 
     @handle_metadata_routing
@@ -232,7 +254,16 @@ class MotherTuner:
         -------
         a fitted pipeline object
 
+        Raises
+        ------
+        ExtrasDependencyImportError
+            If the tuner was created with ``early_stopping_optuna=True`` but torch is not installed.
+            Raised before the study is created, so no trial is run.
+
         """
+        # Resolve early stopping first: a missing torch must fail here, not after the study has been set up.
+        callbacks = self.get_callbacks(cross_validation=cross_validation)
+
         get_hyper_space: typing.Callable = mother_utils.get_hyperparameter_space_function(
             func=hyperparameter_space_function, estimator=estimator
         )
@@ -299,7 +330,7 @@ class MotherTuner:
             objective,
             n_trials=self.n_trials_optuna,
             gc_after_trial=True,
-            callbacks=self.get_callbacks(cross_validation=cross_validation),
+            callbacks=callbacks,
         )
 
         if default_parameters != {}:

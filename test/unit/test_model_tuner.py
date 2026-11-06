@@ -11,6 +11,7 @@ from sklearn.model_selection import GroupKFold, KFold, PredefinedSplit
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import MinMaxScaler
 
+from mother.errors import ExtrasDependencyImportError
 from mother.ml import CatboostClassifierMother, avg_ndcg_score
 from mother.ml.core import (
     AbstractMotherPipeline,
@@ -274,6 +275,76 @@ class TestTuneMotherModels:
         evaluated = tuner.study.trials[0].params
         enqueued = model_pipeline.default_parameters()
         all(evaluated[k] == enqueued[k] for k in evaluated.keys() & enqueued.keys())
+
+
+@pytest.mark.parametrize(("split_kind", "expect_reports"), [("holdout", False), ("kfold", True)])
+def test_optimize_reports_cv_scores_only_with_multiple_splits(
+    lasso_pipeline, synthetic_data, monkeypatch, split_kind, expect_reports
+):
+    """The single-score guard must work without the optional torch extra (early stopping is off here)."""
+    X, y, _ = synthetic_data
+    if split_kind == "holdout":
+        test_fold = np.full(len(X), -1)
+        test_fold[-20:] = 0
+        cross_validation = PredefinedSplit(test_fold=test_fold)
+    else:
+        cross_validation = KFold(n_splits=3, shuffle=True, random_state=42)
+    reported = []
+    monkeypatch.setattr(
+        "mother.optimization.core.report_cross_validation_scores",
+        lambda trial, scores: reported.append(list(scores)),
+    )
+    tuner = MotherTuner(scorer="neg_mean_squared_error", early_stopping_optuna=False, n_trials_optuna=2)
+
+    model = tuner.optimize(
+        lasso_pipeline,
+        X=X,
+        y=y,
+        hyperparameter_space_function=lasso_pipeline.get_hyperparameter_space,
+        default_parameters=lasso_pipeline.default_parameters(),
+        cross_validation=cross_validation,
+    )
+
+    assert model is not None
+    assert len(tuner.study.trials) >= 1
+    assert bool(reported) == expect_reports
+
+
+def test_early_stopping_without_torch_raises_instead_of_warning(monkeypatch):
+    monkeypatch.setattr("mother.optimization.core.torch_available", False)
+    tuner = MotherTuner(scorer="neg_mean_squared_error", early_stopping_optuna=True)
+
+    with pytest.raises(ExtrasDependencyImportError, match="early_stopping_optuna=True requires PyTorch") as error:
+        tuner.get_callbacks()
+
+    assert "mother-ml[torch]" in str(error.value)  # the install hint is part of the error
+    # A hold-out split would also disable early stopping, but the missing dependency is reported first.
+    with pytest.raises(ExtrasDependencyImportError):
+        tuner.get_callbacks(cross_validation=PredefinedSplit(test_fold=[-1, -1, 0, 0]))
+
+
+def test_optimize_with_early_stopping_without_torch_fails_before_any_trial(lasso_pipeline, synthetic_data, monkeypatch):
+    monkeypatch.setattr("mother.optimization.core.torch_available", False)
+    X, y, _ = synthetic_data
+    tuner = MotherTuner(scorer="neg_mean_squared_error", early_stopping_optuna=True, n_trials_optuna=2)
+
+    with pytest.raises(ExtrasDependencyImportError):
+        tuner.optimize(
+            lasso_pipeline,
+            X=X,
+            y=y,
+            hyperparameter_space_function=lasso_pipeline.get_hyperparameter_space,
+            default_parameters=lasso_pipeline.default_parameters(),
+            cross_validation=KFold(n_splits=3, shuffle=True, random_state=42),
+        )
+
+    assert tuner.study is None  # the study was never created, so no trial ran
+
+
+def test_no_early_stopping_without_torch_is_not_an_error(monkeypatch):
+    monkeypatch.setattr("mother.optimization.core.torch_available", False)
+
+    assert MotherTuner(scorer="neg_mean_squared_error", early_stopping_optuna=False).get_callbacks() is None
 
 
 @pytest.mark.skipif(
