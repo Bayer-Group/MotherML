@@ -20,7 +20,8 @@ from mother.ml.models.m_catboost import (
 # The fixtures below build each registry algorithm explicitly and have no branch for NODE ("node"): its
 # estimators need their own setup (skorch/torch training, NODE-specific parameters), so they are covered by
 # the dedicated NODE suites (test_node_unit.py, test_node_uncertainty.py, test_node_target_scaling.py).
-# Exclude it from the generic algorithm sweep. "mlp" and "flow" are NODE head types, not registry algorithms.
+# Exclude it from the fixture sweep; test_model_class_from_config only resolves classes, so it still covers NODE.
+# "mlp" and "flow" are NODE head types, not registry algorithms.
 _ALGORITHMS_WITH_OWN_TEST_SUITES = {"node"}
 STANDARD_ALGORITHMS = [a for a in ml.get_available_algorithms() if a not in _ALGORITHMS_WITH_OWN_TEST_SUITES]
 
@@ -152,7 +153,7 @@ def test_ml_config(ml_config) -> None:
     "algorithm, model_type",
     list(
         itertools.product(
-            STANDARD_ALGORITHMS,
+            ml.get_available_algorithms(),
             ["classification_binary", "classification_multiclass", "regression", "ranking"],
         )
     ),
