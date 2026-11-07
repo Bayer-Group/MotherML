@@ -2657,8 +2657,8 @@ def test_flow_head_tuning_hidden_dims():
     assert "flow_bins" not in params_nice, "NICE should not have flow_bins"
     print(f"  ✓ NICE: transforms={params_nice['flow_transforms']}, no bins (correct)")
 
-    # Case 2: flow head with NSF (has bins, no transforms)
-    print("\nCase 2: Flow head with NSF (has bins, no transforms)")
+    # Case 2: flow head with NSF (has bins and transforms)
+    print("\nCase 2: Flow head with NSF (has bins and transforms)")
     trial_nsf = optuna.trial.FixedTrial(
         {
             "num_layers": 1,
@@ -2674,15 +2674,16 @@ def test_flow_head_tuning_hidden_dims():
             "choice_function": "entmax15",
             "bin_function": "entmoid15",
             "flow_type": "NSF",
+            "flow_transforms": 3,
             "flow_bins": 8,
         }
     )
 
     params_nsf = reg.get_hyperparameter_space(X_df, y_series, trial_nsf, prefix="")
     assert params_nsf.get("flow_type") == "NSF", "NSF should be selected"
-    assert "flow_transforms" not in params_nsf, "NSF should not have flow_transforms"
+    assert "flow_transforms" in params_nsf, "NSF should have flow_transforms"
     assert "flow_bins" in params_nsf, "NSF should have flow_bins"
-    print(f"  ✓ NSF: bins={params_nsf['flow_bins']}, no transforms (correct)")
+    print(f"  ✓ NSF: transforms={params_nsf['flow_transforms']}, bins={params_nsf['flow_bins']} (correct)")
 
     # Verify no MLP-specific params leak into flow head
     assert "flow_hidden_dims" not in params_nice, "Flow hidden dims should not be part of tuning"
@@ -2900,6 +2901,15 @@ def test_flow_rejects_removed_realnvp_option():
         FlowHead(input_dim=3, output_dim=1, flow_type="RealNVP")
     with pytest.raises(ValueError, match="Unsupported flow_type: RealNVP"):
         NODERegressor(head_type="flow", flow_type="RealNVP", num_trees=4, depth=2, device="cpu").initialize()
+
+
+@pytest.mark.parametrize("flow_type", ["NSF", "BPF"])
+@pytest.mark.parametrize("flow_transforms", [1, 4])
+def test_flow_transforms_applies_to_nsf_and_bpf(flow_type, flow_transforms):
+    from mother.ml.models.node_head_utils import FlowHead
+
+    flow = FlowHead(input_dim=3, output_dim=1, flow_type=flow_type, flow_transforms=flow_transforms)
+    assert len(flow.net.transform.transforms) == flow_transforms
 
 
 def test_flow_search_uses_supported_types_only():

@@ -230,9 +230,13 @@ class FlowHead(nn.Module):
                 features=output_dim, context=context_dim, transforms=flow_transforms, signal=flow_signal
             )
         elif flow_type == "NSF":
-            self.net = zuko.flows.NSF(features=output_dim, context=context_dim, bins=flow_bins)
+            self.net = zuko.flows.NSF(
+                features=output_dim, context=context_dim, transforms=flow_transforms, bins=flow_bins
+            )
         elif flow_type == "BPF":
-            self.net = zuko.flows.BPF(features=output_dim, context=context_dim, degree=flow_degree)
+            self.net = zuko.flows.BPF(
+                features=output_dim, context=context_dim, transforms=flow_transforms, degree=flow_degree
+            )
         else:
             raise ValueError(f"Unsupported flow_type: {flow_type}. Choose from {self.SUPPORTED_FLOW_TYPES}.")
 

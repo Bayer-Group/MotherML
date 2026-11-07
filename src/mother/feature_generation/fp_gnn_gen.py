@@ -133,10 +133,16 @@ def _default_chemeleon_embedder(
         )
 
     mp = cnn.BondMessagePassing(**ckpt["hyper_parameters"])
+    if mp.output_dim != output_dim:
+        raise ValueError(
+            f"output_dim={output_dim} does not match the CheMeleon checkpoint embedding size {mp.output_dim}."
+        )
     mp.load_state_dict(ckpt["state_dict"])
     agg = cnn.MeanAggregation()
     ffn = cnn.RegressionFFN(input_dim=mp.output_dim)
-    model = cp_models.MPNN(mp, agg, ffn, batch_norm=False).to(device).eval()
+    # Chemprop's collate_batch builds float32 features, so pin the weights to float32 even if the
+    # application changed torch's global default dtype.
+    model = cp_models.MPNN(mp, agg, ffn, batch_norm=False).to(device=device, dtype=torch.float32).eval()
 
     return _CheMeleonEmbedder(model, output_dim, device)
 

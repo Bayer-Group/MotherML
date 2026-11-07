@@ -650,10 +650,11 @@ class ODST(ModuleWithInit):
             self.register_buffer("bin_codes_1hot", bin_codes_1hot)
 
     # Wide single-layer ensembles (e.g. 2048 trees) materialise very large
-    # per-tree intermediates at once. Evaluating trees in fixed-width slices
-    # caps the peak transient/activation memory to roughly one slice, matching
-    # the footprint of an equivalent multi-layer split, without changing the
-    # computed result. Auto-applied whenever num_trees exceeds this width.
+    # per-tree intermediates at once. Evaluating trees in slices of
+    # ``tree_chunk_size`` caps peak activation memory to roughly one slice
+    # without changing the computed result; ``None`` disables slicing. This
+    # constant is only the fallback width for instances that predate
+    # ``tree_chunk_size`` (e.g. older pickles without that attribute).
     _AUTO_TREE_CHUNK_SIZE = 256
 
     def forward(self, input: Tensor) -> Tensor:

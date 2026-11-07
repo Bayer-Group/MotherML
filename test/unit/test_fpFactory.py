@@ -48,9 +48,10 @@ class _FakeMessagePassing:
 
 class _FakeMPNN:
     def __init__(self, *args, **kwargs):
-        pass
+        self.dtype = None
 
-    def to(self, device):
+    def to(self, device=None, dtype=None):
+        self.dtype = dtype
         return self
 
     def eval(self):
@@ -308,8 +309,8 @@ def test_chemeleon_rejects_malformed_embedder_output(shape, message) -> None:
         transformer.fit_transform(molecules)
 
 
-def test_default_chemeleon_embedder_transformer_is_pickleable(monkeypatch) -> None:
-    import pickle
+@pytest.fixture
+def fake_chemprop(monkeypatch):
     import sys
     import types
 
@@ -333,6 +334,11 @@ def test_default_chemeleon_embedder_transformer_is_pickleable(monkeypatch) -> No
     monkeypatch.setitem(sys.modules, "chemprop.nn", nn)
     monkeypatch.setitem(sys.modules, "chemprop.data", data)
     monkeypatch.setattr(torch, "load", lambda *args, **kwargs: {"hyper_parameters": {}, "state_dict": {}})
+    return torch
+
+
+def test_default_chemeleon_embedder_transformer_is_pickleable(fake_chemprop) -> None:
+    import pickle
 
     molecule = Chem.MolFromSmiles("CCO")
     transformer = CheMeleonFingerprintTransformer(output_dim=2, checkpoint_path="fake.pt").fit([molecule])
@@ -341,6 +347,20 @@ def test_default_chemeleon_embedder_transformer_is_pickleable(monkeypatch) -> No
 
     assert isinstance(restored.embedder_, _CheMeleonEmbedder)
     np.testing.assert_array_equal(restored.transform([molecule]), [[1.0, 1.0]])
+
+
+def test_default_chemeleon_embedder_casts_model_to_float32(fake_chemprop) -> None:
+    transformer = CheMeleonFingerprintTransformer(output_dim=2, checkpoint_path="fake.pt").fit([])
+
+    assert transformer.embedder_.model.dtype == fake_chemprop.float32
+
+
+def test_default_chemeleon_embedder_rejects_output_dim_mismatch(fake_chemprop) -> None:
+    transformer = CheMeleonFingerprintTransformer(output_dim=3, checkpoint_path="fake.pt")
+
+    with pytest.raises(ValueError, match="output_dim=3 does not match"):
+        transformer.fit([])
+    assert not hasattr(transformer, "is_fitted_")
 
 
 @pytest.mark.parametrize("return_separate_columns", [True, False])
