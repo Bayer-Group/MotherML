@@ -22,7 +22,7 @@ In case you want to develop mother further, do the following steps:
 - install uv following the steps outlined here (<https://docs.astral.sh/uv/getting-started/installation/>)
 - clone the repository
 - create the uv venv with base dependencies: `uv sync`
-- optionally install extras: `uv sync --extra report --extra torch --extra tabpfn --extra tabicl`
+- optionally install extras: `uv sync --extra report --extra torch --extra tabpfn --extra tabicl --extra tabm`
 - run unittests `uv run poe test-unit`
 - run acceptance tests `uv run poe test-acceptance`
 
@@ -42,11 +42,12 @@ Extras are pip-installable optional dependencies that end users can install:
 | `torch` | PyTorch neural network support | `uv sync --extra torch` |
 | `tabpfn` | TabPFN model support | `uv sync --extra tabpfn` |
 | `tabicl` | TabICL models and built-in SHAP explainability | `uv sync --extra tabicl` |
+| `tabm` | TabM models using PyTorch and skorch | `uv sync --extra tabm` |
 | `clustering` | Chemical compound clustering | `uv sync --extra clustering` |
 
 **Install multiple extras:**
 ```bash
-uv sync --extra report --extra torch --extra tabpfn --extra tabicl
+uv sync --extra report --extra torch --extra tabpfn --extra tabicl --extra tabm
 ```
 
 #### Dependency Groups (Development Only)

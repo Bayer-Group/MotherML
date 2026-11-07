@@ -48,6 +48,12 @@ Changelog = "https://bayer-group.github.io/MotherML/Changelog/"
 ### Torch
 torch = ["torch>=2.3.0,<3"]
 
+### TabM (skorch-based neural ensembles)
+tabm = [
+  "torch>=2.3.0,<3",
+  "skorch>=1.4.0,<2",
+]
+
 ### Report block
 report = [
   "matplotlib>3.7.0",

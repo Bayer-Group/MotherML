@@ -67,8 +67,9 @@ jobs, not independent branches of the workflow:
 2. **release-preflight**: after `style`, runs the [preflight audit](#release-preflight)
    with a read-only token, uploads the report artifact, and fails on violations.
 3. **test**: after preflight, runs the Python 3.11 / 3.12 / 3.13 / 3.14 matrix
-   with `rna`, `report`, `tabpfn`, `tabicl`, and `clustering` extras. Each job runs
-   `coverage` (non-slow, non-serial tests), then `dist-test` after a no-extras sync.
+   with `rna`, `report`, `tabpfn`, `tabicl`, `tabm`, and `clustering` extras. Each
+   job runs `coverage` (non-slow, non-serial tests), then `dist-test` after a
+   no-extras sync.
 4. **test-slow**: after the test matrix passes, runs the slow suite on Python 3.14.
 5. **release**: requires `test-slow` and preflight, and runs only on pushes to
    `main` that are not semantic-release's own release commits. It runs PSR on the

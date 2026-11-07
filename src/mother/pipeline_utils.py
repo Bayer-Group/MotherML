@@ -534,12 +534,21 @@ def get_model(settings: Union[MotherSettings, Dict]) -> ml.AbstractMotherPipelin
 
     estimator: ml.AbstractMotherPipeline
     # extract the following into a separate function and use copilot to generate it...
-    if model_settings["algorithm"] == "catboost":
+    if model_settings["algorithm"] in ("catboost", "tabm"):
+        if (
+            model_settings["algorithm"] == "tabm"
+            and model_settings["target_type"] == "multi_target"
+            and model_settings["model_type"] == "classification_multiclass"
+        ):
+            raise ValueError("TabM multitarget classification supports only binary tasks.")
         model_class = ml.get_model_class_by_algorithm_and_type(
             algorithm=model_settings["algorithm"],
             model_type=model_settings["model_type"],
         )
-        estimator = model_class(target_type=model_settings["target_type"], **model_settings["parameters"])
+        parameters = dict(model_settings["parameters"])
+        if model_settings["algorithm"] == "tabm":
+            parameters.setdefault("model_type", model_settings["model_type"])
+        estimator = model_class(target_type=model_settings["target_type"], **parameters)
     else:
         try:
             estimator = ml.get_model_class_by_algorithm_and_type(
