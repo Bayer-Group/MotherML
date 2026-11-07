@@ -167,6 +167,17 @@ def test_model_class_from_config(algorithm, model_type) -> None:
     assert issubclass(model_class, ml.AbstractMotherPipeline)  # type: ignore
 
 
+def test_node_discovery_lists_only_concrete_estimators() -> None:
+    # Model discovery skips underscore-prefixed classes, so the shared NODE base must stay private
+    # (like _CatboostModelMotherBase) or it is offered as a model next to the real estimators.
+    if "node" not in ml.get_available_algorithms():
+        pytest.skip("NODE extra (skorch, torch, zuko) is not installed")
+    assert sorted(cls.__name__ for cls in ml.get_model_class_by_algorithm("node")) == [
+        "NODEClassifier",
+        "NODERegressor",
+    ]
+
+
 def test_predict_uncertainty_classification(all_classification_algorithms):
     """
     Test if all available classification algorithms return the same format

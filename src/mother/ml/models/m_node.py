@@ -1012,7 +1012,7 @@ class CompletePyTorchTabularNODE(nn.Module):
 # ---------------------------------------------------------------------------
 
 
-class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
+class _BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
     """
     Abstract base class for NODE estimators containing shared functionality.
 
@@ -1186,7 +1186,7 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         """Whether this estimator should expose flow configuration parameters."""
         return True
 
-    def initialize_module(self) -> "BaseNODEEstimator":
+    def initialize_module(self) -> "_BaseNODEEstimator":
         """Build the module in float32 whatever torch's global default dtype is.
 
         Inputs are always prepared as float32 and the tree buffers are float32, so parameters
@@ -1433,7 +1433,7 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
 
         return params
 
-    def set_params(self, **params: Any) -> "BaseNODEEstimator":
+    def set_params(self, **params: Any) -> "_BaseNODEEstimator":
         """
         Set parameters for sklearn compatibility.
 
@@ -1526,7 +1526,7 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
             self._validate_params()
         return result
 
-    def __sklearn_clone__(self) -> "BaseNODEEstimator":
+    def __sklearn_clone__(self) -> "_BaseNODEEstimator":
         """Custom sklearn cloning: excludes 'module' which is constructed dynamically."""
         # Get clean parameters without 'module'
         params = copy.deepcopy(self.get_params(deep=False))
@@ -2004,7 +2004,7 @@ class BaseNODEEstimator(NeuralNet, AbstractMotherPipeline):
         }
 
 
-class NODERegressor(BaseNODEEstimator):
+class NODERegressor(_BaseNODEEstimator):
     """
     Neural Oblivious Decision Ensembles (NODE) for regression tasks.
 
@@ -2094,7 +2094,7 @@ class NODERegressor(BaseNODEEstimator):
         >>> # starts at batch_size=128 and can try 256, 512, 1024
         >>> reg_tune_bs = NODERegressor(batch_size=128, batch_size_tuning_upper_bound=1024)
 
-    Note: BaseNODEEstimator is listed first to ensure our get_params() method
+    Note: _BaseNODEEstimator is listed first to ensure our get_params() method
     takes precedence over skorch's, which is critical for proper sklearn cloning.
     """
 
@@ -3414,7 +3414,7 @@ class NODERegressor(BaseNODEEstimator):
         return defaults
 
 
-class NODEClassifier(BaseNODEEstimator, NeuralNetClassifier):
+class NODEClassifier(_BaseNODEEstimator, NeuralNetClassifier):
     """
     Sklearn-compatible NODE classifier for tabular data.
 
