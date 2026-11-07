@@ -133,6 +133,34 @@ jobs:
       - name: Run slow tests
         run: uv run poe test-slow
 
+  test-chemprop:
+    name: Test Chemprop 🧬 using 🐍 3.14
+    needs: release-preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout 🛎
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Chemprop's featurizer imports cuik_molmaker, which links against libXrender/libX11/libXext.
+      - name: Prepare environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfontconfig1 libxrender1 libxtst6
+
+      - name: Setup uv environment 📚
+        uses: ./.github/actions/setup-uv-env
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          install-args: "--extra chemprop"
+
+      # The test uses importorskip, so a broken install would otherwise show up as a green skip.
+      - name: Check chemprop imports
+        run: uv run python -c "import chemprop; print('chemprop', chemprop.__version__)"
+
+      - name: Run Chemprop integration test
+        run: uv run pytest test/unit/test_chemeleon_integration.py -rs
+
   release-preflight:
     name: Release Preflight
     needs: style
@@ -237,7 +265,7 @@ jobs:
 
   release:
     name: Release & Publish
-    needs: [test-slow, release-preflight]
+    needs: [test-slow, test-chemprop, release-preflight]
     # Only release from pushes to main, and never from semantic-release's own
     # release commit (which is what previously caused the workflow to loop).
     if: >-

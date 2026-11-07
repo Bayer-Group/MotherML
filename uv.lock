@@ -2764,7 +2764,7 @@ requires-dist = [
     { name = "anndata", marker = "extra == 'rna'" },
     { name = "boruta", specifier = ">=0.4.3,<0.5" },
     { name = "catboost", specifier = ">=1.2.9,<=1.2.10" },
-    { name = "chemprop", marker = "extra == 'chemprop'", specifier = ">=2.0,<3" },
+    { name = "chemprop", marker = "extra == 'chemprop'", specifier = ">=2.2,<3" },
     { name = "colorama", specifier = ">=0.4.6,<0.5" },
     { name = "feature-engine", specifier = ">=1.8.0,<2" },
     { name = "igraph", marker = "extra == 'report'", specifier = ">=0.11.8,<0.12" },
