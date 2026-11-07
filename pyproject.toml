@@ -363,5 +363,5 @@ test-slow = { shell = "pytest test -m 'slow' -n auto" }
 module-name = "mother"
 
 [build-system]
-requires = ["uv_build>=0.11.1,<0.12.0","setuptools>=76.0.0"]
+requires = ["uv_build>=0.11.1,<0.14.0","setuptools>=76.0.0"]
 build-backend = "uv_build"
