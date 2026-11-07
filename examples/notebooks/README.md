@@ -28,6 +28,9 @@ Dive into sophisticated methods and specialized algorithms:
 10. **🧬 TabPFN Integration** → `05_advanced/02_tabpfn_integration.ipynb`
 11. **📈 Ordinal Classification** → `03_classification/03_ordinal_classification.ipynb`
 12. **🧪 Multi-task Learning** → `02_regression/04_multitask_random_forest.ipynb`
+13. **🌳 NODE** → `05_advanced/05_NODE.ipynb`
+14. **🧬 CheMeleon Fingerprints** → `05_advanced/06_chemeleon.ipynb`
+15. **📊 TabICL Embeddings** → `05_advanced/07_tabicl_embedding_transformer.ipynb`
 
 ## 📂 Tutorial Categories
 
@@ -71,6 +74,7 @@ Dive into sophisticated methods and specialized algorithms:
 | `01_feature_selection.ipynb` | Automated feature selection strategies | 🟡 Intermediate | 25 min |
 | `02_boruta_feature_selection.ipynb` | Boruta algorithm for feature importance | 🔴 Advanced | 30 min |
 | `03_rna_preprocessing.ipynb` | RNA data preprocessing | 🔴 Advanced | 25 min |
+| `04_chemeleon_fingerprints.ipynb` | Quick start: pretrained CheMeleon embeddings from SMILES | 🟢 Beginner | 5 min |
 
 ### 05_advanced/
 **Cutting-edge techniques and specialized algorithms**
@@ -81,6 +85,8 @@ Dive into sophisticated methods and specialized algorithms:
 | `02_tabpfn_integration.ipynb` | TabPFN for small datasets | 🔴 Advanced | 25 min |
 | `03_uncertainty_prediction_tabpfn.ipynb` | Uncertainty quantification with TabPFN | 🔴 Advanced | 35 min |
 | `04_ranking_model.ipynb` | Learning-to-Rank using CatboostRanker | 🔴 Advanced | 5 min* |
-| `05_tabicl_embedding_transformer.ipynb` | Embedding extraction using TabICL | 🔴 Advanced | 5 min |
+| `05_NODE.ipynb` | NODE architecture, prediction heads, uncertainty, and tuning | 🔴 Advanced | 45 min |
+| `06_chemeleon.ipynb` | Generate CheMeleon fingerprints for CatBoost regression | 🔴 Advanced | 30 min |
+| `07_tabicl_embedding_transformer.ipynb` | Extract and visualize TabICL molecular embeddings | 🔴 Advanced | 30 min |
 
 **w/o the last optimization section. > 1h to run the optimization section*

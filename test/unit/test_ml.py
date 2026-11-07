@@ -17,8 +17,16 @@ from mother.ml.models.m_catboost import (
     CatboostRegressorMother,
 )
 
+# The fixtures below build each registry algorithm explicitly and have no branch for NODE ("node"): its
+# estimators need their own setup (skorch/torch training, NODE-specific parameters), so they are covered by
+# the dedicated NODE suites (test_node_unit.py, test_node_uncertainty.py, test_node_target_scaling.py).
+# Exclude it from the fixture sweep; test_model_class_from_config only resolves classes, so it still covers NODE.
+# "mlp" and "flow" are NODE head types, not registry algorithms.
+_ALGORITHMS_WITH_OWN_TEST_SUITES = {"node"}
+STANDARD_ALGORITHMS = [a for a in ml.get_available_algorithms() if a not in _ALGORITHMS_WITH_OWN_TEST_SUITES]
 
-@pytest.fixture(params=ml.get_available_algorithms())
+
+@pytest.fixture(params=STANDARD_ALGORITHMS)
 def all_classification_algorithms(request):
     algorithm = request.param
     model = CatboostClassifierMother(target_type="single_target")
@@ -44,7 +52,7 @@ def all_classification_algorithms(request):
     return model
 
 
-@pytest.fixture(params=ml.get_available_algorithms())
+@pytest.fixture(params=STANDARD_ALGORITHMS)
 def all_regression_algorithms(request):
     algorithm = request.param
     model = CatboostRegressorMother(target_type="single_target")
@@ -157,6 +165,17 @@ def test_model_class_from_config(algorithm, model_type) -> None:
     model_class = ml.get_model_class_by_algorithm_and_type(algorithm, model_type)
     assert model_class is not None
     assert issubclass(model_class, ml.AbstractMotherPipeline)  # type: ignore
+
+
+def test_node_discovery_lists_only_concrete_estimators() -> None:
+    # Model discovery skips underscore-prefixed classes, so the shared NODE base must stay private
+    # (like _CatboostModelMotherBase) or it is offered as a model next to the real estimators.
+    if "node" not in ml.get_available_algorithms():
+        pytest.skip("NODE extra (skorch, torch, zuko) is not installed")
+    assert sorted(cls.__name__ for cls in ml.get_model_class_by_algorithm("node")) == [
+        "NODEClassifier",
+        "NODERegressor",
+    ]
 
 
 def test_predict_uncertainty_classification(all_classification_algorithms):
