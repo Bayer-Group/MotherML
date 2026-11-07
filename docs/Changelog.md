@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- version list -->
 
+## v2.1.9 (2026-11-07)
+
+### Chores
+
+- **deps-dev**: Update uv-build requirement
+  ([#109](https://github.com/Bayer-Group/MotherML/pull/109),
+  [`65d2d98`](https://github.com/Bayer-Group/MotherML/commit/65d2d9803c984c5bb95880fc7692101738a10a3f))
+
+
 ## v2.1.8 (2026-11-07)
 
 ### Chores
